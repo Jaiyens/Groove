@@ -175,3 +175,28 @@ Spec mentions `vm.tiktok.com` short URLs need a HEAD request to resolve. **Decis
 
 Per spec hard-rule §3 ("do NOT delete the existing fixtures file"). `lib/dances/fixtures.ts` keeps the 3 routine fixtures as a commented block. The home page reads from the API; if Supabase isn't configured, the page surfaces an empty state with the "submit your first tiktok" CTA rather than silently falling back. This keeps the data flow honest.
 
+## Phase 1 verification: scoped to what runs without Supabase
+
+The SPECK calls for end-to-end verification ("run the worker against a hardcoded URL, confirm the resulting row + storage URLs resolve in Supabase"). That requires Supabase credentials + ffmpeg + the Python ML stack — none of which I can install for Jaiyen in this autonomous window. **Decision**: run the verification subset that *is* possible now and document the rest as a follow-up for Jaiyen.
+
+What I verified now:
+- All 10 worker modules pass `python -m py_compile` (syntax check)
+- `worker/test_pipeline.py` runs 4 synthetic-pose tests against the pure-Python pieces (chunker, skill mapping) and passes
+- TS type-check across the project passes (frontend / API code still compiles after the type extension)
+- The existing 67 unit tests still pass
+
+What Jaiyen needs to run (per SETUP_TODO.md §4) to close the verification loop:
+
+```
+python worker/main.py --once https://www.tiktok.com/@…/video/… \
+  --local-only --out ./worker/out
+```
+
+That exercises yt-dlp + MediaPipe + librosa + skeleton-mp4 rendering end-to-end without needing Supabase yet. After that:
+
+```
+python worker/main.py --once <url>   # uploads to Supabase
+```
+
+with `.env.local` + the storage buckets in place. The expected outcome is a `dances` row with all fields populated and the four storage URLs (`pose_data_url`, `skeleton_video_url`, `audio_url`, `thumbnail_url`) returning 200.
+
