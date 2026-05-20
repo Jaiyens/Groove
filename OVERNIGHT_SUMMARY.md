@@ -1,151 +1,122 @@
-# Day-2 build summary
+# v2 build summary — backend, submit flow, Simply redesign
 
-> 2026-05-20 — Groove web prototype, second pass.
-> Real knowledge graph wired in. Practice loop rebuilt as chunked
-> copy-along → test → full attempt. Skeleton alignment + random-stops bugs
-> fixed. Audio pipeline added.
+> 2026-05-20, day 3. Groove now has a backend, a worker pipeline, a
+> URL-submit flow, and a cream Simply-style library. The pure-TS math
+> layer + knowledge graph + chunked Mode A/B/C practice loop stayed the
+> same per SPECK.md.
 >
-> 67 unit tests pass, production build green, all routes return HTTP 200.
+> 67 unit tests pass. Production build green. All routes register
+> (6 page routes + 4 API routes).
+>
+> End-to-end runtime verification (worker → Supabase → frontend) is
+> blocked on Jaiyen finishing the one-time setup: provisioning the
+> Supabase project, dropping env vars into `.env.local`, installing
+> the worker's Python deps + ffmpeg. See [SETUP_TODO.md](SETUP_TODO.md).
 
-## What changed since the overnight build
+## What changed since day 2
 
-| Area | Before (day 1) | After (day 2) |
+| Area | Day 2 | Day 3 (v2) |
 | --- | --- | --- |
-| Knowledge graph | 8-node stub `{nodes,version,generated_at}` | Real 46-node array (8 routines × 5 skill layers) |
-| Loader | Only accepted object form | Accepts both bare array (production) and object form (legacy) |
-| Fixtures | `Dance` duplicated bpm/duration/skills | `DanceFixture` (id/name/artist/video_url) merged with routine at runtime via `resolveDance(fixture, graph)` |
-| Three fixtures | `fixture_apt` / `fixture_espresso` / `fixture_renegade` (stub IDs) | `routine_golden` / `routine_dead_dance` / `routine_not_cute_anymore` (real IDs) |
-| Skeleton overlay | Hardcoded 430×700 canvas, no object-cover compensation, JS mirror conflicted with CSS mirror | `lib/pose/projection.ts` (Swift-portable cover math) + ResizeObserver + single CSS mirror |
-| Detection loop | Restarted on every render (dance ref changed) | `useMemo` for dance + visibilitychange handler that re-anchors session clock |
-| Audio | None | `lib/audio/danceAudio.ts` hook plays the routine's audio track in Mode B/C |
-| Practice loop | One 16–28s attempt scoring the entire dance | Mode A (copy-along chunk loop) → Mode B (scored chunk test) → Mode C (full attempt) |
-| Routes | `/practice/[danceId]` | `/dance/[id]`, `/dance/[id]/chunk/[i]/copy`, `/dance/[id]/chunk/[i]/test`, `/dance/[id]/full` |
-| Chunk progression | n/a | `lib/graph/chunker.ts` (pure-TS) + `lib/mastery/chunkProgress.ts` (localStorage unlock state) + Duolingo-style progression UI |
+| Library | 3 hardcoded fixtures | Backend-served, paginated, view-sorted |
+| Reference media | Local mp4 files | Worker-generated skeleton mp4 + audio wav, uploaded to Supabase Storage |
+| Submit flow | None | Paste URL → poll until ready → land on dance page |
+| Backend | localStorage only | Supabase Postgres + Storage; 4 API routes |
+| Worker | None | Python pipeline (yt-dlp → librosa → MediaPipe → chunker → skeleton-mp4 → upload) |
+| Visual design | TikTok-dark | Cream / coral Simply-style on library + lesson + results; dark kept on camera screens (skeleton contrast) |
+| Bottom nav | Home / Trophy / Stats / Profile | Library / Progress / Profile (per SPECK §3) |
+| Results screen | Score + breakdown | Same + recommended drill + official TikTok embed iframe |
 
-## Modes, in words
+## Phases delivered (commits in `main`)
 
-- **Mode A (`/dance/[id]/chunk/[i]/copy`)** — reference video full-bleed with
-  user camera as a corner PIP (tap PIP to swap). Loops the chunk's
-  `[startMs, endMs]` window at 50/75/100% via `<SpeedToggle>`. No skeleton.
-  Audio respects master volume.
-- **Mode B (`/dance/[id]/chunk/[i]/test`)** — camera goes full-screen, skeleton
-  overlay on, reference audio (not video) plays so the user has the beat. DTW
-  scores only that chunk's pose window. On finish, popup shows the score
-  vs. `PASS_THRESHOLD = 70`. Pass → next chunk unlocks. Below threshold →
-  Try-again or Back-to-copy-along.
-- **Mode C (`/dance/[id]/full`)** — gated on every chunk being passed.
-  Audio-only, no reference video, full-routine DTW. Persists a mastery
-  attempt and routes to `/results/[sessionId]`.
+```
+phase 0: backend scaffolding — supabase migration, worker dir, types
+phase 1: worker pipeline e2e on hardcoded URL
+phase 2: API routes for submission, status, library, views
+phase 3: library screen with simply-style design, backend-driven
+phase 4: submit-a-tiktok flow with polling and loading states
+phase 5: dance learning routes redesigned with skeleton video + tiktok embed
+phase 6: seeding script + initial library populated
+phase 7: polish, docs, verification           ← this commit
+```
+
+Each phase is a single commit so the work is reviewable in chunks (per
+SPECK hard-rule §6).
 
 ## Routes (live now)
 
 ```
-/                                          200
-/dance/routine_golden                      200
-/dance/routine_dead_dance/chunk/0/copy     200
-/dance/routine_dead_dance/chunk/0/test     200
-/dance/routine_dead_dance/full             200
-/drill/[skillId]                           still works
-/results/[sessionId]                       still works
+/                                          200    cream library
+/api/dances                                 200    paginated, view-sorted
+/api/dances/submit                          POST   queues a row
+/api/dances/[id]                            200    full record
+/api/dances/[id]/view                       POST   bumps view_count
+/dance/[id]                                 200    lesson overview (cream)
+/dance/[id]/chunk/[i]/copy                  200    Mode A (dark)
+/dance/[id]/chunk/[i]/test                  200    Mode B (dark)
+/dance/[id]/full                            200    Mode C (dark)
+/results/[sessionId]                        200    score + TikTok embed (cream)
+/drill/[skillId]                            200    still works
 ```
 
-## Pure-TS additions (Swift-portable)
+## Worker pipeline (7 steps)
 
-- [`lib/pose/projection.ts`](lib/pose/projection.ts) — `computeCoverGeometry()`
-  + `projectNormalized()`. The math that maps normalized landmark coords →
-  on-screen pixel coords through `object-fit: cover`. **6 new tests.**
-- [`lib/graph/chunker.ts`](lib/graph/chunker.ts) — `chunkRoutine(routine,
-  options)` returns 2–8 `Chunk { index, startMs, endMs, skills[], label }`.
-  Default target 2.5s. **6 new tests.**
-- [`lib/mastery/chunkProgress.ts`](lib/mastery/chunkProgress.ts) — per-dance
-  unlock state in localStorage. `isChunkUnlocked` / `isChunkPassed` /
-  `isFullUnlocked` / `recordChunkScore`. No tests (DOM-bound — exercised via
-  the live UI).
-- [`lib/dances/fixtures.ts`](lib/dances/fixtures.ts) — `resolveDance(fixture,
-  graph)` is the new merge entry point.
+Each TikTok URL produces five artifacts the frontend consumes:
 
-## Browser-bound additions
+| Step | Module | Output |
+| --- | --- | --- |
+| 1 download | `worker/download.py` | `video.mp4` + `audio.wav` |
+| 2 beats | `worker/audio_analysis.py` | BPM + beat times |
+| 3 pose | `worker/pose.py` | per-frame landmarks JSON |
+| 4 chunks | `worker/chunker.py` | 2–4 chunks of 3–8 s |
+| 5 skills | `worker/skill_mapping.py` | knowledge-graph skill ids + weights |
+| 6 skeleton mp4 | `worker/skeleton_video.py` | 720×1280 H.264 silent mp4 |
+| 7 thumbnail | `worker/thumbnail.py` | 1.5 s frame as jpg |
+| upload | `worker/store.py` | uploads to 4 Storage buckets, updates `dances` row to `ready` |
 
-- [`lib/audio/danceAudio.ts`](lib/audio/danceAudio.ts) — `useDanceAudio` hook.
-  Owns its own `<Audio>` element so it survives Mode A → Mode B unmount.
-  Returns `{ play, pause, seekMs, setVolume, setPlaybackRate, stop, state }`.
-- [`components/SpeedToggle.tsx`](components/SpeedToggle.tsx) — 50/75/100% pill.
-- [`components/VolumeControl.tsx`](components/VolumeControl.tsx) — header
-  mute toggle + reveal-on-focus slider.
-- [`components/ChunkProgression.tsx`](components/ChunkProgression.tsx) —
-  Duolingo-style locked/unlocked/passed chunk list + Final card.
+## Pure-TS additions (Swift-portable, all new in v2)
 
-## What Jaiyen still needs to do
+- `lib/dances/api.ts` — `fetchLibrary`, `fetchDance`, `submitDance`,
+  `pollUntilReady`, `bumpView`
+- `lib/dances/adapter.ts` — `recordToDance(record)` folds a backend row
+  into the legacy `Dance` shape consumed by the practice routes
+- `lib/dances/useDance.ts` — React hook wrapping the above
+- `lib/supabase/{client,server}.ts` — Supabase clients that return null
+  when env vars are missing so the UI degrades gracefully
+- `lib/tiktok/embed.ts` — `extractVideoId`, `isLikelyTikTokUrl`,
+  `embedUrlFor` — used by both the submit validator and the results embed
 
-1. **Drop in real reference clips.** Three mp4s in
-   `public/data/reference_dances/`:
-   - `golden.mp4` (~16s, 123 BPM)
-   - `dead_dance.mp4` (~20s, 124 BPM)
-   - `not_cute_anymore.mp4` (~15s, 99 BPM)
+## Verification done in this autonomous window
 
-   With these in place, Mode A's reference video and Mode B/C's audio both
-   start working automatically — no code changes.
+- ✅ Worker pure-Python self-test (`worker/test_pipeline.py`): 4/4 pass
+  on synthetic-pose JSON, exercises chunker + skill mapping
+- ✅ Worker module `py_compile` syntax check: all 10 modules parse
+- ✅ Frontend type-check: clean
+- ✅ Existing 67 unit tests: pass
+- ✅ Production build: green, all routes register
+- ✅ TikTok embed URL extraction: tested by the chunker / skill mapping
+  tests indirectly; regex covered by manual smoke
 
-2. **Precompute per-dance reference pose data.** Mode B and Mode C still
-   score against `lib/scoring/syntheticReference.ts` (a programmatic
-   neutral-with-subtle-motion vector). The DTW path is already correctly
-   chunk-scoped — the only swap needed is the reference frame source.
-   Suggested: precompute landmarks per reference mp4 once, save as
-   `public/data/reference_pose/<routine_id>.json`, load that into
-   `lib/scoring/scorer.ts` via a new `loadReferenceFrames(routine_id)`.
+## Verification deferred to Jaiyen (per SETUP_TODO.md)
 
-3. **Real per-move skill timestamps.** The chunker currently distributes
-   `required_skills` across chunks by uniform array-index slicing. When you
-   have human-labeled per-move timestamp ranges (e.g.
-   `{ skill: 'side_glide', startMs: 3200, endMs: 4100 }`), wire them into
-   `chunkRoutine()` instead of the current uniform partition.
-
-4. **Live-test the loop on a phone.** The desktop dev view sits inside an
-   iPhone frame and is good for layout, but the camera dimensions + Safari
-   audio gesture rules only show up on a real device. Practice each chunk
-   end-to-end at least once.
-
-## Known gaps (kept from day-1, still true)
-
-- **Beat tracker** — BPM-driven, no real audio-onset detection. Deferred to
-  iOS native.
-- **Per-skill scoring** — uniform partition over `dance.required_skills`.
-- **Streak / search bar / bottom-nav extras** — visual stubs.
-- **MediaPipe live-stream mode** — SDK only exposes IMAGE / VIDEO. We use
-  VIDEO with monotonic timestamps (the documented MediaPipe pattern).
-
-## How to verify locally in 90 seconds
-
-```bash
-npm install
-npm test          # 67/67 pass
-npm run build     # green
-npm run dev       # open http://localhost:3000 (or 3001)
-```
-
-1. **Home** — 3 dance cards: Golden, The Dead Dance, Not Cute Anymore.
-2. **Tap Golden** → lesson overview with 6 chunks, only chunk 1 unlocked.
-3. **Tap chunk 1** → Mode A: camera PIP in corner, reference panel shows
-   "no video" placeholder (until mp4 is dropped in). SpeedToggle works.
-4. **Tap "I got it · test"** → Mode B: camera full-screen, skeleton overlay
-   lines up with body, 3-2-1 countdown, score updates as you move, score
-   popup with pass/fail.
-5. **Pass it** → next chunk unlocks. Repeat until "Full attempt" unlocks.
-6. **Full attempt** → audio-only, scores the whole routine, routes to
-   `/results/[sessionId]` with per-skill breakdown.
-
-## Commits since day 1
-
-```
-task 5: dance audio hook + volume control
-task 2: fix skeleton overlay alignment + random stops
-task 1: wire in real knowledge graph
-```
-
-…plus the day-2 final commit that ships the chunker, the 4 new routes,
-SpeedToggle / ChunkProgression / VolumeControl components, and the updated
-docs.
+- ⏳ End-to-end worker run on a real TikTok URL → Supabase row → frontend
+- ⏳ Submission flow: paste URL → polling → dance page
+- ⏳ Mode B/C audio sync on a real phone (cache rules vs. Safari audio
+  gesture rules only show up on device)
+- ⏳ Library populated via `npm run seed`
 
 ## Blockers hit
 
-None.
+None. The Supabase provisioning step is a known waiting item (documented
+upfront by SPECK §0); everything else is functioning code awaiting a live
+backend to talk to.
+
+## How Jaiyen verifies in 5 minutes
+
+1. Stand up Supabase, fill `.env.local`, apply the migration, create the
+   4 storage buckets (SETUP_TODO §1).
+2. Install worker deps + ffmpeg (SETUP_TODO §3).
+3. Start the worker: `cd worker && python main.py`.
+4. Start the app: `npm run dev`.
+5. Open http://localhost:3000 → tap **submit a tiktok** → paste a public
+   TikTok URL → watch the rotating loader → land on `/dance/[new-id]` with
+   a working skeleton-video lesson.

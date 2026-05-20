@@ -1,26 +1,31 @@
 # Groove — web prototype
 
-iOS-bound app that teaches users to dance TikTok choreography by reading their
-body pose via phone camera and scoring their movement against a reference
-dance. This repo is the web prototype: a stepping stone before native Swift +
-SwiftUI + Apple Vision.
+iOS-bound app that teaches users to dance TikTok choreography. Submit a
+TikTok URL → a Python worker downloads it, extracts per-frame pose with
+MediaPipe, detects beats with librosa, and auto-chunks the routine. The
+frontend plays the worker-generated skeleton mp4 as a copy-along reference,
+scores the user's camera feed against the routine using DTW, and embeds the
+official TikTok on the results screen.
 
-> **Status (2026-05-20, day 2):** real knowledge graph wired in. Practice
-> loop rebuilt as copy-along → test → full attempt (Duolingo-style chunk
-> progression). Reference video files are still placeholders — Jaiyen drops
-> them in next.
+> **Status (2026-05-20, day 3 / v2):** library + submit flow + worker
+> pipeline shipped. End-to-end runtime verification needs Jaiyen to provision
+> Supabase + install Python deps — see [SETUP_TODO.md](SETUP_TODO.md).
 
 ## Stack
 
-- **Next.js 14** (App Router) + TypeScript strict
-- **Tailwind CSS** with a TikTok-y dark palette
-- **MediaPipe Pose Landmarker** via [`@mediapipe/tasks-vision`] for 33-landmark
-  body tracking in-browser (WASM)
+- **Frontend** — Next.js 14 (App Router) + TypeScript strict, Tailwind CSS
+  with a cream Simply-style palette
+- **MediaPipe Pose Landmarker** for browser-side body tracking (WASM, 33
+  landmarks)
+- **Backend** — Supabase Postgres + Storage, served via Next.js API routes
+- **Worker** — Python (yt-dlp, MediaPipe, librosa, OpenCV, ffmpeg) running
+  as a separate process; polls Supabase every 5s for queued submissions
 - **Zod** for runtime validation of the knowledge graph JSON
-- **localStorage** for mastery + chunk-progression persistence — no backend
+- **localStorage** for mastery + chunk progression (per-device, no auth)
 
 Pure-TS modules (`lib/pose`, `lib/scoring`, `lib/graph`, `lib/mastery`,
-`lib/audio`) have zero DOM dependencies; they port to Swift one-for-one.
+`lib/audio`, `lib/tiktok`) have zero DOM dependencies and port to Swift
+one-for-one.
 
 ## Run it
 
@@ -29,128 +34,134 @@ npm install
 npm run dev          # http://localhost:3000
 npm run build        # production build
 npm test             # 67 unit tests
+npm run seed         # populate the library from seed_urls.txt
 ```
 
-The prototype targets phone form factor; on desktop, the layout sits inside
-an iPhone-shaped frame (430×932) so you can see the design as it'll look on
-device. On real mobile the frame disappears and the app is full-bleed.
+Backend setup (one-time):
 
-Camera access requires HTTPS in production. Locally, `localhost` is treated
-as secure so `npm run dev` works without any flags.
+```bash
+# follow SETUP_TODO.md
+# 1. Provision a Supabase project, paste env vars into .env.local
+# 2. Apply supabase/migrations/0001_init.sql
+# 3. Create storage buckets: pose-data, skeleton-videos, audio, thumbnails
+```
 
-## Practice loop (the new shape)
+Worker (one-time):
 
-A dance is taught in three modes that mirror how people actually learn TikTok
-choreography:
+```bash
+brew install ffmpeg            # macOS
+cd worker
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python main.py                 # long-running poller
+# or one-shot:
+python main.py --once <tiktok-url> --local-only --out ./out
+```
 
-| Mode | Route | What it does |
-| --- | --- | --- |
-| **A — copy-along** | `/dance/[id]/chunk/[i]/copy` | Reference video full-bleed, user PIP in corner (Duet-style), audio at 50/75/100% speed. No score. Tap "I got it" → Mode B. |
-| **B — test** | `/dance/[id]/chunk/[i]/test` | Camera full-screen, skeleton overlay, reference audio plays, DTW scores just the chunk's pose window. Pass ≥ 70 → next chunk unlocks. |
-| **C — full attempt** | `/dance/[id]/full` | Unlocked only when every chunk passes. Audio-only, full-routine DTW. Persists a mastery attempt and routes to `/results`. |
-
-`lib/graph/chunker.ts` is the pure-TS module that takes a routine node and
-returns 2–8 `Chunk { startMs, endMs, skills[], label }` segments. Default
-target chunk length: 2.5 seconds.
-
-## Surfaces
+## Routes
 
 | Route | What it does |
 | --- | --- |
-| `/` | Home: greeting, streak (placeholder), 3 dance cards with % ready badges |
-| `/dance/[danceId]` | Lesson overview — Duolingo-style chunk progression path |
-| `/dance/[danceId]/chunk/[i]/copy` | Mode A copy-along |
-| `/dance/[danceId]/chunk/[i]/test` | Mode B scored chunk test |
-| `/dance/[danceId]/full` | Mode C full attempt (gated) |
-| `/results/[sessionId]` | Big score, per-skill breakdown, auto-recommended drill |
-| `/drill/[skillId]` | Timed drill, live effort score, mastery update |
+| `/` | Library: featured dance + trending + recents, submit fab |
+| `/api/dances` | GET — paginated list of ready dances, sorted by views |
+| `/api/dances/submit` | POST — queue a new submission |
+| `/api/dances/:id` | GET — full row incl. status (used by polling) |
+| `/api/dances/:id/view` | POST — increment view_count |
+| `/dance/[id]` | Lesson overview — chunk path + full attempt CTA |
+| `/dance/[id]/chunk/[i]/copy` | Mode A — skeleton mp4 + audio, looped |
+| `/dance/[id]/chunk/[i]/test` | Mode B — camera + skeleton overlay, audio |
+| `/dance/[id]/full` | Mode C — full attempt, audio only |
+| `/results/[sessionId]` | Score + skill breakdown + TikTok embed |
+| `/drill/[skillId]` | Drill an individual skill |
 
-## Architecture quick-glance
+## Practice loop (unchanged from day 2)
+
+| Mode | Where the reference comes from | What's scored |
+| --- | --- | --- |
+| A — copy-along | worker's skeleton mp4 (`skeleton_video_url`) | nothing — just mirror practice |
+| B — test | user camera + skeleton overlay; audio from `audio_url` | chunk-scoped DTW |
+| C — full | audio only | full routine DTW |
+
+Mode A loops the chunk's `[startMs, endMs]` window at 50 / 75 / 100% speed.
+Mode B unlocks the next chunk when score ≥ 70. Mode C requires every chunk
+to have passed.
+
+## Architecture
 
 ```
-app/                  ← Next.js App Router pages (UI)
-components/           ← React components (UI only)
+app/                  ← Next.js App Router pages + /api/ routes
+  api/dances/         ← submit, list, get, view-bump endpoints
+  dance/              ← lesson overview + Mode A/B/C
+  results/            ← scored results + TikTok embed
+
+components/
+  library/            ← Simply-style home (Hero / Trending / Recent / Fab)
+  lesson/             ← ChunkPath, ProcessingState, TikTokEmbed
+  submit/             ← SubmitModal (input → loading → error)
+  (existing)          ← PhoneFrame, SkeletonOverlay, ScoreBreakdown, ...
+
 lib/
-  audio/              ← useDanceAudio hook (browser-only)
-  pose/               ← MediaPipe wrapper + joint-angle + projection math (Swift-portable)
-  scoring/            ← DTW, similarity, scorer, beat tracker (Swift-portable)
-  graph/              ← Schema, Zod loader, chunker, readiness, recommender (Swift-portable)
-  mastery/            ← localStorage-backed EMA mastery + chunk progression (Swift-portable)
-  dances/             ← Hardcoded reference dance fixtures (id + name + artist + video_url only)
+  audio/              ← useDanceAudio hook
+  dances/             ← types, API client, useDance hook, recordToDance
+                        adapter, legacy fixtures (kept for reference)
+  graph/              ← Zod loader, readiness, chunker, recommender
+  mastery/            ← localStorage EMA + chunk progress
+  pose/               ← MediaPipe wrapper + projection + joint angles
+  scoring/            ← DTW + similarity + scorer + beat tracker
+  supabase/           ← browser (anon) + server (service role) clients
+  tiktok/             ← URL regex + embed URL builder
+
+supabase/
+  migrations/         ← 0001_init.sql
+
+worker/
+  main.py             ← polling loop / --once mode
+  pipeline.py         ← 7-step orchestration
+  download / audio_analysis / pose / chunker / skill_mapping /
+  skeleton_video / thumbnail / store
+
 public/data/
-  knowledge_graph.json        ← real 46-node graph (8 Layer-6 routines)
-  reference_dances/*.mp4      ← placeholder media; real footage TBD
-tests/                ← node --test runner via tsx (67 tests)
+  knowledge_graph.json   ← 46-node graph (8 routines × 5 skill layers)
+  reference_dances/      ← legacy mp4s (commented out of UI)
 ```
 
-## Where the data lives
+## Data model
 
-- **Knowledge graph** — `public/data/knowledge_graph.json`. Bare JSON array
-  (no wrapping object); `lib/graph/loader.ts` accepts both this and the legacy
-  `{nodes, version, generated_at}` form.
-- **Dance fixtures** — `lib/dances/fixtures.ts`. Just `{id, name, artist,
-  video_url}`. `id` must equal a Layer-6 routine node id (`routine_*`); the
-  routine's `bpm`, `duration_seconds`, `required_skills`, `skill_weights`
-  are merged in at runtime via `resolveDance(fixture, graph)`.
-- **Mastery** — `lib/mastery/store.ts`. EMA per skill in localStorage.
-- **Chunk progression** — `lib/mastery/chunkProgress.ts`. Per-dance unlock
-  state in localStorage.
-- **Audio** — `lib/audio/danceAudio.ts`. The same mp4 file as the reference
-  video; the browser plays the audio track only when the visual isn't shown.
+Dances live in Supabase Postgres:
 
-## Adding a new reference dance
+```sql
+dances (
+  id uuid PRIMARY KEY,
+  tiktok_url text UNIQUE,
+  status text CHECK (status in ('queued','processing','ready','failed')),
+  title, creator_handle, duration_seconds, bpm,
+  thumbnail_url, pose_data_url, skeleton_video_url, audio_url,
+  chunks_json, required_skills, skill_weights,
+  view_count, low_quality, audio_start_offset_ms,
+  ...
+)
+```
 
-1. The dance must already exist as a Layer-6 `routine_*` node in
-   `public/data/knowledge_graph.json`.
-2. Add a fixture in `lib/dances/fixtures.ts`:
-   ```ts
-   { id: 'routine_your_dance', name: 'Display name', artist: 'Artist',
-     video_url: '/data/reference_dances/your_dance.mp4' }
-   ```
-3. Drop the mp4 at the referenced path. If absent, the lesson page still
-   loads but Mode A shows a "reference video missing" overlay.
+Storage buckets: `pose-data`, `skeleton-videos`, `audio`, `thumbnails`.
 
-## Swapping the knowledge graph
-
-The loader accepts either:
-
-- a bare JSON array (production format from Claude Research), or
-- `{ nodes: [...], version, generated_at }` (legacy / hand-built fixtures).
-
-Just overwrite `public/data/knowledge_graph.json` and reload. The Zod
-validator throws clearly on any schema deviation, with field path and reason.
-If a routine's `id` already matches a `DanceFixture.id`, it'll automatically
-appear in the home library.
+The frontend reads via `GET /api/dances` (list, sorted by views) and
+`GET /api/dances/:id` (poll while queued/processing).
 
 ## Deploy
 
 ```bash
-vercel --prod        # no env vars required
+# Frontend (Vercel)
+vercel --prod
+# Env: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+#      SUPABASE_SERVICE_ROLE_KEY
+
+# Worker (Railway / Fly — see worker/DEPLOY.md)
+cd worker
+fly launch --no-deploy
+fly secrets set SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=…
+fly deploy
 ```
-
-The MediaPipe WASM + model load from CDN (jsdelivr + storage.googleapis.com),
-so the app is fully static. Make sure your deploy URL is HTTPS (Vercel default).
-
-## Known stubs
-
-- **Reference dance footage** — directory has only a README. `golden.mp4`,
-  `dead_dance.mp4`, `not_cute_anymore.mp4` should be ~15–20s chorus loops with
-  audio. Mode A and Mode B/C audio both play from these files.
-- **Pose reference data** — Mode B/C still scores against
-  `lib/scoring/syntheticReference.ts` (a programmatic neutral-with-motion
-  vector sequence). Real per-frame reference pose data per dance should be
-  precomputed once we have footage.
-- **Per-skill score attribution** — the scorer partitions beats uniformly
-  across `dance.required_skills`. Real choreography labels with per-move
-  timestamp ranges should replace this partition strategy.
-- **Beat tracker** — BPM-driven (hardcoded per routine node). Real-time onset
-  detection deferred to iOS native.
-
-See [DECISIONS.md](DECISIONS.md) for the full tradeoff log and
-[OVERNIGHT_SUMMARY.md](OVERNIGHT_SUMMARY.md) for current status / next steps.
 
 ## License
 
-Private prototype. Don't redistribute reference dance footage.
-
-[`@mediapipe/tasks-vision`]: https://www.npmjs.com/package/@mediapipe/tasks-vision
+Private prototype. Don't redistribute reference TikTok footage.
