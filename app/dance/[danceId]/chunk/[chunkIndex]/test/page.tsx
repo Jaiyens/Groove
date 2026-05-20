@@ -8,7 +8,7 @@
 // On finish: score popup. If >= PASS_THRESHOLD → unlock next chunk and offer
 // next-chunk CTA; else offer try-again / back-to-copy.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import BackHomeButton from '@/components/BackHomeButton';
@@ -16,10 +16,7 @@ import CorrectionToast from '@/components/CorrectionToast';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
-import { getDance } from '@/lib/dances/fixtures';
-import { useGraph } from '@/lib/graph/context';
-import { chunkRoutine, type Chunk } from '@/lib/graph/chunker';
-import { isRoutineNode } from '@/lib/graph/types';
+import { useDance } from '@/lib/dances/useDance';
 import {
   PASS_THRESHOLD,
   recordChunkScore,
@@ -53,23 +50,8 @@ interface PageProps {
 
 export default function TestPage({ params }: PageProps) {
   const router = useRouter();
-  const { graph } = useGraph();
   const chunkIndex = Number(params.chunkIndex);
-
-  const dance = useMemo(
-    () => (graph ? getDance(params.danceId, graph) : undefined),
-    [graph, params.danceId],
-  );
-
-  const chunks = useMemo<Chunk[]>(() => {
-    if (!graph || !dance) return [];
-    const node = graph.nodes.find((n) => n.id === dance.id);
-    if (!node || !isRoutineNode(node)) return [];
-    return chunkRoutine(node, {
-      nameOf: (id) => graph.nodes.find((n) => n.id === id)?.name,
-    });
-  }, [graph, dance]);
-
+  const { loading, notFound, dance, chunks } = useDance(params.danceId);
   const chunk = chunks[chunkIndex];
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -93,7 +75,7 @@ export default function TestPage({ params }: PageProps) {
   const [unlockedNext, setUnlockedNext] = useState(false);
   const [volume, setVolume] = useState(1);
 
-  const audio = useDanceAudio(dance?.video_url ?? null, {
+  const audio = useDanceAudio(dance?.audio_url ?? null, {
     initialVolume: volume,
     loop: false,
   });
@@ -288,10 +270,12 @@ export default function TestPage({ params }: PageProps) {
   );
 
   useEffect(() => {
-    if (graph && (!dance || !chunk)) router.replace(`/dance/${params.danceId}`);
-  }, [graph, dance, chunk, router, params.danceId]);
+    if (!loading && (notFound || (dance && !chunk))) {
+      router.replace(`/dance/${params.danceId}`);
+    }
+  }, [loading, notFound, dance, chunk, router, params.danceId]);
 
-  if (!graph || !dance || !chunk) {
+  if (loading || !dance || !chunk) {
     return (
       <main className="flex h-full items-center justify-center text-text-muted">
         Loading…

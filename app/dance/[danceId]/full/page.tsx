@@ -4,7 +4,7 @@
 // No reference video; audio plays. Full DTW scoring over the entire routine.
 // On finish: persist a mastery attempt and route to /results/[sessionId].
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import BackHomeButton from '@/components/BackHomeButton';
@@ -14,10 +14,8 @@ import ProgressBar from '@/components/ProgressBar';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
-import { getDance } from '@/lib/dances/fixtures';
+import { useDance } from '@/lib/dances/useDance';
 import { useGraph } from '@/lib/graph/context';
-import { chunkRoutine, type Chunk } from '@/lib/graph/chunker';
-import { isRoutineNode } from '@/lib/graph/types';
 import { isFullUnlocked } from '@/lib/mastery/chunkProgress';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
@@ -48,21 +46,12 @@ interface PageProps {
 
 export default function FullAttemptPage({ params }: PageProps) {
   const router = useRouter();
-  const { graph, bumpMastery } = useGraph();
+  const { bumpMastery } = useGraph();
+  const { loading, notFound, dance, chunks } = useDance(params.danceId);
 
-  const dance = useMemo(
-    () => (graph ? getDance(params.danceId, graph) : undefined),
-    [graph, params.danceId],
-  );
-
-  const chunks = useMemo<Chunk[]>(() => {
-    if (!graph || !dance) return [];
-    const node = graph.nodes.find((n) => n.id === dance.id);
-    if (!node || !isRoutineNode(node)) return [];
-    return chunkRoutine(node, {
-      nameOf: (id) => graph.nodes.find((n) => n.id === id)?.name,
-    });
-  }, [graph, dance]);
+  useEffect(() => {
+    if (!loading && notFound) router.replace('/');
+  }, [loading, notFound, router]);
 
   // Gate: Mode C requires every chunk to have been passed.
   const [gateChecked, setGateChecked] = useState(false);
@@ -94,7 +83,7 @@ export default function FullAttemptPage({ params }: PageProps) {
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
   const [volume, setVolume] = useState(1);
 
-  const audio = useDanceAudio(dance?.video_url ?? null, { initialVolume: volume });
+  const audio = useDanceAudio(dance?.audio_url ?? null, { initialVolume: volume });
   useEffect(() => {
     audio.setVolume(volume);
   }, [audio, volume]);
@@ -273,7 +262,7 @@ export default function FullAttemptPage({ params }: PageProps) {
     [audio],
   );
 
-  if (!graph || !dance) {
+  if (loading || !dance) {
     return (
       <main className="flex h-full items-center justify-center text-text-muted">
         Loading…
