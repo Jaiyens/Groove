@@ -131,3 +131,47 @@ The bottom area is dense (CTA + speed toggle + chunk progress) and a volume slid
 
 Tap the PIP to swap roles (camera becomes full-bleed, reference becomes PIP). Implemented as a state toggle; the active element gets `inset-x-3 top-3 h-2/3` instead of `right-3 bottom-24 h-40 w-28`. No separate "swap" button — the entire PIP is the affordance, which matches TikTok Duet behaviour.
 
+---
+
+# v2 changes (backend + Simply redesign, 2026-05-20)
+
+## Phase 0: `.env.local` not present at start — graceful fallback
+
+SPECK.md §Phase 0 says: "If `.env.local` doesn't exist yet, write a `SETUP_TODO.md` with step-by-step instructions for Jaiyen and pause work on phases that require the backend." **Decision**: do that, and additionally write all code that *doesn't* require the backend to be live (worker pipeline, API routes, frontend redesign). End-to-end runtime verification (Phase 1) is documented as a follow-up for Jaiyen — see `SETUP_TODO.md` §4. The alternative — refusing to build anything else until Supabase exists — would have wasted the autonomous window on a setup step only Jaiyen can complete.
+
+## Worker: single-process polling, not queue + broker
+
+The spec offered Postgres NOTIFY, a queue, or polling. **Decision**: 5-second polling against `status='queued'`. Reasons: (a) only 1 worker process at a time is realistic at this scale, (b) Supabase free tier doesn't expose LISTEN/NOTIFY over the REST API anyway, (c) optimistic update (`update … where status='queued'`) gives us atomic claim semantics without a queue. Tradeoff: up to 5s submit→start latency. Acceptable for the demo.
+
+## Worker: pose JSON ships raw, not as a binary protobuf
+
+A MediaPipe pose JSON for a 15s @ 30fps clip is ~1.5 MB uncompressed. Supabase Storage gzip-compresses on the fly when `content-encoding: gzip` is set, so cost is fine. **Decision**: keep the JSON shape readable so the frontend can `fetch().json()` it directly into the existing `lib/scoring/scorer.ts`. Binary encoding can come later if storage costs balloon.
+
+## Worker: audio uploaded as wav, not mp3
+
+The pipeline already produces a 22 kHz mono wav for librosa. Re-encoding to mp3 saves bandwidth but adds ffmpeg latency and a transient artifact. **Decision**: upload the wav. ~700 KB for 15s. The browser plays wav fine via the `<audio>` element. Revisit when we exceed 100 dances.
+
+## Worker: skeleton video at 720×1280 (portrait)
+
+TikToks are vertical. The skeleton mp4 is rendered at 720×1280 to match. H.264 + `+faststart` for inline browser playback. Frames missing pose data render as solid black — same length as the source clip so audio sync stays straightforward.
+
+## Worker: skill mapping is heuristic, not learned
+
+Spec acknowledges "v1 can be approximate — check which gross movement patterns occur". **Decision**: 5 simple range-based features (hip_x, shoulder_y, wrist_xy, ankle_x, combined) map to 6 knowledge-graph skills (`posture_alignment`, `weight_shift_basic`, `shoulder_isolation`, `hip_isolation`, `two_step`, `body_roll`, `arm_wave`). Thresholds are empirical guesses. The output goes into `dances.skill_weights` so the existing readiness math just works.
+
+## Worker: `audio_start_offset_ms` left at 0 for v1
+
+Spec calls out "audio sync is critical, must record the exact `audio_start_offset_ms`". For a yt-dlp download where video and audio are extracted from the same source, the offset *is* 0. The field stays on the schema so we can populate it later if we move to a pipeline that records video and audio separately.
+
+## TikTok embed: regex-only ID extraction, no HEAD redirect at submission
+
+Spec mentions `vm.tiktok.com` short URLs need a HEAD request to resolve. **Decision**: do the redirect resolution in the worker (yt-dlp does this for free), not in the submission API. The submission API only validates that the URL has a tiktok.com host. The full URL is stored as-is; the canonical URL comes back in the worker's `info.json` if we ever need it.
+
+## Frontend palette + typography: Simply Sing inspiration
+
+`#FAF6F0` cream background, `#E27A56` warm coral accent, `#5B7F8C` muted blue-grey secondary, `#1A1714` near-black text. Display font: system serif fallback (no remote font fetch on first render). Tailwind tokens added under `theme.extend.colors.cream` etc. — the existing dark-palette tokens are kept so the practice routes (Mode B/C camera screens) can stay dark, where black is correct for skeleton overlay contrast.
+
+## Fixtures: commented out, not deleted
+
+Per spec hard-rule §3 ("do NOT delete the existing fixtures file"). `lib/dances/fixtures.ts` keeps the 3 routine fixtures as a commented block. The home page reads from the API; if Supabase isn't configured, the page surfaces an empty state with the "submit your first tiktok" CTA rather than silently falling back. This keeps the data flow honest.
+

@@ -1,405 +1,235 @@
-# Groove web prototype, overnight build
+#  v2 — Groove with URL submission, backend, and Simply-style library
 
-You are building the web prototype of **Groove**, an iOS-bound app that teaches users to dance TikTok choreography by using their phone camera to detect body pose and scoring their movement against a reference dance.
+## Read this first
 
-This is an overnight unattended build. Work autonomously. Make sensible decisions when unspecified. Document every decision you make in `DECISIONS.md`. If you genuinely cannot proceed, write the blocker to `BLOCKERS.md` and continue on the next task.
+This is a major architectural change. Read the existing `spec.md`, `DECISIONS.md`, and `OVERNIGHT_SUMMARY.md` in full before doing anything. Most of what was built last night stays. The pure-TS math layer, the knowledge graph + loader, the mastery store, the chunk-based Mode A/B/C practice loop — all of those remain.
 
----
+What changes:
+1. The library becomes a backend-served database instead of hardcoded fixtures
+2. A "submit a TikTok URL" flow is added as a first-class feature
+3. A Python worker service handles video download + pose extraction
+4. Mode A (copy-along) uses a generated skeleton-only video instead of the real video
+5. Mode B and Mode C (scored attempts) use TikTok's official embed for playback
+6. The visual design gets a "Simply Sing / Simply Piano" aesthetic pass
 
-## Context you must respect
-
-1. **A knowledge graph of ~60 dance skills is being generated separately via Claude Research and will be available tomorrow morning as `knowledge_graph.json`.** You do NOT have it tonight. DO NOT invent dance skills or pedagogy. DO NOT hardcode a skill tree. Build everything to consume the graph from a typed interface, with a stub fixture in place. When the real graph arrives, swapping the stub for the real file should be a one-line change.
-
-2. **The web prototype is a stepping stone to iOS native (Swift + SwiftUI + Apple Vision 3D body pose).** Architect with portability in mind: keep DTW scoring, joint-angle math, and graph logic in pure TypeScript modules with no DOM dependencies, so they translate directly to Swift later. UI code can be web-specific.
-
-3. **The product shape is locked. Do not deviate.**
-   - Open app → library of trending TikTok dances
-   - Pick one → camera on, skeleton overlay on user, reference dancer in corner
-   - Live sync score updates every beat
-   - Results screen shows per-move breakdown, weak move auto-becomes a 90s drill
-   - Tap-loop between dance and drill
-
-4. **Visual language: dark mode, TikTok-native aesthetic, iPhone format (max-width 430px, mobile-first).** Reference: PushUp Time, Pushscroll, STEEZY, Duolingo. Black backgrounds, bold sans-serif, big numbers for scores, single-purpose screens, full-bleed camera view in the practice screen.
+Work autonomously. Commit after each numbered phase. Update DECISIONS.md as you go. Write BLOCKERS.md if anything truly stops you.
 
 ---
 
-## Stack
+## The new architecture
 
-- **Next.js 14+ with App Router**, TypeScript strict mode
-- **Tailwind CSS** for styling
-- **MediaPipe Pose Landmarker** (`@mediapipe/tasks-vision`) for pose extraction in browser via WASM
-- **No external state management** — React Context + useReducer is sufficient
-- **localStorage** for mastery tracking persistence (no backend yet)
-- **Vercel deployment** ready — no env vars required for v1
+### Frontend (existing Next.js app, redesigned)
+- Library screen with backend-fetched dances + "submit a TikTok" CTA
+- Submission flow: paste URL → polling loading state → dance appears in library
+- Existing dance/chunk/copy/test/full routes mostly unchanged but with new visual design
+- All consuming the API layer instead of fixtures
 
----
+### Backend
+- **API layer:** Next.js API routes (in the existing app under `/app/api/`)
+- **Database:** Supabase Postgres (free tier is fine for now)
+- **Storage:** Supabase Storage for pose JSON blobs and the generated skeleton videos
+- **Worker service:** Separate Python service on a Railway or Fly.io instance for the heavy work (yt-dlp + MediaPipe + ffmpeg). Frontend talks to API → API queues a job → Worker picks it up → Worker writes results to Supabase → Frontend polls API until ready.
 
-## Repo structure (build this exactly)
+If Railway/Fly setup is too involved for tonight, fall back to running the worker as a Vercel Edge Function with extended timeouts, or as a long-running Python process Jaiyen can run locally for the demo. Document the tradeoff in DECISIONS.md.
 
-```
-groove-web/
-├── app/
-│   ├── layout.tsx                  # Root layout, dark mode default, viewport meta
-│   ├── page.tsx                    # Home / dance library screen
-│   ├── practice/[danceId]/page.tsx # Live practice screen with camera
-│   ├── results/[sessionId]/page.tsx# Results screen
-│   ├── drill/[skillId]/page.tsx    # Skill drill screen
-│   └── globals.css                 # Tailwind imports + CSS vars
-├── components/
-│   ├── DanceCard.tsx               # Card showing a dance + % ready
-│   ├── SkeletonOverlay.tsx         # Renders pose landmarks on canvas
-│   ├── ReferenceVideo.tsx          # Picture-in-picture reference dance video
-│   ├── LiveScore.tsx               # Big number score readout
-│   ├── CorrectionToast.tsx         # "Left elbow higher" style hints
-│   ├── ProgressBar.tsx             # Beat progress along the dance
-│   ├── ScoreBreakdown.tsx          # Per-move score bars (body roll 94, etc.)
-│   ├── BottomNav.tsx               # Home / Trophy / Stats / Profile
-│   └── PhoneFrame.tsx              # iPhone bezel for desktop development view
-├── lib/
-│   ├── pose/
-│   │   ├── poseExtractor.ts        # MediaPipe wrapper, returns landmarks per frame
-│   │   ├── jointAngles.ts          # Convert landmarks to joint-angle vectors
-│   │   └── types.ts                # PoseLandmark, JointAngleVector types
-│   ├── scoring/
-│   │   ├── dtw.ts                  # Dynamic Time Warping, pure function
-│   │   ├── similarity.ts           # Cosine similarity on joint-angle vectors
-│   │   ├── scorer.ts               # End-to-end: user frames + reference → 0-100 score
-│   │   └── beatTracker.ts          # Audio analysis for beat detection (use Web Audio API)
-│   ├── graph/
-│   │   ├── types.ts                # SkillNode, KnowledgeGraph interfaces matching the schema below
-│   │   ├── loader.ts               # Load + validate graph JSON (Zod schema)
-│   │   ├── recommender.ts          # Given mastery scores, pick next drill
-│   │   └── readiness.ts            # Compute "% ready" for a dance given current mastery
-│   ├── mastery/
-│   │   ├── store.ts                # localStorage-backed mastery tracker
-│   │   └── types.ts                # MasteryRecord, AttemptRecord
-│   └── dances/
-│       ├── fixtures.ts             # 3 hardcoded reference dances with placeholder skill IDs
-│       └── types.ts                # Dance, DanceMetadata
-├── public/
-│   ├── data/
-│   │   ├── knowledge_graph.json    # STUB: paste real graph here tomorrow morning
-│   │   └── reference_dances/       # 3 placeholder mp4 files (use any short clip)
-│   └── pose-models/                # MediaPipe model files cached locally
-├── DECISIONS.md                    # You write this as you go
-├── BLOCKERS.md                     # You write this if anything truly blocks you
-├── README.md                       # How to run, deploy, and swap in the real graph
-└── package.json
+### Data model (Supabase Postgres)
+
+```sql
+-- dances table
+create table dances (
+  id uuid primary key default gen_random_uuid(),
+  tiktok_url text unique not null,
+  title text,
+  creator_handle text,
+  duration_seconds float,
+  bpm float,
+  status text not null check (status in ('queued', 'processing', 'ready', 'failed')),
+  error_message text,
+  thumbnail_url text,
+  pose_data_url text,  -- supabase storage URL for the pose JSON
+  skeleton_video_url text, -- supabase storage URL for the generated skeleton mp4
+  chunks_json jsonb, -- the auto-detected chunk boundaries
+  required_skills jsonb, -- which skills from the knowledge graph this dance uses
+  skill_weights jsonb,
+  submitted_by_session_id text, -- anonymous session id for credit
+  view_count int default 0,
+  created_at timestamptz default now(),
+  ready_at timestamptz
+);
+
+-- index for the library query
+create index dances_ready_view_count_idx on dances(status, view_count desc) where status = 'ready';
 ```
 
----
+### Worker pipeline (Python)
 
-## The knowledge graph schema (use exactly this for the stub and the type definitions)
+When a TikTok URL is submitted, the worker does this end to end:
 
-```typescript
-// lib/graph/types.ts
+1. **Download:** `yt-dlp` against the URL, save mp4 + extract audio
+2. **Beat detection:** `librosa.beat.beat_track` on the audio to get beat timestamps and BPM
+3. **Pose extraction:** MediaPipe Pose Landmarker on every frame of the video. Save the resulting per-frame landmarks as a JSON array.
+4. **Auto-chunking:** Combine beat boundaries + pose-velocity peaks to find natural section breaks. Target 2-4 chunks per dance, each 3-8 seconds long. Algorithm: compute total joint angular velocity per frame, smooth with a 0.5s window, find local minima that align with beat boundaries, split there.
+5. **Skill mapping:** For each chunk, identify which skills from `knowledge_graph.json` are present using the success criterion thresholds. (For v1, this can be approximate — just check which gross movement patterns occur.)
+6. **Skeleton video generation:** Render an mp4 of just the skeleton dancing (white skeleton on black background) using ffmpeg + matplotlib or OpenCV. Same duration as the original, no audio. This is what Mode A plays back at slow speed.
+7. **Thumbnail:** Extract a single frame from the video as a jpg, save as thumbnail.
+8. **Write results to Supabase:** Upload pose JSON + skeleton video to Storage, update the `dances` row with all the metadata, set status to 'ready'.
 
-export type SkillCategory =
-  | 'foundation'
-  | 'isolation'
-  | 'travel'
-  | 'combo'
-  | 'vocabulary'
-  | 'routine';
+If any step fails, set status to 'failed' with the error_message and notify the frontend.
 
-export interface SkillNode {
-  id: string;                              // snake_case unique id
-  name: string;                            // human readable
-  layer: 1 | 2 | 3 | 4 | 5 | 6;
-  category: SkillCategory;
-  description: string;
-  prerequisites: string[];                 // ids of prerequisite nodes
-  measurable_success_criterion: string;    // geometric rule using joint landmarks
-  drill_description: string;
-  drill_duration_seconds: number;
-  mastery_threshold: string;
-  common_mistakes: string[];
-  sources: string[];
-}
+### API routes (Next.js)
 
-export interface RoutineNode extends SkillNode {
-  layer: 6;
-  category: 'routine';
-  bpm: number;
-  duration_seconds: number;
-  required_skills: string[];               // ordered, from layers 1-5
-  skill_weights: Record<string, number>;   // node_id -> weight 0-1
-}
-
-export type KnowledgeGraph = {
-  nodes: (SkillNode | RoutineNode)[];
-  version: string;
-  generated_at: string;
-};
-```
-
-Write a Zod schema in `lib/graph/loader.ts` that validates this exact shape and throws clearly if the real graph has any deviation tomorrow.
+- `POST /api/dances/submit` — body: `{ tiktok_url }`. Validates URL, inserts a row with status='queued', returns the dance ID. Notifies the worker (via a Supabase Postgres NOTIFY, or a simple polling pattern, or a Vercel cron).
+- `GET /api/dances/:id` — returns the full dance record including status. Frontend polls this for the loading state.
+- `GET /api/dances` — returns paginated library, sorted by `view_count desc`, status='ready'. Supports optional `?seed=true` to return just the seeded dances.
+- `POST /api/dances/:id/view` — increments view_count when someone opens a dance to learn it.
 
 ---
 
-## Stub knowledge graph (use this as `public/data/knowledge_graph.json` tonight)
+## Phases
 
-Create a minimal stub graph with ~8 nodes (2 foundations, 2 isolations, 1 travel, 1 combo, 1 vocabulary, 1 routine) so the UI has real data to render. Use plausible placeholder names. Mark every node with `"sources": ["STUB - replace with real graph"]` so it is unmistakable that these are placeholders. This stub must be DELETED tomorrow when the real graph drops in.
+### Phase 0: Setup (do this first, do not skip)
 
-Stub example for one node:
+1. Set up a Supabase project (Jaiyen will need to do this and paste the URL + anon key into `.env.local`). The Claude Code session can read the project ID from `.env.local` and use the Supabase CLI to apply migrations. If `.env.local` doesn't exist yet, write a `SETUP_TODO.md` with step-by-step instructions for Jaiyen and pause work on phases that require the backend.
 
-```json
-{
-  "id": "stub_chest_isolation",
-  "name": "Chest isolation",
-  "layer": 2,
-  "category": "isolation",
-  "description": "STUB placeholder for chest isolation skill.",
-  "prerequisites": ["stub_posture"],
-  "measurable_success_criterion": "STUB - chest landmark moves >0.04m forward of root while shoulders stay within 0.02m baseline",
-  "drill_description": "STUB drill",
-  "drill_duration_seconds": 60,
-  "mastery_threshold": "80% across 3 attempts",
-  "common_mistakes": ["STUB"],
-  "sources": ["STUB - replace with real graph"]
-}
-```
+2. Install dependencies:
+   - Frontend: `@supabase/supabase-js`
+   - Worker: Python with `yt-dlp`, `mediapipe`, `librosa`, `opencv-python`, `ffmpeg-python`, `supabase` (Python client)
 
----
+3. Apply the database migration above. Confirm tables exist.
 
-## Core modules in detail
+4. Initialize the worker service in a new directory `worker/` with a `requirements.txt`, a `main.py` that polls for queued dances, and a `Dockerfile` for deployment.
 
-### 1. Pose extraction (`lib/pose/poseExtractor.ts`)
+### Phase 1: Worker pipeline (build this before the frontend changes)
 
-Wrap MediaPipe Pose Landmarker. Expose a single class `PoseExtractor` with methods:
-- `async init(): Promise<void>` — load the WASM and model files from CDN
-- `detectFromVideo(video: HTMLVideoElement, timestampMs: number): PoseResult | null`
-- `detectFromImage(image: HTMLImageElement): PoseResult | null`
+Build the worker end to end on a single test TikTok URL before touching the UI. The worker should:
 
-`PoseResult` should contain the 33 landmarks (x, y, z, visibility) in both normalized image coords AND world coords.
+1. Accept a URL (for testing, just hardcode one)
+2. Download via yt-dlp
+3. Run pose extraction on every frame
+4. Detect beats and chunks
+5. Generate the skeleton video
+6. Write everything to Supabase Storage + Postgres
 
-Use the live-stream running mode for camera and video running mode for reference clips.
+Verify by running it locally and confirming the resulting dance row in Supabase has all fields populated and the storage URLs resolve.
 
-### 2. Joint angles (`lib/pose/jointAngles.ts`)
+Commit: "phase 1: worker pipeline e2e on hardcoded URL"
 
-Convert 33 raw landmarks into a fixed-length vector of joint angles. Compute at minimum:
-- Left and right elbow angle (shoulder-elbow-wrist)
-- Left and right shoulder angle (hip-shoulder-elbow)
-- Left and right hip angle (shoulder-hip-knee)
-- Left and right knee angle (hip-knee-ankle)
-- Torso lean (vertical reference to spine midline)
-- Hip rotation around y-axis
-- Chest forward displacement (z-distance from chest landmark to hip midpoint)
+### Phase 2: API routes
 
-Return as a typed `JointAngleVector` (a Record<JointName, number> or a fixed-length array — pick whichever serializes cleaner).
+Build the 4 API routes above. Test each with curl. Make sure:
+- `POST /api/dances/submit` actually triggers the worker (whether via polling or notify)
+- `GET /api/dances/:id` returns status transitions correctly as the worker processes
+- `GET /api/dances` returns the library sorted by views
 
-This module must be pure TypeScript with NO browser dependencies. It will be ported to Swift.
+Commit: "phase 2: API routes for submission, status, library, views"
 
-### 3. DTW (`lib/scoring/dtw.ts`)
+### Phase 3: Library screen redesign
 
-Implement FastDTW for sequence alignment of two arrays of `JointAngleVector`. Reference the standard algorithm — do not invent. The function signature:
+Replace the current home screen with a Simply-style library. Reference aesthetic:
 
-```typescript
-export function dtw(
-  user: JointAngleVector[],
-  reference: JointAngleVector[],
-  windowSize?: number
-): {
-  cost: number;
-  path: Array<[number, number]>; // (userIdx, refIdx) pairs
-};
-```
+- **Light mode by default** (cream/warm background, not the dark mode we built)
+- **Color palette:** background `#FAF6F0`, primary text `#1A1714`, accent `#E27A56` (warm coral), secondary `#5B7F8C` (muted blue-grey)
+- **Typography:** big, readable serif or rounded sans for headlines (Fraunces, DM Serif, or similar); clean sans for body
+- **Cards:** rounded, generous padding, soft shadow, thumbnail image is the dominant element, title underneath
+- **Spacing:** very intentional. Lots of whitespace. Cards take up real estate.
+- **No emoji placeholders.** Use actual thumbnail images from the dance metadata.
 
-Use a constraint window (Sakoe-Chiba band) of ~10% of sequence length to keep it real-time. Use Euclidean distance over the joint-angle vector as the local cost.
+Structure:
+- Top: app name "Groove" in big friendly type, small subtitle "learn any tiktok dance"
+- Hero card: featured dance (the most-viewed one), large rounded image, title, "tap to learn" CTA
+- Section header: "trending" — horizontal scroll of 5-8 dance cards
+- Section header: "new to the library" — vertical grid of recently-added dances
+- Floating CTA at the bottom: "submit a tiktok" — big rounded button, accent color
+- Bottom nav: Library (active), Progress, Profile
 
-### 4. Scoring (`lib/scoring/scorer.ts`)
+Data source: `GET /api/dances`. If the API is empty, show a Simply-style empty state with a big "submit your first tiktok" CTA.
 
-Given DTW-aligned frame pairs, compute a 0-100 score per beat using:
+Commit: "phase 3: library screen with simply-style design, backend-driven"
 
-```
-similarity = cosineSimilarity(userVector, refVector)  // 0 to 1
-frame_score = 100 * exp(-(1 - similarity) * 5)        // exponential decay, gentle
-```
+### Phase 4: Submit flow
 
-Then aggregate frame_scores per beat (group frames by which beat they fall into using the beat tracker output), and aggregate beat_scores into a final dance score.
+Build the submission flow as a modal or full-screen overlay over the library:
 
-Also expose a `correctionHint(frame)` function that returns a human-readable hint when a specific joint deviates significantly: e.g. "left elbow lower" or "you are a beat behind."
+1. Tap "submit a tiktok" → modal opens with a big text input "paste a tiktok link"
+2. User pastes URL, taps submit
+3. API call to `/api/dances/submit`, modal switches to a loading state with a friendly animation ("scanning the moves...", "finding the beat...", "breaking it into pieces..." — 3 status messages that rotate)
+4. Poll `/api/dances/:id` every 2 seconds. When status='ready', the modal closes and the user is taken directly to `/dance/[newId]`. When status='failed', show an error with the message and a "try a different link" CTA.
 
-### 5. Beat tracker (`lib/scoring/beatTracker.ts`)
+For day 1, if the loading is going to take 30-60 seconds, that's fine — the loading screen should feel intentional and reassuring, not slow.
 
-Use Web Audio API (`AudioContext`, `AnalyserNode`) to do real-time onset detection on the reference dance audio. For v1, allow a hardcoded BPM per reference dance fixture (the trending TikTok dances have known BPMs). The beat tracker should:
-- Take a BPM and an audio start timestamp
-- Emit beat events synchronously with audio playback
-- Provide a function `getCurrentBeat(audioCurrentTime: number): number`
+Commit: "phase 4: submit-a-tiktok flow with polling and loading states"
 
-### 6. Recommender (`lib/graph/recommender.ts`)
+### Phase 5: Dance learning route redesign
 
-Given a `KnowledgeGraph` and a `MasteryStore`, pick the next drill after a dance attempt:
-- For the dance just attempted, identify the lowest-mastery `required_skills`
-- Weight by `skill_weights` from the routine node
-- Return the top 1 skill to drill, along with the routine's drill_description
+The existing `/dance/[id]`, `/dance/[id]/chunk/[i]/copy`, `/dance/[id]/chunk/[i]/test`, `/dance/[id]/full` routes get a visual refresh in the same Simply style, and three functional changes:
 
-### 7. Readiness (`lib/graph/readiness.ts`)
+1. **Mode A (copy):** the reference video shown is now the GENERATED SKELETON VIDEO (`skeleton_video_url` from the dance record). Plays at the user's chosen speed (50/75/100%). Looping the chunk. No actual TikTok video here.
 
-For each routine node, compute a `% ready` integer 0-100:
-- For each required skill, get current mastery from the store (0-1)
-- Weighted average using `skill_weights`
-- Return rounded int
+2. **Mode B (test):** the camera goes full screen with skeleton overlay (existing behavior). The reference dance's AUDIO plays in the background. The audio source is also from the worker's output — the worker should have saved an audio-only mp3 to Supabase Storage. (Add this to the worker pipeline.)
 
-This drives the "% ready" badge on each dance card on the home screen.
+3. **Mode C (full):** same as Mode B but with the full dance, all chunks chained. After the user completes, results screen shows. Then, on the results screen, BELOW the score, embed the official TikTok using the official TikTok embed iframe so users can see the original. This satisfies the "watch the real thing" desire without us hosting the video.
 
-### 8. Mastery store (`lib/mastery/store.ts`)
+The chunk progression visual on `/dance/[id]` should look like Simply Piano's lesson tree — rounded nodes with locked/unlocked/mastered states, connecting lines, very deliberate.
 
-localStorage-backed. API:
-- `recordAttempt(danceId, perSkillScores: Record<skillId, score>)`
-- `getMastery(skillId): number` (0-1, EMA over recent attempts)
-- `getAllMastery(): Record<skillId, number>`
-- `exportAsJSON()` / `importFromJSON()` for debugging
+Commit: "phase 5: dance learning routes redesigned with skeleton video + tiktok embed"
 
-Use exponential moving average with alpha=0.4 so recent attempts weight more than old ones.
+### Phase 6: Day 1 seeding
+
+Jaiyen will provide ~10-20 TikTok URLs to seed the library plus the 8 routines from the knowledge graph. For the 8 graph routines, the URLs are already in the `sources` field of each routine node. For Jaiyen's picks, he'll paste them.
+
+Write a script `scripts/seed_library.ts` that:
+1. Reads a list of URLs from `seed_urls.txt`
+2. Calls `POST /api/dances/submit` on each
+3. Polls until all are ready
+4. Logs success/failure for each
+
+Run it once to populate. After that, the library is alive.
+
+Commit: "phase 6: seeding script + initial library populated"
+
+### Phase 7: Polish
+
+- Verify all 67 tests still pass after the refactor
+- Fix any responsive design issues on mobile
+- Verify the production build succeeds
+- Update README with deployment instructions (Supabase setup, env vars, worker deploy)
+- Update OVERNIGHT_SUMMARY.md with final state
+
+Commit: "phase 7: polish, docs, verification"
 
 ---
 
-## UI screens to build
+## Critical implementation notes
 
-Match the iPhone-format mockups. Dark mode. Mobile-first (max-width 430px container).
+1. **Mobile is the only target.** Don't worry about desktop layout beyond the existing PhoneFrame component. The user is on their phone.
 
-### Home screen (`app/page.tsx`)
+2. **The seed dances might NOT have perfect pose tracking.** Some TikTok dances have the dancer too far from the camera, or with cluttered backgrounds. The worker should mark these with a `low_quality` flag and the frontend should warn the user. Don't try to filter them out automatically — let the user decide if they want to learn from a low-quality reference.
 
-- Top: greeting + streak counter (placeholder streak = 7)
-- Search bar that says "paste a tiktok or search" (non-functional, just visual)
-- Featured dance card (trending) with gradient bg
-- "For You" section with 3-5 dance cards, each showing % ready badge
-- Bottom nav: Home (active), Trophy, Stats, Profile
+3. **Audio sync is critical.** Mode B/C will fail if the audio is even 100ms off from when the camera starts. The worker must record the exact `audio_start_offset_ms` from the original video so the frontend can sync.
 
-### Practice screen (`app/practice/[danceId]/page.tsx`)
+4. **Skeleton video generation is the riskiest step.** If matplotlib + ffmpeg is slow or produces ugly results, fall back to rendering it client-side from the pose JSON using Canvas (no server file at all). Document the choice in DECISIONS.md.
 
-- Top: progress bar showing beat position in dance, X button to exit
-- Center: full-bleed camera view with skeleton overlay drawn on canvas
-- Top-right of camera: small picture-in-picture reference video
-- Top-left of camera: correction toast (e.g. "left elbow higher") when scoring detects a deviation > threshold
-- Bottom of camera: small LIVE indicator pill
-- Below camera: big sync score number (0-100, updates per beat), delta vs last attempt
-- Bottom: rewind, pause/play, skip buttons
+5. **TikTok embed iframe quirks:** the iframe requires a specific URL format `https://www.tiktok.com/embed/v2/{video_id}`. Extract the video ID from the user-submitted URL using regex. Some shortened URLs (vm.tiktok.com) need to be resolved first via a HEAD request to follow the redirect.
 
-Camera permission flow: request on screen load, show graceful error state if denied.
+6. **Rate limits:** TikTok will rate-limit if you're hammering it. Add exponential backoff on yt-dlp failures, cap submissions to 1 per session per minute.
 
-### Results screen (`app/results/[sessionId]/page.tsx`)
-
-- Title: "Run complete" + dance name + attempt number
-- Big score (60+px font), color-coded (green >80, amber 60-80, red <60)
-- Score delta from last attempt
-- Per-skill breakdown: skill name + score bar (use the same color coding)
-- "Next up" card showing the auto-recommended drill
-- Big white "Drill it" CTA button → routes to `app/drill/[skillId]/page.tsx`
-
-### Drill screen (`app/drill/[skillId]/page.tsx`)
-
-- Top: skill name + back button
-- Description of the skill
-- Embedded reference clip (use a placeholder gif/video)
-- Live camera with skeleton overlay
-- Countdown timer for drill_duration_seconds
-- Final score for the drill → updates mastery, kicks back to results or home
-
-### Phone frame for development (`components/PhoneFrame.tsx`)
-
-When viewing on desktop (viewport > 600px), wrap content in an iPhone-shaped frame so you can see the mobile design clearly during dev. On actual mobile, full-screen.
-
----
-
-## Reference dance fixtures (`lib/dances/fixtures.ts`)
-
-Hardcode 3 reference dances for the prototype. Use these IDs so they match the stub graph:
-
-```typescript
-[
-  {
-    id: 'fixture_apt',
-    name: 'Apt. challenge',
-    artist: 'Rosé',
-    duration_seconds: 28,
-    bpm: 149,
-    video_url: '/data/reference_dances/apt.mp4',
-    required_skills: ['stub_body_roll', 'stub_two_step', 'stub_shoulder_iso', 'stub_arm_wave']
-  },
-  {
-    id: 'fixture_espresso',
-    name: 'Espresso',
-    artist: 'Sabrina Carpenter',
-    duration_seconds: 22,
-    bpm: 103,
-    video_url: '/data/reference_dances/espresso.mp4',
-    required_skills: ['stub_two_step', 'stub_shoulder_iso']
-  },
-  {
-    id: 'fixture_renegade',
-    name: 'Renegade',
-    artist: 'K Camp',
-    duration_seconds: 18,
-    bpm: 126,
-    video_url: '/data/reference_dances/renegade.mp4',
-    required_skills: ['stub_arm_wave', 'stub_body_roll', 'stub_shoulder_iso']
-  }
-]
-```
-
-For the video files: do not download real TikTok videos (copyright risk). Generate or use placeholder mp4 files — even a 5-second loop of a colored rectangle is fine. Tomorrow Jaiyen will swap in real footage.
-
----
-
-## Build order
-
-Do this exactly in this order. Commit after each step (use `git commit -m "step N: ..."`).
-
-1. Init Next.js + TypeScript + Tailwind. Set up `app/layout.tsx` with dark mode + viewport meta + 430px max-width container + iPhone frame for desktop.
-2. Write all type definitions in `lib/*/types.ts` files. No logic yet, just types.
-3. Write the stub knowledge_graph.json with 8 nodes covering all 6 layers.
-4. Write the Zod validator in `lib/graph/loader.ts`. Test that it accepts the stub.
-5. Write `lib/dances/fixtures.ts` with the 3 reference dances above.
-6. Write `lib/mastery/store.ts` with localStorage persistence. Unit test if time permits.
-7. Write `lib/graph/readiness.ts` and `lib/graph/recommender.ts` against the stub graph.
-8. Build the Home screen UI matching the mockup. Wire to fixtures + readiness computation.
-9. Write `lib/pose/poseExtractor.ts` and verify MediaPipe loads in browser. Test that landmarks come through on a still image.
-10. Write `lib/pose/jointAngles.ts`. Unit test with synthetic landmarks (e.g. a T-pose should produce specific known angles).
-11. Write `lib/scoring/dtw.ts` and `lib/scoring/similarity.ts`. Unit test with two identical sequences (cost should be 0) and one shifted sequence (cost should be small).
-12. Write `lib/scoring/scorer.ts` end-to-end.
-13. Write `lib/scoring/beatTracker.ts` with hardcoded BPM support.
-14. Build the Practice screen UI. Wire up camera, pose extraction, skeleton overlay, live score.
-15. Build the Results screen UI. Wire to per-skill scores + recommender.
-16. Build the Drill screen UI. Wire to mastery store updates.
-17. Polish: error states, loading states, camera permission denied state, responsive design check.
-18. Write `README.md` with setup instructions and the SPECIFIC instructions on how to swap in the real knowledge graph tomorrow.
-19. Verify `npm run build` succeeds. Verify the dev server runs without errors.
-20. Write a final `OVERNIGHT_SUMMARY.md` listing what works, what's stubbed, what blockers were hit, and exactly what Jaiyen needs to do tomorrow morning.
+7. **Cost watch:** Supabase free tier is fine for ~50 users. Railway/Fly will probably run $5-10/month. Pose extraction on the worker is the most expensive step; consider rate-limiting to 1 concurrent job for now.
 
 ---
 
 ## Hard rules
 
-1. **DO NOT invent dance pedagogy.** The stub graph is the only skill content you create. The real graph is coming tomorrow.
-2. **DO NOT hardcode the skill tree in any UI component.** Everything reads from the graph via the loader.
-3. **DO NOT download real TikTok videos.** Use placeholder media.
-4. **DO NOT use external paid APIs or services.** Everything must run locally / on free tier.
-5. **DO NOT skip the type definitions step.** Types come first, implementation follows.
-6. **DO NOT commit broken builds.** If a step fails, write to BLOCKERS.md and move to the next decoupled step.
-7. **Use `git commit` after each numbered step** so Jaiyen can review your work step-by-step in the morning.
+1. Do NOT change the math layer (DTW, joint angles, scoring). Those are tested and correct.
+2. Do NOT change the knowledge graph structure or loader. The graph stays in `public/data/knowledge_graph.json` and continues to drive readiness/recommender/skills logic.
+3. Do NOT delete the existing fixtures file in this commit. Comment it out and keep it for reference until the backend is verified working.
+4. Do NOT hardcode any TikTok URLs in the frontend. All dance data flows through the API.
+5. Do NOT skip Phase 1 verification. The worker must produce a complete `dances` row end-to-end before any frontend work begins. If the worker pipeline breaks, the rest of the architecture is moot.
+6. Commit after each phase so the work is reviewable in chunks.
 
----
+## Order of operations
 
-## What Jaiyen will do tomorrow morning (write this in README.md)
+Strictly: Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7.
 
-1. Paste the real `knowledge_graph.json` from Claude Research into `public/data/knowledge_graph.json`, replacing the stub.
-2. The Zod validator runs on app load and will throw clearly if the schema doesn't match — fix any schema deviations.
-3. Update `lib/dances/fixtures.ts` so `required_skills` arrays reference real graph node IDs instead of `stub_*` IDs.
-4. Add real reference dance videos to `public/data/reference_dances/`.
-5. `npm run dev` and test the full loop: pick a dance → practice → score → drill → see mastery update.
-6. Deploy to Vercel: `vercel --prod`.
+Do not work on later phases in parallel. The backend must be verified working before any UI redesign.
 
----
-
-## Final deliverable
-
-A working Next.js web prototype where:
-- Home screen shows 3 dances with % ready badges computed from the stub graph
-- Practice screen turns on the camera, runs pose detection, shows skeleton overlay, and displays a live (placeholder) score
-- Results screen shows per-skill breakdown
-- Drill screen runs a timed drill and updates mastery
-- All code is portable to Swift (pure-TS modules in `lib/pose/`, `lib/scoring/`, `lib/graph/`, `lib/mastery/` have zero DOM dependencies)
-- Swapping the stub graph for the real graph tomorrow is a one-line file replacement
-- DECISIONS.md, BLOCKERS.md, and OVERNIGHT_SUMMARY.md are all written
+Begin.

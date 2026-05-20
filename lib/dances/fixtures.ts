@@ -1,44 +1,35 @@
-// Reference dance fixtures.
+// Legacy reference-dance fixtures.
 //
-// Each fixture's `id` MUST match a Layer 6 routine node in
-// public/data/knowledge_graph.json. At runtime we merge the fixture (editorial
-// metadata — name, artist, video file) with the routine node (pedagogy — bpm,
-// duration, required_skills, skill_weights) via resolveDance().
+// v2 NOTE: the library is now backend-driven (see `lib/dances/api.ts`). These
+// fixtures are kept around per SPECK.md hard-rule §3 ("do NOT delete the
+// existing fixtures file in this commit. Comment it out and keep it for
+// reference until the backend is verified working") and are exposed under
+// `LEGACY_DANCES` for any caller that still wants them.
 //
-// Placeholder mp4s — Jaiyen will drop real chorus clips into
-// public/data/reference_dances/ tomorrow.
+// They are NOT rendered on the home page. The home page reads from
+// `GET /api/dances`. If you genuinely want offline / no-Supabase mode for
+// local UI iteration, import `LEGACY_DANCES` directly.
+//
+// `getDance(id, graph)` still works against the legacy fixtures so the
+// existing practice routes (Mode A / B / C) keep compiling — Phase 5 swaps
+// them to the API-driven path.
 
 import type { Dance, DanceFixture } from './types';
 import { isRoutineNode, type KnowledgeGraph } from '@/lib/graph/types';
 
-export const DANCES: readonly DanceFixture[] = [
-  {
-    id: 'routine_golden',
-    name: 'Golden',
-    artist: 'HUNTR/X',
-    video_url: '/data/reference_dances/golden.mp4',
-  },
-  {
-    id: 'routine_dead_dance',
-    name: 'The Dead Dance',
-    artist: 'Lady Gaga',
-    video_url: '/data/reference_dances/dead_dance.mp4',
-  },
-  {
-    id: 'routine_not_cute_anymore',
-    name: 'Not Cute Anymore',
-    artist: 'ILLIT',
-    video_url: '/data/reference_dances/not_cute_anymore.mp4',
-  },
+export const LEGACY_DANCES: readonly DanceFixture[] = [
+  { id: 'routine_golden',           name: 'Golden',           artist: 'HUNTR/X',   video_url: '/data/reference_dances/golden.mp4' },
+  { id: 'routine_dead_dance',       name: 'The Dead Dance',   artist: 'Lady Gaga', video_url: '/data/reference_dances/dead_dance.mp4' },
+  { id: 'routine_not_cute_anymore', name: 'Not Cute Anymore', artist: 'ILLIT',     video_url: '/data/reference_dances/not_cute_anymore.mp4' },
 ] as const;
 
+// kept as the legacy alias so any old import sites still resolve.
+export const DANCES = LEGACY_DANCES;
+
 export function getDanceFixture(id: string): DanceFixture | undefined {
-  return DANCES.find((d) => d.id === id);
+  return LEGACY_DANCES.find((d) => d.id === id);
 }
 
-// Merge a fixture with its routine node from the graph. Returns undefined
-// if either the fixture or the routine node is missing — callers should
-// surface this as "dance unavailable".
 export function resolveDance(
   fixture: DanceFixture,
   graph: KnowledgeGraph,
@@ -46,11 +37,20 @@ export function resolveDance(
   const node = graph.nodes.find((n) => n.id === fixture.id);
   if (!node || !isRoutineNode(node)) return undefined;
   return {
-    ...fixture,
+    id: fixture.id,
+    name: fixture.name,
+    artist: fixture.artist,
+    video_url: fixture.video_url,
+    audio_url: fixture.video_url,
+    thumbnail_url: null,
+    tiktok_url: '',
     bpm: node.bpm,
     duration_seconds: node.duration_seconds,
     required_skills: [...node.required_skills],
     skill_weights: { ...node.skill_weights },
+    pose_data_url: null,
+    low_quality: false,
+    audio_start_offset_ms: 0,
   };
 }
 
