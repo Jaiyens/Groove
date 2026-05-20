@@ -50,7 +50,14 @@ export function computeReadiness({
   mastery,
 }: ReadinessInput): ReadinessResult {
   const weights = resolveWeights(dance, graph);
-  const ids = Object.keys(weights);
+  // Iterate the full required_skills list (not just the weighted ones) so
+  // every required skill appears in the per-skill breakdown — even those a
+  // routine left unweighted (e.g. routine_golden lists posture_alignment in
+  // required_skills but assigns it no weight).
+  const ids =
+    dance.required_skills.length > 0
+      ? [...dance.required_skills]
+      : Object.keys(weights);
   if (ids.length === 0) {
     return { percent: 0, perSkill: [] };
   }

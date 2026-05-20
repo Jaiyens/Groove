@@ -2,9 +2,10 @@
 
 import BottomNav from '@/components/BottomNav';
 import DanceCard from '@/components/DanceCard';
-import { DANCES } from '@/lib/dances/fixtures';
+import { DANCES, resolveDance } from '@/lib/dances/fixtures';
 import { useGraph } from '@/lib/graph/context';
 import { computeReadiness } from '@/lib/graph/readiness';
+import type { Dance } from '@/lib/dances/types';
 
 const PLACEHOLDER_STREAK = 7;
 const GREETING_NAME = 'Jaiyen';
@@ -52,30 +53,49 @@ export default function HomePage() {
           </div>
         )}
 
-        {graph && (
-          <>
-            <DanceCard
-              dance={DANCES[0]!}
-              readinessPercent={computeReadiness({ dance: DANCES[0]!, graph, mastery }).percent}
-              featured
-            />
+        {graph && (() => {
+          const resolved = DANCES
+            .map((f) => resolveDance(f, graph))
+            .filter((d): d is Dance => Boolean(d));
+          const [featured, ...rest] = resolved;
+          if (!featured) {
+            return (
+              <div className="rounded-xl border border-accent-amber/40 bg-accent-amber/10 p-3 text-sm text-accent-amber">
+                No reference dances resolved against the loaded knowledge graph.
+              </div>
+            );
+          }
+          return (
+            <>
+              <DanceCard
+                dance={featured}
+                readinessPercent={
+                  computeReadiness({ dance: featured, graph, mastery }).percent
+                }
+                featured
+              />
 
-            <section className="mt-7">
-              <div className="mb-3 flex items-end justify-between">
-                <h2 className="text-lg font-bold">For You</h2>
-                <span className="text-xs text-text-muted">{DANCES.length - 1} dances</span>
-              </div>
-              <div className="space-y-2">
-                {DANCES.slice(1).map((dance) => {
-                  const { percent } = computeReadiness({ dance, graph, mastery });
-                  return (
-                    <DanceCard key={dance.id} dance={dance} readinessPercent={percent} />
-                  );
-                })}
-              </div>
-            </section>
-          </>
-        )}
+              <section className="mt-7">
+                <div className="mb-3 flex items-end justify-between">
+                  <h2 className="text-lg font-bold">For You</h2>
+                  <span className="text-xs text-text-muted">{rest.length} dances</span>
+                </div>
+                <div className="space-y-2">
+                  {rest.map((dance) => {
+                    const { percent } = computeReadiness({ dance, graph, mastery });
+                    return (
+                      <DanceCard
+                        key={dance.id}
+                        dance={dance}
+                        readinessPercent={percent}
+                      />
+                    );
+                  })}
+                </div>
+              </section>
+            </>
+          );
+        })()}
       </div>
       <BottomNav />
     </main>

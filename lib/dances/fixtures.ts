@@ -1,39 +1,61 @@
-import type { Dance } from './types';
+// Reference dance fixtures.
+//
+// Each fixture's `id` MUST match a Layer 6 routine node in
+// public/data/knowledge_graph.json. At runtime we merge the fixture (editorial
+// metadata — name, artist, video file) with the routine node (pedagogy — bpm,
+// duration, required_skills, skill_weights) via resolveDance().
+//
+// Placeholder mp4s — Jaiyen will drop real chorus clips into
+// public/data/reference_dances/ tomorrow.
 
-// Reference dance fixtures. IDs match skill IDs referenced in the stub graph.
-// Real video files arrive tomorrow — for now, video_url points to placeholders
-// in /public/data/reference_dances/. Failing to load gracefully degrades to a
-// poster-only state in the practice screen.
-export const DANCES: readonly Dance[] = [
+import type { Dance, DanceFixture } from './types';
+import { isRoutineNode, type KnowledgeGraph } from '@/lib/graph/types';
+
+export const DANCES: readonly DanceFixture[] = [
   {
-    id: 'fixture_apt',
-    name: 'Apt. challenge',
-    artist: 'Rosé',
-    duration_seconds: 28,
-    bpm: 149,
-    video_url: '/data/reference_dances/apt.mp4',
-    required_skills: ['stub_body_roll', 'stub_two_step', 'stub_shoulder_iso', 'stub_arm_wave'],
+    id: 'routine_golden',
+    name: 'Golden',
+    artist: 'HUNTR/X',
+    video_url: '/data/reference_dances/golden.mp4',
   },
   {
-    id: 'fixture_espresso',
-    name: 'Espresso',
-    artist: 'Sabrina Carpenter',
-    duration_seconds: 22,
-    bpm: 103,
-    video_url: '/data/reference_dances/espresso.mp4',
-    required_skills: ['stub_two_step', 'stub_shoulder_iso'],
+    id: 'routine_dead_dance',
+    name: 'The Dead Dance',
+    artist: 'Lady Gaga',
+    video_url: '/data/reference_dances/dead_dance.mp4',
   },
   {
-    id: 'fixture_renegade',
-    name: 'Renegade',
-    artist: 'K Camp',
-    duration_seconds: 18,
-    bpm: 126,
-    video_url: '/data/reference_dances/renegade.mp4',
-    required_skills: ['stub_arm_wave', 'stub_body_roll', 'stub_shoulder_iso'],
+    id: 'routine_not_cute_anymore',
+    name: 'Not Cute Anymore',
+    artist: 'ILLIT',
+    video_url: '/data/reference_dances/not_cute_anymore.mp4',
   },
 ] as const;
 
-export function getDance(id: string): Dance | undefined {
+export function getDanceFixture(id: string): DanceFixture | undefined {
   return DANCES.find((d) => d.id === id);
+}
+
+// Merge a fixture with its routine node from the graph. Returns undefined
+// if either the fixture or the routine node is missing — callers should
+// surface this as "dance unavailable".
+export function resolveDance(
+  fixture: DanceFixture,
+  graph: KnowledgeGraph,
+): Dance | undefined {
+  const node = graph.nodes.find((n) => n.id === fixture.id);
+  if (!node || !isRoutineNode(node)) return undefined;
+  return {
+    ...fixture,
+    bpm: node.bpm,
+    duration_seconds: node.duration_seconds,
+    required_skills: [...node.required_skills],
+    skill_weights: { ...node.skill_weights },
+  };
+}
+
+export function getDance(id: string, graph: KnowledgeGraph): Dance | undefined {
+  const fixture = getDanceFixture(id);
+  if (!fixture) return undefined;
+  return resolveDance(fixture, graph);
 }

@@ -53,3 +53,28 @@ Using `pose_landmarker_lite.task` (float16) from MediaPipe's public model store.
 ## Stub graph structure
 
 8 nodes covering all 6 layers per spec: 2 foundations (posture, weight_shift), 2 isolations (shoulder_iso, hip_isolation), 1 travel (two_step), 1 combo (body_roll), 1 vocabulary (arm_wave), 1 routine (fixture_apt). Every node has `"sources": ["STUB - replace with real graph"]` per spec. The routine's `required_skills` matches `fixture_apt`'s `required_skills` exactly so the weighted-readiness math is straightforward to verify.
+
+---
+
+# Day-2 changes (real knowledge graph drop, 2026-05-20)
+
+## Graph file format: bare array
+
+The stub graph was `{ nodes, version, generated_at }`. The real graph from Claude Research is a **bare JSON array** of nodes — no wrapping object. **Decision**: make the loader accept both. `KnowledgeGraphSchema` now uses `z.preprocess` to wrap a bare array as `{ nodes: array, version: 'unknown', generated_at: '' }`. The legacy object form is also preserved so the test suite's hand-built fixtures still parse. Both routes flow through the same downstream pipeline (cross-reference checks, normalised return shape).
+
+## Fixture / routine merge
+
+Old fixtures duplicated `bpm`, `duration_seconds`, and `required_skills` between `lib/dances/fixtures.ts` and the graph. With the real routine nodes carrying authoritative values, **decision**: split `Dance` into `DanceFixture` (editorial only — `id`, `name`, `artist`, `video_url`) and `Dance` (resolved view with pedagogy fields merged in from the routine node). `resolveDance(fixture, graph)` is the merge entry point. UI components that consumed `Dance` keep working unchanged; consumers that used to call `getDance(id)` now call `getDance(id, graph)`. Fixture `id` must equal the routine node id (`routine_*`).
+
+## Three fixtures: golden / dead_dance / not_cute_anymore
+
+Per task brief: replaced the old `fixture_apt` / `fixture_espresso` / `fixture_renegade` stubs (whose routine nodes don't exist in the real graph) with `routine_golden`, `routine_dead_dance`, `routine_not_cute_anymore`. Placeholder mp4 paths point at `/data/reference_dances/<id>.mp4` for Jaiyen to drop real footage in. Reference video component already degrades gracefully when files are missing.
+
+## Readiness: iterate required_skills, not skill_weights
+
+`routine_golden` has 14 entries in `required_skills` but only 13 in `skill_weights` (the routine omits `posture_alignment` from weighting — likely because it's a baseline assumption rather than a scored skill). **Decision**: change `computeReadiness` to iterate `dance.required_skills` (the canonical set), looking up each weight from `skill_weights` (defaulting to 0 if absent). Net effect on the score: identical, since a weight-0 skill contributes 0 to the weighted sum. But the per-skill breakdown now lists *every* required skill, which is what the UI actually needs.
+
+## Routine weight sums
+
+All 8 routine nodes have `Σ skill_weights[*] ≈ 1.0` (within float epsilon). Loader treats this as a soft constraint — the per-skill Zod range `[0, 1]` still applies, but we don't reject a routine whose weights drift slightly from 1. The readiness calc normalises by total weight anyway.
+

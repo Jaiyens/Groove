@@ -8,31 +8,32 @@ import { isRoutineNode } from '../lib/graph/types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-async function loadStub() {
+async function loadGraphJSON() {
   const p = join(__dirname, '..', 'public', 'data', 'knowledge_graph.json');
   return JSON.parse(await readFile(p, 'utf8'));
 }
 
 describe('graph loader', () => {
-  it('accepts the stub knowledge graph', async () => {
-    const stub = await loadStub();
-    const graph = validateGraph(stub);
-    assert.equal(graph.version, '0.0.1-stub');
-    assert.equal(graph.nodes.length, 8);
+  it('accepts the production knowledge graph (bare-array form)', async () => {
+    const data = await loadGraphJSON();
+    const graph = validateGraph(data);
+    // The real graph is a JSON array (no version/generated_at). The loader
+    // normalises it; consumers always see version === 'unknown' for the
+    // array form.
+    assert.equal(graph.version, 'unknown');
+    assert.ok(graph.nodes.length >= 8, 'graph should have non-trivial node count');
   });
 
-  it('all 6 layers are represented in the stub', async () => {
-    const stub = await loadStub();
-    const graph = validateGraph(stub);
+  it('all 6 layers are represented', async () => {
+    const graph = validateGraph(await loadGraphJSON());
     const layers = new Set(graph.nodes.map((n) => n.layer));
     for (const l of [1, 2, 3, 4, 5, 6]) {
       assert.ok(layers.has(l as 1 | 2 | 3 | 4 | 5 | 6), `missing layer ${l}`);
     }
   });
 
-  it('contains at least one routine node', async () => {
-    const stub = await loadStub();
-    const graph = validateGraph(stub);
+  it('contains routine nodes with well-formed weights', async () => {
+    const graph = validateGraph(await loadGraphJSON());
     const routines = graph.nodes.filter(isRoutineNode);
     assert.ok(routines.length >= 1, 'expected at least one routine node');
     for (const r of routines) {
@@ -40,57 +41,22 @@ describe('graph loader', () => {
       assert.ok(r.required_skills.length > 0, 'routine must have required_skills');
       const weightSum = Object.values(r.skill_weights).reduce((s, w) => s + w, 0);
       assert.ok(
-        Math.abs(weightSum - 1) < 1e-6 || weightSum <= 1.01,
-        `routine "${r.id}" weights sum (${weightSum}) should be near 1`,
+        Math.abs(weightSum - 1) < 1e-3,
+        `routine "${r.id}" weights sum (${weightSum}) should be ≈ 1`,
       );
     }
   });
 
-  it('rejects a graph with unknown prerequisite', () => {
-    const bad = {
-      version: '0',
-      generated_at: '2026-01-01',
+  it('also accepts the legacy { nodes, version, generated_at } form', () => {
+    const legacy = {
+      version: '0.0.1-stub',
+      generated_at: '2026-05-19',
       nodes: [
         {
           id: 'a',
           name: 'A',
           layer: 1,
           category: 'foundation',
-          description: '',
-          prerequisites: ['does_not_exist'],
-          measurable_success_criterion: '',
-          drill_description: '',
-          drill_duration_seconds: 0,
-          mastery_threshold: '',
-          common_mistakes: [],
-          sources: [],
-        },
-      ],
-    };
-    assert.throws(() => validateGraph(bad), GraphValidationError);
-  });
-
-  it('rejects a graph with missing field', () => {
-    const bad = {
-      version: '0',
-      generated_at: '2026-01-01',
-      nodes: [
-        { id: 'a', name: 'A' },
-      ],
-    };
-    assert.throws(() => validateGraph(bad), GraphValidationError);
-  });
-
-  it('rejects a layer=6 routine missing bpm/skill_weights', () => {
-    const bad = {
-      version: '0',
-      generated_at: '2026-01-01',
-      nodes: [
-        {
-          id: 'r',
-          name: 'R',
-          layer: 6,
-          category: 'routine',
           description: '',
           prerequisites: [],
           measurable_success_criterion: '',
@@ -102,6 +68,53 @@ describe('graph loader', () => {
         },
       ],
     };
+    const graph = validateGraph(legacy);
+    assert.equal(graph.version, '0.0.1-stub');
+    assert.equal(graph.nodes.length, 1);
+  });
+
+  it('rejects a graph with unknown prerequisite', () => {
+    const bad = [
+      {
+        id: 'a',
+        name: 'A',
+        layer: 1,
+        category: 'foundation',
+        description: '',
+        prerequisites: ['does_not_exist'],
+        measurable_success_criterion: '',
+        drill_description: '',
+        drill_duration_seconds: 0,
+        mastery_threshold: '',
+        common_mistakes: [],
+        sources: [],
+      },
+    ];
+    assert.throws(() => validateGraph(bad), GraphValidationError);
+  });
+
+  it('rejects a graph with missing field', () => {
+    const bad = [{ id: 'a', name: 'A' }];
+    assert.throws(() => validateGraph(bad), GraphValidationError);
+  });
+
+  it('rejects a layer=6 routine missing bpm/skill_weights', () => {
+    const bad = [
+      {
+        id: 'r',
+        name: 'R',
+        layer: 6,
+        category: 'routine',
+        description: '',
+        prerequisites: [],
+        measurable_success_criterion: '',
+        drill_description: '',
+        drill_duration_seconds: 0,
+        mastery_threshold: '',
+        common_mistakes: [],
+        sources: [],
+      },
+    ];
     assert.throws(() => validateGraph(bad), GraphValidationError);
   });
 });

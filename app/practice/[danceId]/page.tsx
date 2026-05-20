@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import BackHomeButton from '@/components/BackHomeButton';
 import CorrectionToast from '@/components/CorrectionToast';
 import LiveScore from '@/components/LiveScore';
 import ProgressBar from '@/components/ProgressBar';
@@ -10,6 +11,7 @@ import ReferenceVideo from '@/components/ReferenceVideo';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import { getDance } from '@/lib/dances/fixtures';
 import { useGraph } from '@/lib/graph/context';
+import type { Dance } from '@/lib/dances/types';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
@@ -34,8 +36,10 @@ interface PageProps {
 
 export default function PracticePage({ params }: PageProps) {
   const router = useRouter();
-  const dance = getDance(params.danceId);
-  const { bumpMastery } = useGraph();
+  const { bumpMastery, graph } = useGraph();
+  const dance: Dance | undefined = graph
+    ? getDance(params.danceId, graph)
+    : undefined;
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const refVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -55,10 +59,11 @@ export default function PracticePage({ params }: PageProps) {
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
 
-  // Bail early if invalid id.
+  // Bail early if invalid id (only after graph has loaded — otherwise we'd
+  // bounce home during the brief window before the graph resolves).
   useEffect(() => {
-    if (!dance) router.replace('/');
-  }, [dance, router]);
+    if (graph && !dance) router.replace('/');
+  }, [graph, dance, router]);
 
   const lastAttemptScore = useMemo(() => {
     if (!dance) return null;
@@ -234,16 +239,8 @@ export default function PracticePage({ params }: PageProps) {
   return (
     <main className="relative flex h-full w-full flex-col bg-black">
       {/* Top bar */}
-      <div className="safe-top relative z-20 flex items-center gap-3 px-4 pt-3 pb-2">
-        <Link
-          href="/"
-          aria-label="Exit practice"
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-black/60 ring-1 ring-white/15 text-white"
-        >
-          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" aria-hidden>
-            <path d="M6 6l12 12M6 18L18 6" />
-          </svg>
-        </Link>
+      <div className="safe-top relative z-50 flex items-center gap-3 px-4 pt-3 pb-2">
+        <BackHomeButton />
         <div className="flex-1">
           <ProgressBar progress={progress} beatCount={totalBeats} />
         </div>

@@ -67,11 +67,34 @@ const NodeSchema: z.ZodType<AnyNode> = z.union([
   ),
 ]);
 
-export const KnowledgeGraphSchema = z.object({
+// The on-disk graph may be either of:
+//   (a) a bare JSON array of nodes (production format from Claude Research)
+//   (b) { nodes, version, generated_at } object (legacy / stub fixture format)
+// Both are normalised to the same KnowledgeGraph shape.
+const KnowledgeGraphObjectSchema = z.object({
   nodes: z.array(NodeSchema).min(1, 'knowledge graph must have at least one node'),
-  version: z.string(),
-  generated_at: z.string(),
+  version: z.string().optional(),
+  generated_at: z.string().optional(),
 });
+
+export const KnowledgeGraphSchema = z.preprocess(
+  (input) => {
+    if (Array.isArray(input)) {
+      return { nodes: input, version: 'unknown', generated_at: '' };
+    }
+    if (input && typeof input === 'object') {
+      const obj = input as Record<string, unknown>;
+      return {
+        nodes: obj.nodes,
+        version: typeof obj.version === 'string' ? obj.version : 'unknown',
+        generated_at:
+          typeof obj.generated_at === 'string' ? obj.generated_at : '',
+      };
+    }
+    return input;
+  },
+  KnowledgeGraphObjectSchema,
+);
 
 export class GraphValidationError extends Error {
   constructor(public readonly cause: z.ZodError, message: string) {
@@ -98,10 +121,16 @@ export function validateGraph(input: unknown): KnowledgeGraph {
       `knowledge_graph.json failed schema validation:\n${detail}`,
     );
   }
+  // Normalise: ensure version / generated_at always exist downstream.
+  const normalized = {
+    nodes: parsed.data.nodes,
+    version: parsed.data.version ?? 'unknown',
+    generated_at: parsed.data.generated_at ?? '',
+  } as KnowledgeGraph;
   // Cross-reference check: every prerequisite + required_skill id must exist.
-  const ids = new Set(parsed.data.nodes.map((n) => n.id));
+  const ids = new Set(normalized.nodes.map((n) => n.id));
   const issues: string[] = [];
-  for (const node of parsed.data.nodes) {
+  for (const node of normalized.nodes) {
     for (const prereq of node.prerequisites) {
       if (!ids.has(prereq)) {
         issues.push(`  • node "${node.id}" lists unknown prerequisite "${prereq}"`);
@@ -130,7 +159,7 @@ export function validateGraph(input: unknown): KnowledgeGraph {
       `knowledge_graph.json failed cross-reference validation:\n${issues.join('\n')}`,
     );
   }
-  return parsed.data as KnowledgeGraph;
+  return normalized;
 }
 
 function isRoutineNodeShape(node: SkillNode | RoutineNode): node is RoutineNode {

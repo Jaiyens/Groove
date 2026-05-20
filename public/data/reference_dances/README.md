@@ -1,13 +1,18 @@
 # Reference dance videos
 
-Placeholder directory. Real video files arrive tomorrow.
+Placeholder directory. Real chorus clips arrive from Jaiyen.
 
-Expected files (referenced by `lib/dances/fixtures.ts`):
+Expected files (referenced by `lib/dances/fixtures.ts` and merged with the
+corresponding Layer 6 routine node in `public/data/knowledge_graph.json`):
 
-- `apt.mp4` — Apt. challenge by Rosé (~28s, 149 BPM)
-- `espresso.mp4` — Espresso by Sabrina Carpenter (~22s, 103 BPM)
-- `renegade.mp4` — Renegade by K Camp (~18s, 126 BPM)
+- `golden.mp4` — `routine_golden` — Golden by HUNTR/X (~16s, 123 BPM)
+- `dead_dance.mp4` — `routine_dead_dance` — The Dead Dance by Lady Gaga (~20s, 124 BPM)
+- `not_cute_anymore.mp4` — `routine_not_cute_anymore` — Not Cute Anymore by ILLIT (~15s, 99 BPM)
 
-The practice and drill screens gracefully degrade to a black panel + "reference video missing" badge when these are absent, so the rest of the loop is still demoable tonight.
+The reference video component gracefully degrades to a "no video / placeholder"
+panel when these are absent, so the rest of the practice loop is still demoable
+without the real footage. Audio for Mode B / C is sourced from the same mp4
+files — once these are dropped in, the audio track plays automatically.
 
-**Do not download real TikTok videos directly** — use original recordings or licensed footage. Spec hard rule #3.
+**Do not download real TikTok videos directly** — use original recordings or
+licensed footage. Spec hard rule #3.

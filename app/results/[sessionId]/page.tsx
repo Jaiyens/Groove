@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import ScoreBreakdown, { type SkillScoreRow } from '@/components/ScoreBreakdown';
 import { getDance } from '@/lib/dances/fixtures';
+import type { Dance } from '@/lib/dances/types';
 import { useGraph } from '@/lib/graph/context';
 import { recommendNextDrill } from '@/lib/graph/recommender';
 import { getMasteryStore } from '@/lib/mastery/store';
@@ -37,7 +38,8 @@ export default function ResultsPage({ params }: PageProps) {
     setPreviousScore(last?.overall_score ?? null);
   }, [params.sessionId, router]);
 
-  const dance = attempt ? getDance(attempt.dance_id) : undefined;
+  const dance: Dance | undefined =
+    attempt && graph ? getDance(attempt.dance_id, graph) : undefined;
 
   const recommendation = useMemo(() => {
     if (!dance || !graph) return null;
