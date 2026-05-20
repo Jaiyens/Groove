@@ -1,0 +1,19 @@
+# seed_urls.example.txt
+#
+# Copy this to `seed_urls.txt` and edit. One TikTok URL per line.
+# Lines starting with `#` are comments.
+#
+# Used by `npm run seed` — see scripts/seed_library.ts.
+#
+# The 8 routine_* nodes in public/data/knowledge_graph.json each have
+# a `sources` field listing the canonical TikTok / YouTube references
+# for that dance. Pick a clear, public TikTok video for each (or any
+# other TikToks you want to seed) and paste them here.
+#
+# Long URLs are fine. vm.tiktok.com short links work too — the worker
+# resolves them via yt-dlp.
+
+# Examples (replace with real URLs you want to seed):
+# https://www.tiktok.com/@huntrx/video/0000000000000000000
+# https://www.tiktok.com/@illit/video/0000000000000000000
+# https://www.tiktok.com/@katseye/video/0000000000000000000
