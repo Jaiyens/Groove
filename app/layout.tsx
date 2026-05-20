@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import PhoneFrame from '@/components/PhoneFrame';
+import { GraphProvider } from '@/lib/graph/context';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -23,7 +24,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className="dark">
       <body className="bg-black text-white">
-        <PhoneFrame>{children}</PhoneFrame>
+        <GraphProvider>
+          <PhoneFrame>{children}</PhoneFrame>
+        </GraphProvider>
       </body>
     </html>
   );
