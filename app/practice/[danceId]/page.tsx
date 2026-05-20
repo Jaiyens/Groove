@@ -27,8 +27,6 @@ type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'un
 type RunState = 'preroll' | 'running' | 'finished';
 
 const PREROLL_SECONDS = 3;
-const VIDEO_W = 430;
-const VIDEO_H = 700;
 
 interface PageProps {
   params: { danceId: string };
@@ -37,9 +35,15 @@ interface PageProps {
 export default function PracticePage({ params }: PageProps) {
   const router = useRouter();
   const { bumpMastery, graph } = useGraph();
-  const dance: Dance | undefined = graph
-    ? getDance(params.danceId, graph)
-    : undefined;
+  // Memoise so dependent effects (the detection loop) don't tear down and
+  // re-arm every time the parent re-renders (e.g. on a mastery bump). The
+  // detection loop's deps include `dance`; without memoisation, the loop
+  // was cancelling and restarting unpredictably — which read as "skeleton
+  // randomly stops" in practice. See DECISIONS.md (day-2).
+  const dance: Dance | undefined = useMemo(
+    () => (graph ? getDance(params.danceId, graph) : undefined),
+    [graph, params.danceId],
+  );
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const refVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -58,6 +62,9 @@ export default function PracticePage({ params }: PageProps) {
   const [liveScore, setLiveScore] = useState(0);
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
+  const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
+  const lastDetectAtRef = useRef<number>(0);
+  const consecutiveFailuresRef = useRef<number>(0);
 
   // Bail early if invalid id (only after graph has loaded — otherwise we'd
   // bounce home during the brief window before the graph resolves).
@@ -81,7 +88,10 @@ export default function PracticePage({ params }: PageProps) {
     setCamState('requesting');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: VIDEO_W }, height: { ideal: VIDEO_H }, facingMode: 'user' },
+        // Don't pin width/height — the device will give us its native sensor
+        // dimensions, and the on-canvas projection (lib/pose/projection.ts)
+        // handles object-cover crop math so the skeleton always aligns.
+        video: { facingMode: 'user' },
         audio: false,
       });
       streamRef.current = stream;
@@ -113,18 +123,20 @@ export default function PracticePage({ params }: PageProps) {
     if (camState === 'idle') startCamera();
   }, [camState, startCamera]);
 
-  // Init pose extractor after camera is up.
+  // Init pose extractor after camera is up. On failure, surface it.
   useEffect(() => {
     if (camState !== 'granted') return;
     let cancelled = false;
     const ex = new PoseExtractor();
     extractorRef.current = ex;
+    setPoseStatus('ok');
     ex.init()
       .then(() => {
         if (cancelled) ex.close();
       })
-      .catch(() => {
-        // surface as a hint; scoring will run with no landmarks
+      .catch((err: unknown) => {
+        console.error('PoseExtractor init failed', err);
+        if (!cancelled) setPoseStatus('failed');
       });
     return () => {
       cancelled = true;
@@ -132,6 +144,27 @@ export default function PracticePage({ params }: PageProps) {
       extractorRef.current = null;
     };
   }, [camState]);
+
+  // Pause the RAF loop while the page is hidden — restoring on visibility
+  // also re-anchors the session clock so MediaPipe's required monotonic
+  // timestamp never has a giant jump that would error the detector.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisChange = () => {
+      if (document.hidden) {
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+      } else if (runState === 'running' && startMsRef.current !== null) {
+        // Re-anchor session start so the post-hidden frame doesn't have a
+        // huge timestamp gap relative to the previous one.
+        startMsRef.current = performance.now() - progress * (dance?.duration_seconds ?? 0) * 1000;
+      }
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+    return () => document.removeEventListener('visibilitychange', onVisChange);
+  }, [runState, progress, dance?.duration_seconds]);
 
   // Preroll countdown.
   useEffect(() => {
@@ -162,6 +195,9 @@ export default function PracticePage({ params }: PageProps) {
       if (v && ex?.ready && v.readyState >= 2) {
         const res = ex.detectFromVideo(v, sessionT);
         if (res) {
+          lastDetectAtRef.current = performance.now();
+          consecutiveFailuresRef.current = 0;
+          if (poseStatus !== 'ok') setPoseStatus('ok');
           setLandmarks(res.landmarks);
           if (res.worldLandmarks.length > 0) {
             const vec = computeJointAngles(res.worldLandmarks);
@@ -177,6 +213,13 @@ export default function PracticePage({ params }: PageProps) {
               setHint(correctionHint(vec, ref));
             }
           }
+        } else {
+          // Detector returned no pose this frame — body out of frame, occluded,
+          // or detector hiccup. If we go too long with no detection, flag it.
+          if (performance.now() - lastDetectAtRef.current > 1500) {
+            if (poseStatus === 'ok') setPoseStatus('lost');
+          }
+          consecutiveFailuresRef.current += 1;
         }
       }
       beatTrackerRef.current?.tick(sessionT);
@@ -258,7 +301,16 @@ export default function PracticePage({ params }: PageProps) {
           autoPlay
           className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
         />
-        <SkeletonOverlay landmarks={landmarks} width={VIDEO_W} height={VIDEO_H} mirror />
+        <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror />
+
+        {/* Pose-tracking status toast */}
+        {poseStatus !== 'ok' && runState === 'running' && (
+          <div className="absolute inset-x-0 top-14 z-20 mx-auto w-fit max-w-[90%] rounded-full bg-accent-amber/20 px-3 py-1.5 text-xs font-semibold text-accent-amber ring-1 ring-accent-amber/40 backdrop-blur-sm">
+            {poseStatus === 'lost'
+              ? 'pose tracking lost, repositioning…'
+              : 'pose tracker unavailable — score paused'}
+          </div>
+        )}
 
         {/* PiP reference */}
         <div className="absolute right-3 top-3 h-32 w-24 z-10">

@@ -25,8 +25,6 @@ type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'un
 type RunState = 'preroll' | 'running' | 'finished';
 
 const PREROLL_SECONDS = 3;
-const VIDEO_W = 430;
-const VIDEO_H = 480;
 const DRILL_BPM = 100; // gentle for drills
 
 export default function DrillPage({ params }: PageProps) {
@@ -67,7 +65,7 @@ export default function DrillPage({ params }: PageProps) {
     setCamState('requesting');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: VIDEO_W }, height: { ideal: VIDEO_H }, facingMode: 'user' },
+        video: { facingMode: 'user' },
         audio: false,
       });
       streamRef.current = stream;
@@ -231,7 +229,7 @@ export default function DrillPage({ params }: PageProps) {
             autoPlay
             className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
           />
-          <SkeletonOverlay landmarks={landmarks} width={VIDEO_W} height={VIDEO_H} mirror />
+          <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror />
           {runState === 'preroll' && camState === 'granted' && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
               <div className="text-text-muted text-xs uppercase tracking-widest">Drill starts in</div>

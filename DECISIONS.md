@@ -78,3 +78,18 @@ Per task brief: replaced the old `fixture_apt` / `fixture_espresso` / `fixture_r
 
 All 8 routine nodes have `Σ skill_weights[*] ≈ 1.0` (within float epsilon). Loader treats this as a soft constraint — the per-skill Zod range `[0, 1]` still applies, but we don't reject a routine whose weights drift slightly from 1. The readiness calc normalises by total weight anyway.
 
+
+## Skeleton overlay: object-cover projection + selfie mirroring
+
+User reported the skeleton didn't line up with the body and randomly stopped. Three concrete bugs:
+
+1. **Coordinate space mismatch.** The canvas was hardcoded to 430×700 px while the on-screen video filled `flex-1` (true client size) with `object-fit: cover`. Cover crops the long axis of the camera frame; the canvas drew landmarks as if there was no crop. **Fix**: `lib/pose/projection.ts` is a new pure-TS module that computes `(scale, offsetX, offsetY)` from intrinsic video dimensions and the on-screen element bounds, and `SkeletonOverlay` now takes a `videoRef` and re-measures via `ResizeObserver`. Pure math separated for Swift portability.
+
+2. **Mirror duplication.** The video element CSS-flipped with `scaleX(-1)`; the canvas then mirrored landmarks again via JS (`mirror ? (1 - lm.x) * w : lm.x * w`). When combined with object-cover crop, the second mirror compounded the offset error. **Fix**: mirroring is now a single CSS flip on the canvas — landmarks are always drawn in the camera's native un-mirrored frame, and the same `scaleX(-1)` applied to both video and canvas keeps them aligned by construction.
+
+3. **Detection loop restarts on every render.** `useEffect([camState, runState, dance])` re-armed RAF every time `dance` changed reference identity, which happened on every `bumpMastery()` because `getDance(id)` was called fresh on each render. **Fix**: `useMemo(() => getDance(id, graph), [graph, id])`. Combined with a visibility-change handler that pauses RAF when the tab hides (and re-anchors `startMsRef` on resume), the "random stops" go away.
+
+Added pose-tracking UI states: a toast surfaces "pose tracking lost, repositioning…" when 1.5 s pass with no detection, and "pose tracker unavailable" when MediaPipe `init()` rejects. The detection loop tracks consecutive failures so a recovery can be wired in (currently the loop just keeps re-trying — MediaPipe usually recovers within a few hundred ms once the body re-enters frame).
+
+Removed the `width: { ideal: 430 }, height: { ideal: 700 }` constraints on `getUserMedia` — let the device pick native sensor dimensions, and let the projection math handle whatever shape comes back. This also avoids the iOS Safari quirk where unrealistic constraints downscale aggressively and ruin landmark precision.
+
