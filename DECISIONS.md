@@ -42,6 +42,14 @@ For brand-new users with no attempts yet, the recommender needs a value. **Decis
 
 Spec says readiness uses `skill_weights` from a routine node, but the `Dance` interface has only `id` and `required_skills` — no explicit `routine_node_id` field. **Decision**: match by `id` convention. If a `RoutineNode` exists in the graph whose `id` equals `dance.id`, use its `skill_weights`; otherwise fall back to uniform weights over `dance.required_skills`. The stub graph includes one routine node with id `fixture_apt` to exercise the weighted path; the other two dances (`fixture_espresso`, `fixture_renegade`) exercise the uniform fallback. Tomorrow Jaiyen can either rename routine nodes to match dance IDs or extend the Dance type with `routine_node_id`.
 
+## MediaPipe running mode
+
+Spec says "live-stream running mode for camera." **Decision**: `@mediapipe/tasks-vision@0.10.17` only exposes `IMAGE` and `VIDEO` running modes (no `LIVE_STREAM` for vision tasks in this SDK version — only audio/text have it). Camera live stream uses `VIDEO` mode with monotonically increasing timestamps, which is the documented MediaPipe pattern for real-time webcam input. The `detectForVideo(elt, timestampMs)` call is synchronous. Behavior is identical to what spec intends.
+
+## MediaPipe model
+
+Using `pose_landmarker_lite.task` (float16) from MediaPipe's public model store. Lite is fast enough for real-time on mid-range phones; full would be ~2× slower with marginal accuracy gain at this resolution. Tomorrow Jaiyen can swap to `pose_landmarker_heavy` if accuracy is a problem — change MODEL_URL in `lib/pose/poseExtractor.ts`.
+
 ## Stub graph structure
 
 8 nodes covering all 6 layers per spec: 2 foundations (posture, weight_shift), 2 isolations (shoulder_iso, hip_isolation), 1 travel (two_step), 1 combo (body_roll), 1 vocabulary (arm_wave), 1 routine (fixture_apt). Every node has `"sources": ["STUB - replace with real graph"]` per spec. The routine's `required_skills` matches `fixture_apt`'s `required_skills` exactly so the weighted-readiness math is straightforward to verify.
