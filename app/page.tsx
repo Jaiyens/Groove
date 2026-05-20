@@ -1,103 +1,144 @@
 'use client';
 
-import BottomNav from '@/components/BottomNav';
-import DanceCard from '@/components/DanceCard';
-import { DANCES, resolveDance } from '@/lib/dances/fixtures';
-import { useGraph } from '@/lib/graph/context';
-import { computeReadiness } from '@/lib/graph/readiness';
-import type { Dance } from '@/lib/dances/types';
+import { useCallback, useEffect, useState } from 'react';
+import HeroCard from '@/components/library/HeroCard';
+import TrendingScroll from '@/components/library/TrendingScroll';
+import RecentList from '@/components/library/RecentList';
+import SectionHeader from '@/components/library/SectionHeader';
+import EmptyState from '@/components/library/EmptyState';
+import CreamBottomNav from '@/components/library/CreamBottomNav';
+import SubmitFab from '@/components/library/SubmitFab';
+import type { DanceListItem } from '@/lib/dances/types';
 
-const PLACEHOLDER_STREAK = 7;
-const GREETING_NAME = 'Jaiyen';
+// SubmitModal lands in Phase 4 — kept as a no-op for now.
+const SubmitModalPlaceholder = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
+  if (!open) return null;
+  return (
+    <div role="dialog" aria-modal="true" className="absolute inset-0 z-50 flex items-center justify-center bg-cream/95">
+      <div className="rounded-2xl bg-cream-card p-6 text-center shadow-lift">
+        <p className="font-serif text-xl text-ink">submit flow coming up</p>
+        <button onClick={onClose} className="mt-4 rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white">
+          close
+        </button>
+      </div>
+    </div>
+  );
+};
+
+interface LibraryState {
+  loading: boolean;
+  error: string | null;
+  dances: DanceListItem[];
+  unconfigured: boolean;
+}
 
 export default function HomePage() {
-  const { graph, error, mastery } = useGraph();
+  const [state, setState] = useState<LibraryState>({
+    loading: true,
+    error: null,
+    dances: [],
+    unconfigured: false,
+  });
+  const [submitOpen, setSubmitOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const res = await fetch('/api/dances', { cache: 'no-store' });
+      const json = (await res.json()) as {
+        dances: DanceListItem[];
+        unconfigured?: boolean;
+      };
+      setState({
+        loading: false,
+        error: null,
+        dances: json.dances ?? [],
+        unconfigured: Boolean(json.unconfigured),
+      });
+    } catch (err) {
+      setState({
+        loading: false,
+        error: err instanceof Error ? err.message : 'failed to load library',
+        dances: [],
+        unconfigured: false,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Reload after the submit modal closes — a fresh dance may have just landed.
+  useEffect(() => {
+    if (!submitOpen) load();
+  }, [submitOpen, load]);
+
+  const { loading, error, dances, unconfigured } = state;
+  const [featured, ...rest] = dances;
+  const trending = rest.slice(0, 8);
+  const recent = rest.slice(8, 24);
 
   return (
-    <main className="flex h-full w-full flex-col bg-black">
-      <div className="flex-1 overflow-y-auto no-scrollbar safe-top px-5 pt-5 pb-4">
-        <header className="flex items-center justify-between mb-5">
-          <div>
-            <div className="text-text-muted text-xs">Welcome back</div>
-            <div className="text-2xl font-bold">Hey, {GREETING_NAME}</div>
-          </div>
-          <div className="flex items-center gap-1.5 rounded-full bg-bg-card px-3 py-1.5 ring-1 ring-white/5">
-            <span aria-hidden className="text-base">🔥</span>
-            <span className="text-sm font-bold tabular-nums">{PLACEHOLDER_STREAK}</span>
-          </div>
+    <main className="theme-cream flex h-full w-full flex-col bg-cream">
+      <div className="flex-1 overflow-y-auto no-scrollbar safe-top px-5 pt-6 pb-32">
+        <header className="mb-7">
+          <h1 className="font-serif text-[44px] leading-[1.05] tracking-tight text-ink">
+            Groove
+          </h1>
+          <p className="mt-2 text-sm text-ink-muted">
+            learn any tiktok dance, one chunk at a time
+          </p>
         </header>
 
-        <button
-          type="button"
-          className="mb-6 flex w-full items-center gap-3 rounded-full bg-bg-card px-4 py-3 text-left text-text-muted ring-1 ring-white/5"
-          aria-label="Search"
-        >
-          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="11" cy="11" r="7" />
-            <path d="M21 21l-4.3-4.3" />
-          </svg>
-          <span className="text-sm">paste a tiktok or search</span>
-        </button>
-
-        {error && (
-          <div className="mb-4 rounded-xl border border-accent-red/40 bg-accent-red/10 p-3 text-sm text-accent-red">
-            Failed to load knowledge graph: {error}
+        {loading && (
+          <div className="space-y-4" aria-busy>
+            <div className="h-[280px] w-full animate-pulse rounded-[28px] bg-cream-deep" />
+            <div className="h-[200px] w-full animate-pulse rounded-2xl bg-cream-deep" />
           </div>
         )}
 
-        {!graph && !error && (
-          <div className="space-y-3" aria-busy>
-            <div className="h-48 w-full animate-pulse rounded-3xl bg-bg-card" />
-            <div className="h-20 w-full animate-pulse rounded-2xl bg-bg-card" />
-            <div className="h-20 w-full animate-pulse rounded-2xl bg-bg-card" />
+        {!loading && error && (
+          <div className="rounded-2xl border border-coral/40 bg-coral-soft/60 px-4 py-3 text-sm text-coral-deep">
+            {error}
           </div>
         )}
 
-        {graph && (() => {
-          const resolved = DANCES
-            .map((f) => resolveDance(f, graph))
-            .filter((d): d is Dance => Boolean(d));
-          const [featured, ...rest] = resolved;
-          if (!featured) {
-            return (
-              <div className="rounded-xl border border-accent-amber/40 bg-accent-amber/10 p-3 text-sm text-accent-amber">
-                No reference dances resolved against the loaded knowledge graph.
-              </div>
-            );
-          }
-          return (
-            <>
-              <DanceCard
-                dance={featured}
-                readinessPercent={
-                  computeReadiness({ dance: featured, graph, mastery }).percent
-                }
-                featured
-              />
+        {!loading && !error && dances.length === 0 && (
+          <EmptyState
+            onSubmit={() => setSubmitOpen(true)}
+            unconfigured={unconfigured}
+          />
+        )}
 
-              <section className="mt-7">
-                <div className="mb-3 flex items-end justify-between">
-                  <h2 className="text-lg font-bold">For You</h2>
-                  <span className="text-xs text-text-muted">{rest.length} dances</span>
-                </div>
-                <div className="space-y-2">
-                  {rest.map((dance) => {
-                    const { percent } = computeReadiness({ dance, graph, mastery });
-                    return (
-                      <DanceCard
-                        key={dance.id}
-                        dance={dance}
-                        readinessPercent={percent}
-                      />
-                    );
-                  })}
-                </div>
+        {!loading && !error && featured && (
+          <>
+            <HeroCard dance={featured} />
+
+            {trending.length > 0 && (
+              <section className="mt-9">
+                <SectionHeader title="trending" subtitle="what other dancers are picking up" />
+                <TrendingScroll dances={trending} />
               </section>
-            </>
-          );
-        })()}
+            )}
+
+            {recent.length > 0 && (
+              <section className="mt-9">
+                <SectionHeader title="new to the library" />
+                <RecentList dances={recent} />
+              </section>
+            )}
+          </>
+        )}
       </div>
-      <BottomNav />
+
+      {!loading && dances.length > 0 && (
+        <SubmitFab onClick={() => setSubmitOpen(true)} />
+      )}
+
+      <CreamBottomNav />
+
+      <SubmitModalPlaceholder open={submitOpen} onClose={() => setSubmitOpen(false)} />
     </main>
   );
 }

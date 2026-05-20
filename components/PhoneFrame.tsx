@@ -14,7 +14,7 @@ export default function PhoneFrame({ children }: PhoneFrameProps) {
         .phone-outer {
           width: 100%;
           height: 100dvh;
-          background: #000;
+          background: #2A2722;
           display: flex;
           align-items: stretch;
           justify-content: center;
@@ -22,13 +22,13 @@ export default function PhoneFrame({ children }: PhoneFrameProps) {
         .phone-shell {
           width: 100%;
           height: 100dvh;
-          background: #000;
+          background: transparent;
           position: relative;
         }
         .phone-screen {
           width: 100%;
           height: 100%;
-          background: #000;
+          background: transparent;
           overflow: hidden;
           position: relative;
         }
@@ -45,7 +45,7 @@ export default function PhoneFrame({ children }: PhoneFrameProps) {
             background: #0a0a0a;
             border-radius: 56px;
             padding: 14px;
-            box-shadow: 0 0 0 1.5px #2a2a30, 0 30px 60px -20px rgba(254, 44, 85, 0.15),
+            box-shadow: 0 0 0 1.5px #2a2a30, 0 30px 60px -20px rgba(0, 0, 0, 0.45),
               0 0 0 6px #1c1c20;
           }
           .phone-screen {
