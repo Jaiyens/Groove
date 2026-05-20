@@ -93,3 +93,16 @@ Added pose-tracking UI states: a toast surfaces "pose tracking lost, repositioni
 
 Removed the `width: { ideal: 430 }, height: { ideal: 700 }` constraints on `getUserMedia` — let the device pick native sensor dimensions, and let the projection math handle whatever shape comes back. This also avoids the iOS Safari quirk where unrealistic constraints downscale aggressively and ruin landmark precision.
 
+
+## Audio: separate <audio> element, lazy alloc, gesture-bound first play
+
+Spec: "the reference video file IS the audio source. Use `<audio>` element in Mode B / C". The new `lib/audio/danceAudio.ts` hook allocates one `Audio()` element per src and exposes a controller — `play/pause/seekMs/setVolume/setPlaybackRate/stop` — plus reactive state (isPlaying, isReady, currentTimeMs, durationMs, volume, playbackRate).
+
+Design choices:
+- Separate `<audio>` element rather than reusing the reference `<video>` element's audio output. Mode A keeps the video mounted (PIP); Mode B / C unmount it (camera goes full-bleed) — if we relied on the video's audio, we'd lose audio mid-flow at the mode handoff. The audio element persists across mode transitions because the hook owns its own ref.
+- Lazy alloc tied to `src`. New element on src change so the browser fully resets stream state.
+- `play()` returns `Promise<boolean>` rather than throwing — iOS Safari rejects autoplay; the caller is expected to bind first-play to a user gesture (the "I got it" button in Mode A, the "Start" button in Mode B).
+- `playbackRate` clamped to [0.25, 2] — feeds the 50% / 75% / 100% speed toggle in Mode A.
+
+`components/VolumeControl.tsx` is the compact header control — single tap toggles mute (remembers last non-zero level), hover/focus reveals the slider. Lives in the practice header during Modes A / B / C.
+
