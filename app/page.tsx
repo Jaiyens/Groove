@@ -8,22 +8,8 @@ import SectionHeader from '@/components/library/SectionHeader';
 import EmptyState from '@/components/library/EmptyState';
 import CreamBottomNav from '@/components/library/CreamBottomNav';
 import SubmitFab from '@/components/library/SubmitFab';
+import SubmitModal from '@/components/submit/SubmitModal';
 import type { DanceListItem } from '@/lib/dances/types';
-
-// SubmitModal lands in Phase 4 — kept as a no-op for now.
-const SubmitModalPlaceholder = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
-  if (!open) return null;
-  return (
-    <div role="dialog" aria-modal="true" className="absolute inset-0 z-50 flex items-center justify-center bg-cream/95">
-      <div className="rounded-2xl bg-cream-card p-6 text-center shadow-lift">
-        <p className="font-serif text-xl text-ink">submit flow coming up</p>
-        <button onClick={onClose} className="mt-4 rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white">
-          close
-        </button>
-      </div>
-    </div>
-  );
-};
 
 interface LibraryState {
   loading: boolean;
@@ -138,7 +124,7 @@ export default function HomePage() {
 
       <CreamBottomNav />
 
-      <SubmitModalPlaceholder open={submitOpen} onClose={() => setSubmitOpen(false)} />
+      <SubmitModal open={submitOpen} onClose={() => setSubmitOpen(false)} />
     </main>
   );
 }
