@@ -44,6 +44,7 @@ export default function PracticePage({ params }: PageProps) {
   const beatTrackerRef = useRef<BeatTracker | null>(null);
   const userFramesRef = useRef<FrameSample[]>([]);
   const startMsRef = useRef<number | null>(null);
+  const lastHintAtRef = useRef<number>(0);
 
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('preroll');
@@ -152,7 +153,8 @@ export default function PracticePage({ params }: PageProps) {
             // Light smoothing on the displayed score so digits don't twitch.
             setLiveScore((prev) => prev * 0.7 + s * 0.3);
             // Throttle hint updates to ~5 Hz.
-            if (Math.floor(sessionT / 200) % 1 === 0) {
+            if (sessionT - lastHintAtRef.current >= 200) {
+              lastHintAtRef.current = sessionT;
               setHint(correctionHint(vec, ref));
             }
           }
