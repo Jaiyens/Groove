@@ -11,6 +11,7 @@ import SkeletonOverlay from '@/components/SkeletonOverlay';
 import { getDance } from '@/lib/dances/fixtures';
 import { useGraph } from '@/lib/graph/context';
 import { getMasteryStore } from '@/lib/mastery/store';
+import { attachStream } from '@/lib/pose/cameraAttach';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -20,7 +21,7 @@ import { cosineSimilarity } from '@/lib/scoring/similarity';
 import { neutralReferenceFrame, generateReferenceSequence } from '@/lib/scoring/syntheticReference';
 import type { CorrectionHint } from '@/lib/scoring/types';
 
-type CamState = 'idle' | 'requesting' | 'granted' | 'denied' | 'unavailable';
+type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
 type RunState = 'preroll' | 'running' | 'finished';
 
 const PREROLL_SECONDS = 3;
@@ -80,15 +81,28 @@ export default function PracticePage({ params }: PageProps) {
       });
       streamRef.current = stream;
       const v = videoRef.current;
-      if (v) {
-        v.srcObject = stream;
-        await v.play().catch(() => {/* autoplay may need a tap */});
+      if (!v) {
+        setCamState('needs_tap');
+        return;
       }
-      setCamState('granted');
+      const playing = await attachStream(v, stream);
+      setCamState(playing ? 'granted' : 'needs_tap');
     } catch {
       setCamState('denied');
     }
   }, []);
+
+  // User-gesture fallback when iOS Safari refuses autoplay.
+  const handleTapToStart = useCallback(async () => {
+    const v = videoRef.current;
+    const s = streamRef.current;
+    if (!v || !s) {
+      startCamera();
+      return;
+    }
+    const playing = await attachStream(v, s);
+    setCamState(playing ? 'granted' : 'needs_tap');
+  }, [startCamera]);
 
   useEffect(() => {
     if (camState === 'idle') startCamera();
@@ -324,6 +338,21 @@ export default function PracticePage({ params }: PageProps) {
               >
                 Enable camera
               </button>
+            )}
+            {camState === 'needs_tap' && (
+              <>
+                <div className="text-2xl font-bold">Tap to start camera</div>
+                <p className="mt-2 text-text-muted text-sm max-w-xs">
+                  Your phone blocked autoplay. Tap below to begin the video preview.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleTapToStart}
+                  className="mt-6 rounded-full bg-white px-6 py-3 text-black text-sm font-bold"
+                >
+                  Start
+                </button>
+              </>
             )}
           </div>
         )}

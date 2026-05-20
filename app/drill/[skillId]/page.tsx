@@ -8,6 +8,7 @@ import ProgressBar from '@/components/ProgressBar';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import { useGraph } from '@/lib/graph/context';
 import { getMasteryStore } from '@/lib/mastery/store';
+import { attachStream } from '@/lib/pose/cameraAttach';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { PoseLandmark } from '@/lib/pose/types';
@@ -20,7 +21,7 @@ interface PageProps {
   params: { skillId: string };
 }
 
-type CamState = 'idle' | 'requesting' | 'granted' | 'denied' | 'unavailable';
+type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
 type RunState = 'preroll' | 'running' | 'finished';
 
 const PREROLL_SECONDS = 3;
@@ -71,15 +72,27 @@ export default function DrillPage({ params }: PageProps) {
       });
       streamRef.current = stream;
       const v = videoRef.current;
-      if (v) {
-        v.srcObject = stream;
-        await v.play().catch(() => {});
+      if (!v) {
+        setCamState('needs_tap');
+        return;
       }
-      setCamState('granted');
+      const playing = await attachStream(v, stream);
+      setCamState(playing ? 'granted' : 'needs_tap');
     } catch {
       setCamState('denied');
     }
   }, []);
+
+  const handleTapToStart = useCallback(async () => {
+    const v = videoRef.current;
+    const s = streamRef.current;
+    if (!v || !s) {
+      startCamera();
+      return;
+    }
+    const playing = await attachStream(v, s);
+    setCamState(playing ? 'granted' : 'needs_tap');
+  }, [startCamera]);
 
   useEffect(() => {
     if (camState === 'idle' && skill) startCamera();
@@ -245,6 +258,29 @@ export default function DrillPage({ params }: PageProps) {
                   >
                     Try again
                   </button>
+                </>
+              )}
+              {camState === 'needs_tap' && (
+                <>
+                  <div className="text-xl font-bold">Tap to start</div>
+                  <p className="mt-2 text-text-muted text-xs max-w-xs">
+                    Your phone blocked autoplay.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleTapToStart}
+                    className="mt-4 rounded-full bg-white px-5 py-2 text-black text-sm font-bold"
+                  >
+                    Start
+                  </button>
+                </>
+              )}
+              {camState === 'unavailable' && (
+                <>
+                  <div className="text-xl font-bold">No camera</div>
+                  <p className="mt-2 text-text-muted text-xs max-w-xs">
+                    This browser doesn&apos;t expose getUserMedia.
+                  </p>
                 </>
               )}
             </div>
