@@ -106,3 +106,28 @@ Design choices:
 
 `components/VolumeControl.tsx` is the compact header control — single tap toggles mute (remembers last non-zero level), hover/focus reveals the slider. Lives in the practice header during Modes A / B / C.
 
+
+## Practice loop: three modes, route hierarchy
+
+Spec: replace one-shot `/practice/[danceId]` with `/dance/[id]` overview + Mode A copy-along + Mode B scored test + Mode C full attempt. **Decision**: each mode is its own route; state lives in localStorage (`lib/mastery/chunkProgress.ts`) so navigating mid-flow doesn't lose progress. Mode A keeps the reference video; Mode B unmounts it and switches to audio-only via `useDanceAudio` (the audio element survives the React unmount because the hook owns its own ref). Mode C gates on every chunk being passed and uses the same scoring path as the old practice page, so the results screen + drill recommender don't change.
+
+## Chunker: uniform partition for now
+
+`lib/graph/chunker.ts` distributes `required_skills` across N chunks by `floor(k * N / skills.length)`. **Decision**: this is a placeholder for real per-move choreography labels. The function signature is stable — when timestamp-labelled moves arrive, swap the partition strategy without touching any caller. Default targets: 2.5 s per chunk, 2 skills per chunk, clamped to `[2, 8]` chunks per routine. All 8 real routines yield 5–7 chunks at this default.
+
+## Chunk-progression pass threshold
+
+70 / 100. Captured as `PASS_THRESHOLD` in `lib/mastery/chunkProgress.ts`. Higher than the mastery EMA's natural floor (~30 for a new user attempting a chunk), lower than the 80 / 90 we'd want for genuine mastery. Picked so the demo loop unlocks at a realistic pace — Jaiyen can crank it once real reference-pose data lands and scores become trustworthy.
+
+## Mode A speed default: 60%
+
+Below the 75% tier so first-time learners get a clearly-slower-than-real-time loop, but high enough to feel like dancing not slow-motion. Toggle exposes 50/75/100% per spec.
+
+## Volume control: header pill, not bottom bar
+
+The bottom area is dense (CTA + speed toggle + chunk progress) and a volume slider there competes for attention. Header puts it next to the back button — mute is one tap, slider reveals on focus/hover.
+
+## PIP swap (Mode A)
+
+Tap the PIP to swap roles (camera becomes full-bleed, reference becomes PIP). Implemented as a state toggle; the active element gets `inset-x-3 top-3 h-2/3` instead of `right-3 bottom-24 h-40 w-28`. No separate "swap" button — the entire PIP is the affordance, which matches TikTok Duet behaviour.
+

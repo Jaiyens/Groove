@@ -143,10 +143,10 @@ export default function ResultsPage({ params }: PageProps) {
           </Link>
         )}
         <Link
-          href={`/practice/${dance.id}`}
+          href={`/dance/${dance.id}`}
           className="mt-2 block w-full text-center text-sm text-text-muted py-2"
         >
-          Run it again
+          Back to lesson
         </Link>
       </div>
     </main>

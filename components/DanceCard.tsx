@@ -22,7 +22,7 @@ export default function DanceCard({ dance, readinessPercent, featured }: DanceCa
   if (featured) {
     return (
       <Link
-        href={`/practice/${dance.id}`}
+        href={`/dance/${dance.id}`}
         className="relative block overflow-hidden rounded-3xl bg-gradient-to-br from-accent to-accent-cyan/70 p-5 active:scale-[0.98] transition-transform"
       >
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
@@ -48,7 +48,7 @@ export default function DanceCard({ dance, readinessPercent, featured }: DanceCa
 
   return (
     <Link
-      href={`/practice/${dance.id}`}
+      href={`/dance/${dance.id}`}
       className="flex items-center gap-4 rounded-2xl bg-bg-card p-3.5 active:bg-bg-elevated transition-colors"
     >
       <div className="h-14 w-14 shrink-0 rounded-xl bg-gradient-to-br from-accent/80 to-accent-cyan/60 flex items-center justify-center text-lg font-bold">
