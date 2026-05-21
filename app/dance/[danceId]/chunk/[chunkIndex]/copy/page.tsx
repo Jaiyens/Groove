@@ -282,9 +282,12 @@ export default function CopyAlongPage({ params }: PageProps) {
         </button>
       </header>
 
-      {/* Duet stack: top = reference, bottom = user camera. */}
-      <div className="relative flex flex-1 flex-col overflow-hidden">
-        {/* Top: reference video */}
+      {/* Duet: TikTok-style split-screen. Side-by-side on phones
+          (reference left, user camera right). Falls back to vertical
+          stack on tiny viewports (<400 px) where 200 px per column
+          would be too narrow to read — SPECK rev 3 §Issue 3. */}
+      <div className="relative flex flex-1 flex-row max-[399px]:flex-col overflow-hidden">
+        {/* Left: reference video */}
         <div className="relative flex-1 overflow-hidden bg-black">
           {refSrc ? (
             <video
@@ -346,10 +349,13 @@ export default function CopyAlongPage({ params }: PageProps) {
           )}
         </div>
 
-        {/* Divider */}
-        <div aria-hidden className="h-px w-full bg-white/15" />
+        {/* Divider — vertical in side-by-side, horizontal in stacked fallback. */}
+        <div
+          aria-hidden
+          className="w-px h-full bg-white/15 max-[399px]:h-px max-[399px]:w-full"
+        />
 
-        {/* Bottom: user camera */}
+        {/* Right: user camera */}
         <div className="relative flex-1 overflow-hidden bg-zinc-950">
           <video
             ref={camVideoRef}
@@ -367,7 +373,7 @@ export default function CopyAlongPage({ params }: PageProps) {
           )}
           <div
             aria-hidden
-            className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-white/70 ring-1 ring-white/10"
+            className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
           >
             you
           </div>
