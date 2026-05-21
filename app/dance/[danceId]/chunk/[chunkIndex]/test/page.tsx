@@ -314,13 +314,17 @@ export default function TestPage({ params }: PageProps) {
 
   return (
     <main className="relative flex h-full w-full flex-col bg-black">
-      <header className="safe-top relative z-30 flex items-center gap-3 px-4 pt-3 pb-2">
+      {/* SPECK polish §Fix 7: header now structurally matches Mode A
+          (h-[50px], same label hierarchy) so the layout doesn't lurch
+          when moving between copy and test. BackHomeButton kept since
+          the user has no other way out mid-test. */}
+      <header className="safe-top relative z-30 flex h-[50px] items-center gap-3 px-4">
         <BackHomeButton />
         <div className="flex-1 text-center">
-          <div className="text-[10px] uppercase tracking-widest text-text-muted">
-            Test · chunk {chunkIndex + 1}/{chunks.length}
+          <div className="text-[10px] uppercase tracking-widest text-white/50">
+            test · chunk {chunkIndex + 1}/{chunks.length}
           </div>
-          <div className="truncate text-sm font-bold">{chunk.label}</div>
+          <div className="truncate text-sm font-semibold">{chunk.label}</div>
         </div>
         <VolumeControl volume={volume} onChange={setVolume} />
       </header>
@@ -336,7 +340,8 @@ export default function TestPage({ params }: PageProps) {
         <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
         {runState === 'running' && <FramingToast landmarks={landmarks} />}
 
-        {/* Chunk progress + live score pill */}
+        {/* Chunk progress dots — moved below the safe-top inset so the
+            iOS status bar / notch doesn't clip them on a 390px viewport. */}
         <div className="pointer-events-none absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2">
           {chunks.map((c) => (
             <span
@@ -353,19 +358,22 @@ export default function TestPage({ params }: PageProps) {
           ))}
         </div>
 
-        <div className="absolute left-3 top-14 z-10">
+        <div className="absolute left-3 top-10 z-10">
           <CorrectionToast hint={runState === 'running' ? hint : null} />
         </div>
 
         {poseStatus !== 'ok' && runState === 'running' && (
-          <div className="absolute inset-x-0 top-24 z-10 mx-auto w-fit rounded-full bg-accent-amber/20 px-3 py-1.5 text-xs font-semibold text-accent-amber ring-1 ring-accent-amber/40 backdrop-blur-sm">
+          <div className="absolute inset-x-0 top-20 z-10 mx-auto w-fit rounded-full bg-accent-amber/20 px-3 py-1.5 text-xs font-semibold text-accent-amber ring-1 ring-accent-amber/40 backdrop-blur-sm">
             {poseStatus === 'lost'
               ? 'pose tracking lost, repositioning…'
               : 'pose tracker unavailable'}
           </div>
         )}
 
-        <div className="absolute right-3 bottom-3 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm font-bold tabular-nums text-white ring-1 ring-white/15">
+        {/* SPECK polish §Fix 7: score pill lifted off the bottom edge so
+            it never sits underneath the user's hands at the bottom of
+            the camera frame nor collides with the progress bar below. */}
+        <div className="absolute right-3 bottom-6 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm font-bold tabular-nums text-white ring-1 ring-white/15">
           {Math.round(liveScore)}
         </div>
 
@@ -491,7 +499,10 @@ export default function TestPage({ params }: PageProps) {
         )}
       </div>
 
-      <div className="safe-bottom relative z-30 bg-black px-4 pb-4 pt-2">
+      {/* SPECK polish §Fix 7: bottom bar has explicit safe-bottom + a
+          minimum tap-target's worth of room above the home indicator so
+          the progress bar never lands underneath the iOS gesture area. */}
+      <div className="safe-bottom relative z-30 flex h-[56px] items-center bg-black px-4">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full bg-white transition-[width] duration-100"
