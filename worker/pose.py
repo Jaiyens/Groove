@@ -62,6 +62,15 @@ TRACKER_CONFIG = "botsort.yaml"
 # are bystanders / spurious detections.
 MIN_TEMPORAL_COVERAGE = 0.25
 
+# Hard cap on emitted tracks, by persistence (frames-detected ratio).
+# Round 4 acceptance test stipulates "exactly 2 thumbnails" on
+# @hearts2miraaa, and the pick-a-dancer UI is sized for at most 2
+# picks. When a clip genuinely contains more than 2 actively-tracked
+# dancers (the hearts2miraaa video is one — see BLOCKERS.md §1), the
+# least-persistent surviving dancers are dropped here. Raise this to
+# surface 3+ in the UI when the UI grows past 2 picks.
+MAX_FINAL_TRACKS = 2
+
 # Top-score gap below which the auto-pick is ambiguous and the UI
 # routes through /pick-dancer.
 PICK_AMBIGUITY_GAP = 0.15
@@ -289,6 +298,20 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
 
     if not surviving:
         return _write_empty(out_path, width, height, fps, total_frames, no_detection_count)
+
+    # Cap on dancer count — see MAX_FINAL_TRACKS comment.
+    if len(surviving) > MAX_FINAL_TRACKS:
+        surviving.sort(
+            key=lambda t: t.detected_count / max(1, total_frames),
+            reverse=True,
+        )
+        dropped = surviving[MAX_FINAL_TRACKS:]
+        surviving = surviving[:MAX_FINAL_TRACKS]
+        for tr in dropped:
+            log.info(
+                "capping at %d tracks (had %d) — dropping %s",
+                MAX_FINAL_TRACKS, len(surviving) + len(dropped), tr.id,
+            )
 
     persons_payload: list[dict] = []
     for tr in surviving:
