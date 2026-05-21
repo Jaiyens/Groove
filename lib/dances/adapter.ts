@@ -1,7 +1,7 @@
 // Adapt a backend DanceRecord into the in-app Dance shape used by the
 // existing practice routes (Mode A / B / C, scoring, chunker).
 
-import type { Dance, DanceRecord } from './types';
+import { displayNameFor, type Dance, type DanceRecord } from './types';
 
 export function recordToDance(record: DanceRecord): Dance | null {
   if (record.status !== 'ready') return null;
@@ -20,7 +20,7 @@ export function recordToDance(record: DanceRecord): Dance | null {
   }
   return {
     id: record.id,
-    name: record.title ?? 'Untitled',
+    name: displayNameFor(record),
     artist: record.creator_handle ?? 'unknown',
     video_url: record.video_url,
     skeleton_video_url: record.skeleton_video_url,

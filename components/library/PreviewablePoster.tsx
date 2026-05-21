@@ -19,7 +19,7 @@ import type { DanceListItem } from '@/lib/dances/types';
 import DanceThumb from './DanceThumb';
 
 interface PreviewablePosterProps {
-  dance: Pick<DanceListItem, 'title' | 'thumbnail_url' | 'video_url'>;
+  dance: Pick<DanceListItem, 'title' | 'display_name' | 'thumbnail_url' | 'video_url'>;
   className?: string;
   rounded?: 'lg' | 'xl' | '2xl' | '3xl';
   // ms the preview plays before snapping back to thumbnail

@@ -31,7 +31,7 @@ export async function GET(request: Request) {
   let query = supabase
     .from('dances')
     .select(
-      'id, title, creator_handle, thumbnail_url, video_url, duration_seconds, view_count, ready_at, created_at',
+      'id, title, display_name, creator_handle, thumbnail_url, video_url, duration_seconds, view_count, ready_at, created_at',
     )
     .eq('status', 'ready')
     // SPECK polish §Fix 5: newest first, deterministic. `id` tiebreaks

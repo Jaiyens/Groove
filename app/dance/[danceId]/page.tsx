@@ -132,7 +132,11 @@ export default function DanceOverviewPage({ params }: PageProps) {
       <div className="flex-1 overflow-y-auto no-scrollbar px-5 pb-8">
         <section className="overflow-hidden rounded-[28px] bg-cream-card shadow-soft">
           <DanceThumb
-            dance={{ title: dance.name, thumbnail_url: dance.thumbnail_url }}
+            dance={{
+              title: dance.name,
+              display_name: dance.name,
+              thumbnail_url: dance.thumbnail_url,
+            }}
             rounded="lg"
             className="aspect-[16/10] w-full rounded-none"
           />

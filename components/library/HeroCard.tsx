@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import type { DanceListItem } from '@/lib/dances/types';
+import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
 import PreviewablePoster from './PreviewablePoster';
 
 interface HeroCardProps {
@@ -24,7 +24,7 @@ export default function HeroCard({ dance }: HeroCardProps) {
           featured
         </div>
         <h3 className="mt-1 text-[26px] font-medium leading-tight text-ink">
-          {dance.title ?? 'Untitled'}
+          {displayNameFor(dance)}
         </h3>
         {dance.creator_handle && (
           <p className="mt-1 text-sm text-ink-muted">

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import type { DanceListItem } from '@/lib/dances/types';
+import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
 import PreviewablePoster from './PreviewablePoster';
 
 interface TrendingScrollProps {
@@ -23,7 +23,7 @@ export default function TrendingScroll({ dances }: TrendingScrollProps) {
               />
               <div className="mt-2 px-1">
                 <div className="line-clamp-2 text-sm font-semibold text-ink">
-                  {dance.title ?? 'Untitled'}
+                  {displayNameFor(dance)}
                 </div>
                 {dance.creator_handle && (
                   <div className="text-xs text-ink-muted">

@@ -22,6 +22,10 @@ export interface DanceRecord {
   id: string;
   tiktok_url: string;
   title: string | null;
+  // SPECK polish §Fix 3: AI-cleaned name shown in the library and on
+  // the dance detail page. The frontend reads `displayNameFor()` which
+  // falls back to `title` when null.
+  display_name: string | null;
   creator_handle: string | null;
   duration_seconds: number | null;
   bpm: number | null;
@@ -59,6 +63,10 @@ export interface DanceRecord {
 export interface DanceListItem {
   id: string;
   title: string | null;
+  // SPECK polish §Fix 3: AI-cleaned name. Null on legacy rows that
+  // haven't been reprocessed yet — call sites read `displayNameFor()`
+  // which falls back to title.
+  display_name: string | null;
   creator_handle: string | null;
   thumbnail_url: string | null;
   // SPECK polish §Fix 6: surfaced to the library so cards can show a
@@ -68,6 +76,22 @@ export interface DanceListItem {
   view_count: number;
   ready_at: string | null;
   created_at: string;
+}
+
+// SPECK polish §Fix 3: single source of truth for "what name do we
+// render for this dance?". Prefer the AI-cleaned display_name; fall
+// back to the raw TikTok caption; fall back to a generic placeholder.
+// Accepts both DanceListItem and DanceRecord (and anything else with
+// the two fields).
+export function displayNameFor(
+  dance: { display_name?: string | null; title?: string | null },
+  fallback = 'Untitled',
+): string {
+  const dn = dance.display_name?.trim();
+  if (dn) return dn;
+  const t = dance.title?.trim();
+  if (t) return t;
+  return fallback;
 }
 
 // Adapter shape consumed by the existing practice routes / scoring code.

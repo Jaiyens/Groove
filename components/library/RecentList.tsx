@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import type { DanceListItem } from '@/lib/dances/types';
+import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
 import PreviewablePoster from './PreviewablePoster';
 
 interface RecentListProps {
@@ -25,7 +25,7 @@ export default function RecentList({ dances }: RecentListProps) {
             />
             <div className="min-w-0 flex-1">
               <div className="truncate text-base font-medium text-ink leading-tight">
-                {dance.title ?? 'Untitled'}
+                {displayNameFor(dance)}
               </div>
               {dance.creator_handle && (
                 <div className="truncate text-xs text-ink-muted">
