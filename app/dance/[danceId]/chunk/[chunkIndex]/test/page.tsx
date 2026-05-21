@@ -17,6 +17,7 @@ import FramingToast from '@/components/FramingToast';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
+import { playTick } from '@/lib/audio/tick';
 import { useDance } from '@/lib/dances/useDance';
 import {
   PASS_THRESHOLD,
@@ -85,6 +86,10 @@ export default function TestPage({ params }: PageProps) {
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
   const [confidence, setConfidence] = useState<number | null>(null);
+  // SPECK rev 3 §Issue 2: "GO" flash overlay shown for ~600ms after the
+  // preroll lands on zero. Audio + scoring start the moment this flag flips
+  // true so the user's first dance step is in sync with the audio.
+  const [showGo, setShowGo] = useState(false);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [unlockedNext, setUnlockedNext] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -161,22 +166,30 @@ export default function TestPage({ params }: PageProps) {
     };
   }, [camState, runState]);
 
-  // Preroll countdown.
+  // Preroll countdown — 3 → 2 → 1 → GO. Per SPECK rev 3 §Issue 2 every
+  // step gets an audible tick (880 Hz blip via Web Audio API) and the GO
+  // moment is the exact instant audio + scoring start.
   useEffect(() => {
     if (runState !== 'preroll') return;
     if (prerollLeft <= 0) {
+      // Fire the emphasis tick + the GO overlay + audio + scoring loop in
+      // the same tick so audio and detection start together.
+      playTick({ emphasis: true });
+      setShowGo(true);
       setRunState('running');
       startMsRef.current = performance.now();
       userFramesRef.current = [];
-      // Start audio at chunk.startMs, synced with detection-loop t=0.
       if (chunk && dance) {
         audio.seekMs(chunk.startMs);
         void audio.play();
       }
-      return;
+      const hide = window.setTimeout(() => setShowGo(false), 600);
+      return () => window.clearTimeout(hide);
     }
-    const t = setTimeout(() => setPrerollLeft((n) => n - 1), 1000);
-    return () => clearTimeout(t);
+    // Every visible number 3, 2, 1 gets a tick.
+    playTick();
+    const t = window.setTimeout(() => setPrerollLeft((n) => n - 1), 1000);
+    return () => window.clearTimeout(t);
   }, [runState, prerollLeft, audio, chunk, dance]);
 
   // Visibility pause/resume — re-anchor session clock so MediaPipe doesn't
@@ -366,18 +379,29 @@ export default function TestPage({ params }: PageProps) {
           {Math.round(liveScore)}
         </div>
 
-        {/* Preroll overlay */}
+        {/* Preroll countdown — semi-transparent so the camera + skeleton
+            remain visible behind it, so the user can confirm they're in
+            frame while the count plays. */}
         {runState === 'preroll' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="text-xs uppercase tracking-widest text-text-muted">
-              Get ready
+          <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/40">
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-white/85">
+              get ready
             </div>
-            <div className="mt-2 text-[120px] font-extrabold leading-none tabular-nums text-white">
+            <div className="mt-2 text-[180px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
               {prerollLeft}
             </div>
-            <div className="mt-3 text-base font-bold">{chunk.label}</div>
-            <div className="text-xs text-text-muted">
+            <div className="mt-3 text-sm font-medium text-white/90">{chunk.label}</div>
+            <div className="text-xs text-white/70">
               {((chunk.endMs - chunk.startMs) / 1000).toFixed(1)}s · {dance.bpm} BPM
+            </div>
+          </div>
+        )}
+
+        {/* GO flash — hot pink, shown for 600ms after preroll lands. */}
+        {showGo && (
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
+            <div className="text-[160px] font-medium leading-none tracking-tight text-coral drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
+              GO
             </div>
           </div>
         )}
