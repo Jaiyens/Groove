@@ -83,6 +83,26 @@ brunette on the left, persistence 0.872) and keeps p2 (blonde center,
 0.926) and p3 (brunette right, 0.905). dancer_count is now 2 so the
 acceptance criterion is met and Fix 2 → Fix 4 can proceed.
 
+### Reprocess of existing dances is NOT done
+
+`worker/reprocess_all.py` is committed and dry-run-verified but I did
+NOT execute the live reprocess against the 8 production rows —
+mass-mutating production data while the cap question is unresolved is
+the wrong order of operations. Decide on the cap (below), then run:
+
+```
+cd worker && source venv/bin/activate
+python reprocess_all.py            # all 8 rows
+python reprocess_all.py --dry-run  # preview only
+python reprocess_all.py --id <uuid># one specific dance
+```
+
+The script downloads each row's cached `video.mp4` + `audio.wav` from
+Storage (no TikTok re-download — those URLs expire) and uploads new
+pose / chunks / skills / skeleton / thumbnails via the same
+`upload_and_finalise()` path the live worker uses. Failures per row
+are caught and marked `status='failed'` so the loop keeps going.
+
 ### Action — pick one in the morning
 
 1. **Keep the cap at 2.** The pick-a-dancer UI is already sized for at
