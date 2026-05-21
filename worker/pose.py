@@ -69,7 +69,7 @@ MIN_TEMPORAL_COVERAGE = 0.25
 # dancers (the hearts2miraaa video is one — see BLOCKERS.md §1), the
 # least-persistent surviving dancers are dropped here. Raise this to
 # surface 3+ in the UI when the UI grows past 2 picks.
-MAX_FINAL_TRACKS = 2
+MAX_FINAL_TRACKS = 4
 
 # Top-score gap below which the auto-pick is ambiguous and the UI
 # routes through /pick-dancer.
