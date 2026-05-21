@@ -164,27 +164,11 @@ function FrameCheckInner() {
 
   return (
     <main className="theme-dark relative flex h-full w-full flex-col bg-black text-white">
-      <header className="safe-top relative z-30 flex items-center justify-between px-4 pt-3 pb-2">
-        <button
-          type="button"
-          onClick={() => router.back()}
-          aria-label="Back"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
-        >
-          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
-        <div className="text-xs font-medium uppercase tracking-[0.18em] text-white/70">
-          framing check
-        </div>
-        <button
-          type="button"
-          onClick={() => router.replace(returnTo)}
-          className="text-xs font-medium text-white/60 active:text-white"
-        >
-          skip
-        </button>
+      <header className="safe-top relative z-30 flex flex-col items-center gap-1 px-4 pt-4 pb-3">
+        <h1 className="text-lg font-semibold text-white">let&rsquo;s get you framed</h1>
+        <p className="text-center text-xs text-white/70">
+          find a spot where your whole body fits — back up if you need to
+        </p>
       </header>
 
       <div className="relative flex-1 overflow-hidden bg-zinc-950">
@@ -205,18 +189,26 @@ function FrameCheckInner() {
         )}
       </div>
 
-      <div className="safe-bottom flex flex-col gap-3 bg-black px-5 pt-4 pb-5">
-        <p className="text-center text-sm text-white/80">
-          stand back so your whole body fits the outline. plain wall behind
-          you. find good light.
-        </p>
+      <div className="safe-bottom relative flex flex-col gap-3 bg-black px-5 pt-4 pb-5">
+        {/* SPECK round-4 §Fix 4: skip link sits bottom-left, doesn't
+            block — onboarding is firm but the user can override. */}
+        <button
+          type="button"
+          onClick={() => {
+            markFramingCalibrated();
+            router.replace(returnTo);
+          }}
+          className="absolute left-5 top-3 text-xs font-medium text-white/55 active:text-white"
+        >
+          skip
+        </button>
         <button
           type="button"
           disabled={!allInside}
           onClick={finish}
-          className={`rounded-full py-4 text-center text-base font-medium transition-colors ${
+          className={`mt-4 rounded-full py-4 text-center text-base font-semibold transition-colors ${
             allInside
-              ? 'bg-white text-black active:scale-[0.98]'
+              ? 'bg-coral text-white active:scale-[0.98]'
               : 'bg-white/15 text-white/50'
           }`}
         >

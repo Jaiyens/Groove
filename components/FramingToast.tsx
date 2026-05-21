@@ -70,12 +70,12 @@ export default function FramingToast({
       <button
         type="button"
         onClick={() => setShowSilhouette(true)}
-        className={`pointer-events-auto absolute inset-x-0 top-20 z-30 mx-auto flex w-fit items-center gap-2 rounded-full bg-black/85 px-3.5 py-2 text-xs font-medium text-white ring-1 ring-white/20 backdrop-blur-sm active:scale-95 ${className}`}
+        className={`pointer-events-auto absolute bottom-4 left-3 z-30 flex w-fit max-w-[260px] items-center gap-2 rounded-full bg-black/85 px-3.5 py-2 text-left text-xs font-medium text-white ring-1 ring-white/20 backdrop-blur-sm active:scale-95 ${className}`}
       >
         <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
         </svg>
-        adjust your framing
+        step back so we can see all of you
       </button>
       {showSilhouette && <SilhouetteGuide />}
     </>
@@ -88,11 +88,11 @@ export default function FramingToast({
 export function SilhouetteGuide({
   active = false,
 }: {
-  // When true, the outline is green (used by onboarding once the user is
-  // fully in-frame). Default white-ish.
+  // When true, the outline is hot pink (Direction 3 accent — SPECK
+  // round-4 §Fix 4 onboarding flow). Default white-ish translucent.
   active?: boolean;
 }) {
-  const color = active ? '#00C26B' : 'rgba(255,255,255,0.55)';
+  const color = active ? '#FF3E7F' : 'rgba(255,255,255,0.55)';
   return (
     <svg
       className="pointer-events-none absolute inset-0 z-20 m-auto h-3/4 w-auto"

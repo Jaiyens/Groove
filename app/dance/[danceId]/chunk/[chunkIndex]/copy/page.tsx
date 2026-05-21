@@ -28,6 +28,7 @@ import CameraPermissionBanner, {
 } from '@/components/CameraPermissionBanner';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { PoseLandmark } from '@/lib/pose/types';
 
@@ -67,6 +68,17 @@ export default function CopyAlongPage({ params }: PageProps) {
       router.replace(`/dance/${params.danceId}`);
     }
   }, [loading, notFound, dance, chunk, router, params.danceId]);
+
+  // SPECK round-4 §Fix 4 onboarding gate: first practice anywhere across
+  // the app routes through /onboarding/frame-check, then back to here.
+  // Pure client gate (no SSR concern — useEffect always runs client-side).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isFramingCalibrated()) {
+      const here = `/dance/${params.danceId}/chunk/${chunkIndex}/copy`;
+      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+    }
+  }, [params.danceId, chunkIndex, router]);
 
   // Reference media: prefer the real TikTok video, fall back to the
   // skeleton-only mp4 for legacy rows whose video_url is null.
