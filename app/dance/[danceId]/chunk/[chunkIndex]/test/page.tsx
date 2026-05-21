@@ -138,7 +138,13 @@ export default function TestPage({ params }: PageProps) {
     if (camState === 'idle') startCamera();
   }, [camState, startCamera]);
 
-  // Pose extractor init.
+  // Pose extractor init — runs once per camera-grant. Previously had
+  // `runState` in deps which caused the extractor to be closed and
+  // reinitialized on every state transition; specifically, tapping start
+  // → setRunState('running') tore down the extractor mid-detection so the
+  // scoring loop saw `ex.ready === false` and never accumulated frames,
+  // leaving the page apparently hung. Use the functional setState form to
+  // transition out of waiting without depending on the current value.
   useEffect(() => {
     if (camState !== 'granted') return;
     let cancelled = false;
@@ -147,8 +153,11 @@ export default function TestPage({ params }: PageProps) {
     setPoseStatus('ok');
     ex.init()
       .then(() => {
-        if (cancelled) ex.close();
-        else if (runState === 'waiting_for_camera') setRunState('ready');
+        if (cancelled) {
+          ex.close();
+          return;
+        }
+        setRunState((prev) => (prev === 'waiting_for_camera' ? 'ready' : prev));
       })
       .catch((err: unknown) => {
         console.error('PoseExtractor init failed', err);
@@ -159,7 +168,7 @@ export default function TestPage({ params }: PageProps) {
       ex.close();
       extractorRef.current = null;
     };
-  }, [camState, runState]);
+  }, [camState]);
 
   // SPECK round-4 §Fix 2: invoked by StartOverlay when its 3-2-1
   // countdown lands on zero. This is the exact instant audio + scoring
