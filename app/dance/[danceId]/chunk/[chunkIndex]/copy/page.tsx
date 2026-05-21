@@ -21,6 +21,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import SpeedToggle from '@/components/SpeedToggle';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
+import StartOverlay from '@/components/StartOverlay';
 import CameraPermissionBanner, {
   isInsecureContext,
   type CamState,
@@ -54,6 +55,11 @@ export default function CopyAlongPage({ params }: PageProps) {
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
+  // SPECK round-4 §Fix 2: the reference video does not play until the
+  // user taps "start" and the 3-2-1-GO countdown finishes. Re-entering
+  // the chunk (back-arrow + tap-in) resets this because the route
+  // remounts the page.
+  const [started, setStarted] = useState(false);
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -121,7 +127,9 @@ export default function CopyAlongPage({ params }: PageProps) {
   );
 
   // Reference-video chunk loop. Drives video playback within [startMs, endMs]
-  // at the chosen rate. Audio is the video's own audio track.
+  // at the chosen rate. Audio is the video's own audio track. Gated on
+  // `started` (SPECK round-4 §Fix 2): the video stays paused at the chunk's
+  // start frame until the user has tapped "start" and the 3-2-1 has fired.
   useEffect(() => {
     const v = refVideoRef.current;
     if (!v || !chunk) return;
@@ -129,6 +137,7 @@ export default function CopyAlongPage({ params }: PageProps) {
     v.muted = muted;
 
     const onTimeUpdate = () => {
+      if (!started) return;
       const tMs = v.currentTime * 1000;
       if (tMs >= chunk.endMs || tMs < chunk.startMs - 50) {
         v.currentTime = chunk.startMs / 1000;
@@ -143,6 +152,7 @@ export default function CopyAlongPage({ params }: PageProps) {
       }
     };
     const tryPlay = () => {
+      if (!started) return;
       v.play().catch((err: unknown) => {
         // Autoplay-with-sound blocked. Mute + retry; surface unmute prompt.
         const name = (err as { name?: string } | null)?.name;
@@ -154,20 +164,26 @@ export default function CopyAlongPage({ params }: PageProps) {
         }
       });
     };
-    v.addEventListener('timeupdate', onTimeUpdate);
-    v.addEventListener('loadedmetadata', () => {
+    const onLoadedMeta = () => {
       seekToStart();
       tryPlay();
-    });
+    };
+    v.addEventListener('timeupdate', onTimeUpdate);
+    v.addEventListener('loadedmetadata', onLoadedMeta);
     if (v.readyState >= 1) {
       seekToStart();
       tryPlay();
+    } else if (!started) {
+      // Still want the first frame visible behind the overlay so the
+      // user can see what they're about to dance — kick a load.
+      try { v.load(); } catch { /* ignore */ }
     }
     return () => {
       v.removeEventListener('timeupdate', onTimeUpdate);
+      v.removeEventListener('loadedmetadata', onLoadedMeta);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunk, rate, muted]);
+  }, [chunk, rate, muted, started]);
 
   // Drive the skeleton overlay's landmark state from the reference video's
   // currentTime. Cheap (binary search per frame), only runs while the toggle
@@ -195,18 +211,19 @@ export default function CopyAlongPage({ params }: PageProps) {
   }, [showSkeleton, poseData]);
 
   // Pause when the tab is hidden so audio doesn't keep going in the
-  // background; resume when it returns.
+  // background; resume when it returns — but only if the user has
+  // already crossed the StartOverlay gate.
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const onVis = () => {
       const v = refVideoRef.current;
       if (!v) return;
       if (document.hidden) v.pause();
-      else void v.play().catch(() => {});
+      else if (started) void v.play().catch(() => {});
     };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
-  }, []);
+  }, [started]);
 
   const handleUnmuteTap = useCallback(() => {
     const v = refVideoRef.current;
@@ -217,19 +234,25 @@ export default function CopyAlongPage({ params }: PageProps) {
     void v.play().catch(() => {});
   }, []);
 
-  const handleStartTap = useCallback(() => {
-    // One gesture that unmutes (if needed) AND requests camera permission.
+  // SPECK round-4 §Fix 2: StartOverlay fires this when the user taps
+  // "start". One gesture covers iOS Safari's autoplay-with-sound +
+  // getUserMedia permission. The video is still gated on `started`
+  // (the GO callback) so this only PREPARES playback; it doesn't start.
+  const handleOverlayStart = useCallback(() => {
     const v = refVideoRef.current;
     if (v && v.muted) {
       v.muted = false;
       setMuted(false);
       setNeedsUnmuteTap(false);
-      void v.play().catch(() => {});
     }
     if (camState === 'idle' || camState === 'needs_tap' || camState === 'denied') {
       void startCamera();
     }
   }, [camState, startCamera]);
+
+  const handleOverlayGo = useCallback(() => {
+    setStarted(true);
+  }, []);
 
   const chunkDurationSec = useMemo(
     () => (chunk ? (chunk.endMs - chunk.startMs) / 1000 : 0),
@@ -294,7 +317,7 @@ export default function CopyAlongPage({ params }: PageProps) {
               ref={refVideoRef}
               src={refSrc}
               playsInline
-              autoPlay
+              preload="auto"
               loop={false}
               onError={() => setRefMissing(true)}
               className="absolute inset-0 h-full w-full object-cover"
@@ -389,33 +412,33 @@ export default function CopyAlongPage({ params }: PageProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {camState !== 'granted' && (
-            <button
-              type="button"
-              onClick={handleStartTap}
-              className="flex-1 rounded-full bg-white py-3 text-center text-sm font-semibold text-black active:scale-[0.98]"
-            >
-              tap to start
-            </button>
-          )}
-          {camState === 'granted' && (
-            <>
-              <Link
-                href={`/dance/${dance.id}`}
-                className="flex-1 rounded-full bg-white/10 py-3 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
-              >
-                back to lesson
-              </Link>
-              <Link
-                href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
-                className="flex-[2] rounded-full bg-coral py-3 text-center text-sm font-semibold text-white active:scale-[0.98]"
-              >
-                I got it · test
-              </Link>
-            </>
-          )}
+          <Link
+            href={`/dance/${dance.id}`}
+            className="flex-1 rounded-full bg-white/10 py-3 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
+          >
+            back to lesson
+          </Link>
+          <Link
+            href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
+            className="flex-[2] rounded-full bg-coral py-3 text-center text-sm font-semibold text-white active:scale-[0.98]"
+          >
+            I got it · test
+          </Link>
         </div>
       </div>
+
+      {/* SPECK round-4 §Fix 2: press-start + 3-2-1-GO gate, mounted on
+          top of the duet so the user sees the layout behind it. */}
+      {!started && (
+        <StartOverlay
+          chunkNumber={chunkIndex + 1}
+          totalChunks={chunks.length}
+          chunkLabel={chunk.label ?? `section ${chunkIndex + 1}`}
+          subtitle="watch first, then copy"
+          onStart={handleOverlayStart}
+          onGo={handleOverlayGo}
+        />
+      )}
     </main>
   );
 }

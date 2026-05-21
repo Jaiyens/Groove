@@ -15,9 +15,9 @@ import BackHomeButton from '@/components/BackHomeButton';
 import CorrectionToast from '@/components/CorrectionToast';
 import FramingToast from '@/components/FramingToast';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
+import StartOverlay from '@/components/StartOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
-import { playTick } from '@/lib/audio/tick';
 import { useDance } from '@/lib/dances/useDance';
 import {
   PASS_THRESHOLD,
@@ -43,9 +43,10 @@ import type { CorrectionHint } from '@/lib/scoring/types';
 import { scoreColor } from '@/lib/scoring/types';
 
 type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
-type RunState = 'waiting_for_camera' | 'preroll' | 'running' | 'finished';
-
-const PREROLL_SECONDS = 3;
+// SPECK round-4 §Fix 2: scoring does not auto-start after camera grants.
+// `ready` shows the StartOverlay; tapping start kicks the overlay's own
+// 3-2-1-GO countdown, and onGo flips state to `running`.
+type RunState = 'waiting_for_camera' | 'ready' | 'running' | 'finished';
 
 interface PageProps {
   params: { danceId: string; chunkIndex: string };
@@ -79,17 +80,12 @@ export default function TestPage({ params }: PageProps) {
 
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('waiting_for_camera');
-  const [prerollLeft, setPrerollLeft] = useState(PREROLL_SECONDS);
   const [landmarks, setLandmarks] = useState<PoseLandmark[] | null>(null);
   const [liveScore, setLiveScore] = useState(0);
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
   const [confidence, setConfidence] = useState<number | null>(null);
-  // SPECK rev 3 §Issue 2: "GO" flash overlay shown for ~600ms after the
-  // preroll lands on zero. Audio + scoring start the moment this flag flips
-  // true so the user's first dance step is in sync with the audio.
-  const [showGo, setShowGo] = useState(false);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [unlockedNext, setUnlockedNext] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -153,7 +149,7 @@ export default function TestPage({ params }: PageProps) {
     ex.init()
       .then(() => {
         if (cancelled) ex.close();
-        else if (runState === 'waiting_for_camera') setRunState('preroll');
+        else if (runState === 'waiting_for_camera') setRunState('ready');
       })
       .catch((err: unknown) => {
         console.error('PoseExtractor init failed', err);
@@ -166,31 +162,18 @@ export default function TestPage({ params }: PageProps) {
     };
   }, [camState, runState]);
 
-  // Preroll countdown — 3 → 2 → 1 → GO. Per SPECK rev 3 §Issue 2 every
-  // step gets an audible tick (880 Hz blip via Web Audio API) and the GO
-  // moment is the exact instant audio + scoring start.
-  useEffect(() => {
-    if (runState !== 'preroll') return;
-    if (prerollLeft <= 0) {
-      // Fire the emphasis tick + the GO overlay + audio + scoring loop in
-      // the same tick so audio and detection start together.
-      playTick({ emphasis: true });
-      setShowGo(true);
-      setRunState('running');
-      startMsRef.current = performance.now();
-      userFramesRef.current = [];
-      if (chunk && dance) {
-        audio.seekMs(chunk.startMs);
-        void audio.play();
-      }
-      const hide = window.setTimeout(() => setShowGo(false), 600);
-      return () => window.clearTimeout(hide);
-    }
-    // Every visible number 3, 2, 1 gets a tick.
-    playTick();
-    const t = window.setTimeout(() => setPrerollLeft((n) => n - 1), 1000);
-    return () => window.clearTimeout(t);
-  }, [runState, prerollLeft, audio, chunk, dance]);
+  // SPECK round-4 §Fix 2: invoked by StartOverlay when its 3-2-1
+  // countdown lands on zero. This is the exact instant audio + scoring
+  // start, so the user's first dance step lines up with the beat. The
+  // emphasis "GO" tick is fired inside the overlay itself.
+  const handleOverlayGo = useCallback(() => {
+    if (!chunk || !dance) return;
+    setRunState('running');
+    startMsRef.current = performance.now();
+    userFramesRef.current = [];
+    audio.seekMs(chunk.startMs);
+    void audio.play();
+  }, [audio, chunk, dance]);
 
   // Visibility pause/resume — re-anchor session clock so MediaPipe doesn't
   // see a giant timestamp jump.
@@ -379,31 +362,16 @@ export default function TestPage({ params }: PageProps) {
           {Math.round(liveScore)}
         </div>
 
-        {/* Preroll countdown — semi-transparent so the camera + skeleton
-            remain visible behind it, so the user can confirm they're in
-            frame while the count plays. */}
-        {runState === 'preroll' && (
-          <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/40">
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-white/85">
-              get ready
-            </div>
-            <div className="mt-2 text-[180px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
-              {prerollLeft}
-            </div>
-            <div className="mt-3 text-sm font-medium text-white/90">{chunk.label}</div>
-            <div className="text-xs text-white/70">
-              {((chunk.endMs - chunk.startMs) / 1000).toFixed(1)}s · {dance.bpm} BPM
-            </div>
-          </div>
-        )}
-
-        {/* GO flash — hot pink, shown for 600ms after preroll lands. */}
-        {showGo && (
-          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
-            <div className="text-[160px] font-medium leading-none tracking-tight text-coral drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
-              GO
-            </div>
-          </div>
+        {/* SPECK round-4 §Fix 2: press-start gate + 3-2-1 countdown.
+            The overlay handles its own audible ticks via lib/audio/tick. */}
+        {runState === 'ready' && (
+          <StartOverlay
+            chunkNumber={chunkIndex + 1}
+            totalChunks={chunks.length}
+            chunkLabel={chunk.label ?? `section ${chunkIndex + 1}`}
+            subtitle="ready to dance?"
+            onGo={handleOverlayGo}
+          />
         )}
 
         {runState === 'waiting_for_camera' && (
@@ -489,8 +457,7 @@ export default function TestPage({ params }: PageProps) {
                 <button
                   type="button"
                   onClick={() => {
-                    setRunState('preroll');
-                    setPrerollLeft(PREROLL_SECONDS);
+                    setRunState('ready');
                     setFinalScore(null);
                     setLiveScore(0);
                     setProgress(0);
