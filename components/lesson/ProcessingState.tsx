@@ -38,19 +38,19 @@ export default function ProcessingState({ initial }: ProcessingStateProps) {
     return (
       <main className="theme-cream flex h-full w-full flex-col bg-cream">
         <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-coral-soft text-coral-deep">
+          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-cream-deep text-accent-red">
             <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <circle cx="12" cy="12" r="10" />
               <path d="M12 9v4M12 17h.01" />
             </svg>
           </div>
-          <h1 className="mt-5 font-serif text-2xl text-ink">we couldn’t process that</h1>
+          <h1 className="mt-5 text-2xl font-medium tracking-tight text-ink">we couldn’t process that</h1>
           <p className="mt-2 max-w-[280px] text-sm text-ink-muted">
             {record.error_message ?? 'something broke during pose extraction.'}
           </p>
           <a
             href="/"
-            className="mt-7 inline-flex items-center gap-2 rounded-full bg-coral px-5 py-3 text-sm font-semibold text-white"
+            className="mt-7 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-3 text-sm font-medium text-cream-card"
           >
             back to library
           </a>
@@ -63,10 +63,10 @@ export default function ProcessingState({ initial }: ProcessingStateProps) {
     <main className="theme-cream flex h-full w-full flex-col bg-cream">
       <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
         <div className="relative h-24 w-24">
-          <div className="absolute inset-0 rounded-full border-4 border-coral-soft" />
+          <div className="absolute inset-0 rounded-full border-4 border-cream-deep" />
           <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-coral" />
         </div>
-        <h1 className="mt-7 font-serif text-2xl text-ink">getting your dance ready</h1>
+        <h1 className="mt-7 text-2xl font-medium tracking-tight text-ink">getting your dance ready</h1>
         <p className="mt-2 text-xs uppercase tracking-[0.2em] text-ink-dim">
           {record.status}
         </p>

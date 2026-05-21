@@ -24,7 +24,7 @@ export default function RecentList({ dances }: RecentListProps) {
               className="h-16 w-16 shrink-0"
             />
             <div className="min-w-0 flex-1">
-              <div className="truncate font-serif text-lg text-ink leading-tight">
+              <div className="truncate text-base font-medium text-ink leading-tight">
                 {dance.title ?? 'Untitled'}
               </div>
               {dance.creator_handle && (

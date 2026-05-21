@@ -20,10 +20,10 @@ export default function HeroCard({ dance }: HeroCardProps) {
         className="aspect-[4/3] w-full rounded-none"
       />
       <div className="px-5 pt-4 pb-5">
-        <div className="text-xs font-medium uppercase tracking-[0.18em] text-coral">
+        <div className="text-xs font-medium uppercase tracking-[0.18em] text-ink-muted">
           featured
         </div>
-        <h3 className="mt-1 font-serif text-[28px] leading-tight text-ink">
+        <h3 className="mt-1 text-[26px] font-medium leading-tight text-ink">
           {dance.title ?? 'Untitled'}
         </h3>
         {dance.creator_handle && (
@@ -31,7 +31,7 @@ export default function HeroCard({ dance }: HeroCardProps) {
             @{dance.creator_handle.replace(/^@/, '')}
           </p>
         )}
-        <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white">
+        <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream-card">
           <span>tap to learn</span>
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M5 12h14M13 5l7 7-7 7" />

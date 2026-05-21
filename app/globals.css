@@ -2,11 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Direction 3 — off-white background, near-black text, hot-pink accents. */
+
 :root {
-  --font-sans: 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
-  --font-display: 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
-  --font-display-serif: 'Fraunces', 'DM Serif Display', 'Georgia', serif;
-  color-scheme: light dark;
+  --font-sans: var(--font-inter), 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-inter), 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
+  --font-display-serif: var(--font-inter), 'Inter', system-ui, sans-serif;
+  color-scheme: light;
 }
 
 html,
@@ -14,23 +16,34 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overscroll-behavior: none;
-  background: #000;
-  color: #fff;
+  background: #F8F8F6;
+  color: #0A0A0A;
 }
 
 body {
   font-family: var(--font-sans);
+  font-weight: 400;
 }
 
-/* Light theme container — the library + submit modal use this. Camera /
-   practice routes keep the dark theme on the body and override locally. */
+/* Camera / practice screens (Mode A duet, Mode B, Mode C) opt into dark
+   contrast via the .theme-dark utility — black is the right canvas for the
+   reference video and the white skeleton overlay. */
+.theme-dark {
+  background: #000;
+  color: #fff;
+  color-scheme: dark;
+}
+
+/* Cream is the explicit light theme. The default body styling above already
+   matches; this class is here so library / submit / lesson markup can be
+   self-contained and ::selection colour can be hot pink instead of coral. */
 .theme-cream {
-  background: #FAF6F0;
-  color: #1A1714;
+  background: #F8F8F6;
+  color: #0A0A0A;
   color-scheme: light;
 }
 .theme-cream ::selection {
-  background: rgba(226, 122, 86, 0.25);
+  background: rgba(255, 62, 127, 0.20);
 }
 
 button {
@@ -52,5 +65,11 @@ button {
   }
   .no-scrollbar {
     scrollbar-width: none;
+  }
+  /* Lowercase headline + slight optical tightening. Used by the wordmark
+     and other display-weight text per SPECK §Phase 2 typography. */
+  .wordmark {
+    font-weight: 500;
+    letter-spacing: -0.02em;
   }
 }

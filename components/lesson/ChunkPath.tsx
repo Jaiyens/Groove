@@ -45,18 +45,18 @@ export default function ChunkPath({ danceId, items, fullUnlocked }: ChunkPathPro
         }}
         className={`mt-5 flex items-center justify-between rounded-3xl p-5 transition-transform ${
           fullUnlocked
-            ? 'bg-coral text-white shadow-lift active:scale-[0.99]'
+            ? 'bg-ink text-cream-card shadow-lift active:scale-[0.99]'
             : 'bg-cream-deep text-ink-dim'
         }`}
       >
         <div>
-          <div className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${fullUnlocked ? 'text-white/80' : 'text-ink-dim'}`}>
+          <div className={`text-[10px] font-medium uppercase tracking-[0.18em] ${fullUnlocked ? 'text-cream-card/80' : 'text-ink-dim'}`}>
             Final
           </div>
-          <div className={`font-serif text-xl leading-tight ${fullUnlocked ? 'text-white' : 'text-ink-dim'}`}>
+          <div className={`text-xl font-medium leading-tight ${fullUnlocked ? 'text-cream-card' : 'text-ink-dim'}`}>
             full attempt
           </div>
-          <div className={`mt-0.5 text-xs ${fullUnlocked ? 'text-white/80' : 'text-ink-dim'}`}>
+          <div className={`mt-0.5 text-xs ${fullUnlocked ? 'text-cream-card/80' : 'text-ink-dim'}`}>
             {fullUnlocked
               ? 'audio only · full scoring'
               : 'unlocks when every chunk is passed'}
@@ -64,7 +64,7 @@ export default function ChunkPath({ danceId, items, fullUnlocked }: ChunkPathPro
         </div>
         <div
           className={`flex h-12 w-12 items-center justify-center rounded-full ${
-            fullUnlocked ? 'bg-white text-coral' : 'bg-cream-card text-ink-dim'
+            fullUnlocked ? 'bg-cream-card text-ink' : 'bg-cream-card text-ink-dim'
           }`}
         >
           {fullUnlocked ? <PlayIcon /> : <LockIcon />}
@@ -88,15 +88,15 @@ function ChunkRow({
   const passed = state === 'passed';
 
   const card = passed
-    ? 'bg-coral-soft/40 ring-coral/30'
+    ? 'bg-cream-card ring-cream-deep'
     : locked
       ? 'bg-cream-deep ring-ink/5 opacity-70'
-      : 'bg-cream-card ring-ink/5 shadow-soft';
+      : 'bg-cream-card ring-cream-deep shadow-soft';
   const dot = passed
-    ? 'bg-coral text-white shadow-soft'
+    ? 'bg-ink text-cream-card shadow-soft'
     : locked
-      ? 'bg-cream-card text-ink-dim ring-1 ring-ink/5'
-      : 'bg-ink text-cream shadow-soft';
+      ? 'bg-cream-card text-ink-dim ring-1 ring-cream-deep'
+      : 'bg-ink text-cream-card shadow-soft';
 
   const inner = (
     <div className={`flex items-center gap-4 rounded-2xl p-4 ring-1 ${card}`}>
@@ -106,10 +106,10 @@ function ChunkRow({
         {locked ? <LockIcon /> : passed ? <CheckIcon /> : stepNumber}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-ink-muted">
+        <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted">
           chunk {stepNumber}
         </div>
-        <div className="truncate font-serif text-lg leading-tight text-ink">
+        <div className="truncate text-lg font-medium leading-tight text-ink">
           {chunk.label}
         </div>
         <div className="mt-0.5 text-[11px] text-ink-muted">
@@ -117,7 +117,7 @@ function ChunkRow({
           {lastScore !== undefined && (
             <>
               {' · '}
-              <span className={lastScore >= 70 ? 'text-coral' : 'text-ink-muted'}>
+              <span className={lastScore >= 70 ? 'text-accent-green' : 'text-ink-muted'}>
                 last {lastScore}
               </span>
             </>
@@ -125,7 +125,7 @@ function ChunkRow({
         </div>
       </div>
       {!locked && (
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-coral">
+        <div className="text-[11px] font-medium uppercase tracking-widest text-ink">
           {passed ? 'replay' : 'start'}
         </div>
       )}

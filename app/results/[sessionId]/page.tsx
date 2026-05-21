@@ -62,12 +62,14 @@ export default function ResultsPage({ params }: PageProps) {
   }
 
   const score = Math.round(attempt.overall_score);
+  // The score number itself is the only place on the results screen where
+  // hot pink lives — per SPECK §Phase 2 "the big celebration moment".
   const tier =
     score >= 80
       ? { ring: 'ring-coral', text: 'text-coral' }
       : score >= 60
-        ? { ring: 'ring-slate', text: 'text-slate' }
-        : { ring: 'ring-ink-dim', text: 'text-ink-muted' };
+        ? { ring: 'ring-ink/15', text: 'text-ink' }
+        : { ring: 'ring-ink/10', text: 'text-ink-muted' };
   const delta = previousScore !== null ? score - Math.round(previousScore) : null;
 
   return (
@@ -89,7 +91,7 @@ export default function ResultsPage({ params }: PageProps) {
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex-1 text-center text-xs font-semibold uppercase tracking-[0.18em] text-coral">
+        <div className="flex-1 text-center text-xs font-medium uppercase tracking-[0.18em] text-ink">
           full attempt
         </div>
         <div className="w-10" aria-hidden />
@@ -100,7 +102,7 @@ export default function ResultsPage({ params }: PageProps) {
           <div className="text-xs uppercase tracking-[0.18em] text-ink-muted">
             attempt #{attemptNumber}
           </div>
-          <h1 className="mt-1 font-serif text-3xl leading-tight text-ink">
+          <h1 className="mt-1 text-2xl font-medium leading-tight tracking-tight text-ink">
             {dance.name}
           </h1>
           {dance.artist && (
@@ -112,7 +114,7 @@ export default function ResultsPage({ params }: PageProps) {
 
         <section className="rounded-[28px] bg-cream-card p-6 shadow-soft">
           <div className="flex items-end gap-4">
-            <div className={`font-serif text-[88px] leading-none ${tier.text}`}>
+            <div className={`text-[88px] font-medium leading-none tabular-nums tracking-tight ${tier.text}`}>
               {score}
             </div>
             <div className="pb-2 text-xs uppercase tracking-[0.2em] text-ink-muted">
@@ -121,8 +123,8 @@ export default function ResultsPage({ params }: PageProps) {
           </div>
           {delta !== null && (
             <div
-              className={`mt-1 text-sm font-semibold ${
-                delta >= 0 ? 'text-coral' : 'text-slate'
+              className={`mt-1 text-sm font-medium ${
+                delta >= 0 ? 'text-accent-green' : 'text-ink-muted'
               }`}
             >
               {delta >= 0 ? '+' : ''}
@@ -130,14 +132,14 @@ export default function ResultsPage({ params }: PageProps) {
             </div>
           )}
           <div
-            className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-semibold tracking-wide ring-1 ${tier.ring} ${tier.text}`}
+            className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-medium tracking-wide ring-1 ${tier.ring} ${tier.text}`}
           >
             {score >= 80 ? 'great work' : score >= 60 ? 'getting there' : 'keep practicing'}
           </div>
         </section>
 
         <section className="mt-7">
-          <h2 className="mb-3 font-serif text-xl text-ink">move breakdown</h2>
+          <h2 className="mb-3 text-lg font-medium tracking-tight text-ink">move breakdown</h2>
           <div className="rounded-2xl bg-cream-card p-4 shadow-soft">
             <ScoreBreakdown rows={skillRows} />
           </div>
@@ -145,15 +147,15 @@ export default function ResultsPage({ params }: PageProps) {
 
         {recommendation && (
           <section className="mt-7">
-            <h2 className="mb-3 font-serif text-xl text-ink">next up</h2>
+            <h2 className="mb-3 text-lg font-medium tracking-tight text-ink">next up</h2>
             <Link
               href={`/drill/${recommendation.skill.id}?from=${attempt.attempt_id}`}
               className="block rounded-2xl bg-cream-card p-5 shadow-soft active:scale-[0.99] transition-transform"
             >
-              <div className="text-[10px] uppercase tracking-[0.18em] text-coral">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-ink-muted">
                 recommended drill
               </div>
-              <div className="mt-1 font-serif text-xl text-ink">
+              <div className="mt-1 text-lg font-medium text-ink">
                 {recommendation.skill.name}
               </div>
               <p className="mt-1 line-clamp-2 text-sm text-ink-muted">
@@ -170,7 +172,7 @@ export default function ResultsPage({ params }: PageProps) {
 
         {record.tiktok_url && (
           <section className="mt-7">
-            <h2 className="mb-3 font-serif text-xl text-ink">the original</h2>
+            <h2 className="mb-3 text-lg font-medium tracking-tight text-ink">the original</h2>
             <TikTokEmbed tiktokUrl={record.tiktok_url} />
           </section>
         )}
@@ -179,14 +181,14 @@ export default function ResultsPage({ params }: PageProps) {
           {recommendation ? (
             <Link
               href={`/drill/${recommendation.skill.id}?from=${attempt.attempt_id}`}
-              className="block rounded-full bg-coral py-4 text-center text-base font-semibold text-white shadow-lift"
+              className="block rounded-full bg-ink py-4 text-center text-base font-medium text-cream-card shadow-lift"
             >
               drill it
             </Link>
           ) : (
             <Link
               href="/"
-              className="block rounded-full bg-coral py-4 text-center text-base font-semibold text-white shadow-lift"
+              className="block rounded-full bg-ink py-4 text-center text-base font-medium text-cream-card shadow-lift"
             >
               back to library
             </Link>

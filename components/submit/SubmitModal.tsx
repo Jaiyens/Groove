@@ -107,7 +107,7 @@ export default function SubmitModal({ open, onClose }: SubmitModalProps) {
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
         </button>
-        <div className="text-sm font-semibold uppercase tracking-[0.18em] text-coral">
+        <div className="text-sm font-medium uppercase tracking-[0.18em] text-ink">
           submit
         </div>
         <div className="w-10" />
@@ -149,7 +149,7 @@ function InputStage({
 }) {
   return (
     <form onSubmit={onSubmit} className="flex flex-1 flex-col">
-      <h1 className="font-serif text-[34px] leading-tight text-ink">
+      <h1 className="text-[30px] font-medium leading-tight tracking-tight text-ink">
         paste a tiktok link
       </h1>
       <p className="mt-3 text-sm text-ink-muted">
@@ -166,12 +166,12 @@ function InputStage({
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://www.tiktok.com/@…/video/…"
-          className="w-full rounded-2xl bg-cream-card px-4 py-4 text-base text-ink placeholder:text-ink-dim shadow-soft outline-none ring-1 ring-ink/5 focus:ring-2 focus:ring-coral"
+          className="w-full rounded-2xl bg-cream-card px-4 py-4 text-base text-ink placeholder:text-ink-dim shadow-soft outline-none ring-1 ring-cream-deep focus:ring-2 focus:ring-ink"
         />
       </label>
       <button
         type="submit"
-        className="mt-5 inline-flex items-center justify-center gap-2 rounded-full bg-coral px-6 py-4 text-base font-semibold text-white shadow-lift active:scale-[0.98]"
+        className="mt-5 inline-flex items-center justify-center gap-2 rounded-full bg-ink px-6 py-4 text-base font-medium text-cream-card shadow-lift active:scale-[0.98]"
       >
         submit
         <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -195,10 +195,10 @@ function LoadingStage({
   return (
     <div className="flex flex-1 flex-col items-center justify-center text-center">
       <div className="relative h-24 w-24">
-        <div className="absolute inset-0 rounded-full border-4 border-coral-soft" />
+        <div className="absolute inset-0 rounded-full border-4 border-cream-deep" />
         <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-coral" />
       </div>
-      <p className="mt-8 font-serif text-2xl text-ink">{message}</p>
+      <p className="mt-8 text-2xl font-medium tracking-tight text-ink">{message}</p>
       <p className="mt-2 text-xs uppercase tracking-[0.2em] text-ink-dim">
         {status}
       </p>
@@ -215,18 +215,18 @@ function ErrorStage({
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center text-center">
-      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-coral-soft text-coral-deep">
+      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-cream-deep text-accent-red">
         <svg width={36} height={36} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <path d="M12 9v4M12 17h.01" />
           <circle cx="12" cy="12" r="10" />
         </svg>
       </div>
-      <h2 className="mt-5 font-serif text-2xl text-ink">that didn’t work</h2>
+      <h2 className="mt-5 text-2xl font-medium tracking-tight text-ink">that didn’t work</h2>
       <p className="mt-2 max-w-[280px] text-sm text-ink-muted">{message}</p>
       <button
         type="button"
         onClick={onTryAgain}
-        className="mt-7 inline-flex items-center gap-2 rounded-full bg-coral px-5 py-3 text-sm font-semibold text-white shadow-soft active:scale-[0.98]"
+        className="mt-7 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-3 text-sm font-medium text-cream-card shadow-soft active:scale-[0.98]"
       >
         try a different link
       </button>

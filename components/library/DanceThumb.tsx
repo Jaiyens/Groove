@@ -30,7 +30,7 @@ export default function DanceThumb({ dance, className = '', rounded = '2xl' }: D
   const letter = (dance.title ?? '?').trim().charAt(0).toUpperCase() || '?';
   return (
     <div
-      className={`${radius} flex items-center justify-center bg-gradient-to-br from-coral-soft via-cream-deep to-slate-soft text-3xl font-serif text-ink ${className}`}
+      className={`${radius} flex items-center justify-center bg-gradient-to-br from-cream-deep via-cream to-cream-card text-3xl font-medium text-ink ${className}`}
       aria-hidden
     >
       {letter}

@@ -69,8 +69,8 @@ export default function HomePage() {
     <main className="theme-cream flex h-full w-full flex-col bg-cream">
       <div className="flex-1 overflow-y-auto no-scrollbar safe-top px-5 pt-6 pb-32">
         <header className="mb-7">
-          <h1 className="font-serif text-[44px] leading-[1.05] tracking-tight text-ink">
-            Groove
+          <h1 className="wordmark text-[44px] leading-[1.05] text-ink">
+            groove
           </h1>
           <p className="mt-2 text-sm text-ink-muted">
             learn any tiktok dance, one chunk at a time

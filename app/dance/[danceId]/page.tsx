@@ -104,7 +104,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex-1 text-center text-xs font-semibold uppercase tracking-[0.18em] text-coral">
+        <div className="flex-1 text-center text-xs font-medium uppercase tracking-[0.18em] text-ink">
           lesson
         </div>
         <div className="w-10" aria-hidden />
@@ -118,7 +118,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
             className="aspect-[16/10] w-full rounded-none"
           />
           <div className="px-5 pt-4 pb-5">
-            <h1 className="font-serif text-3xl leading-tight text-ink">
+            <h1 className="text-2xl font-medium leading-tight tracking-tight text-ink">
               {dance.name}
             </h1>
             {dance.artist && (
@@ -133,7 +133,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
               {dance.low_quality && (
                 <>
                   <span aria-hidden>·</span>
-                  <span className="text-coral">low quality reference</span>
+                  <span className="text-accent-amber">low quality reference</span>
                 </>
               )}
             </div>
@@ -142,13 +142,13 @@ export default function DanceOverviewPage({ params }: PageProps) {
                 <span className="text-ink-muted">
                   {passedCount} of {totalChunks} chunks
                 </span>
-                <span className="font-semibold tabular-nums text-coral">
+                <span className="font-medium tabular-nums text-ink">
                   {progressPercent}%
                 </span>
               </div>
               <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-cream-deep">
                 <div
-                  className="h-full bg-coral transition-[width] duration-300"
+                  className="h-full bg-ink transition-[width] duration-300"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
@@ -157,7 +157,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
         </section>
 
         <section className="mt-7">
-          <h2 className="mb-3 font-serif text-xl text-ink">your path</h2>
+          <h2 className="mb-3 text-lg font-medium tracking-tight text-ink">your path</h2>
           {totalChunks > 0 ? (
             <ChunkPath
               danceId={dance.id}
