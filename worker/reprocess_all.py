@@ -56,6 +56,40 @@ def fetch(url: str, dest: Path) -> None:
         shutil.copyfileobj(resp, fh)
 
 
+def name_only(store, row: dict, *, force_rename: bool = False) -> tuple[str | None, str | None]:
+    """Lightweight backfill path: download audio, run naming cascade,
+    write display_name. Returns (before, after) for logging."""
+    dance_id = row["id"]
+    before = row.get("display_name")
+    if before and not force_rename:
+        log.info("[%s] keep display_name = %r", dance_id, before)
+        return before, before
+
+    audio_url = row.get("audio_url")
+    if not audio_url:
+        raise RuntimeError("row has no audio_url; cannot run naming without audio")
+
+    job_dir = WORK_DIR / dance_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = job_dir / "audio.wav"
+    if not audio_path.exists():
+        fetch(audio_url, audio_path)
+
+    from naming import generate_display_name  # noqa: E402
+
+    after = generate_display_name(
+        title=row.get("title"),
+        creator_handle=row.get("creator_handle"),
+        audio_path=audio_path,
+        dance_id=dance_id,
+    )
+    log.info("[%s] display_name: %r → %r", dance_id, before, after)
+
+    if store is not None and after != before:
+        store.client.table("dances").update({"display_name": after}).eq("id", dance_id).execute()
+    return before, after
+
+
 def reprocess_one(store, row: dict, *, force_rename: bool = False) -> bool:
     dance_id = row["id"]
     video_url = row.get("video_url")
@@ -260,6 +294,13 @@ def main(argv: list[str] | None = None) -> int:
              "Without this, naming only runs on rows where display_name "
              "IS NULL (the typical post-migration backfill case).",
     )
+    p.add_argument(
+        "--names-only",
+        action="store_true",
+        help="skip the full pose/skeleton/thumbnail pipeline. Just "
+             "download audio, run the naming cascade, and write back "
+             "display_name. Use for the SPECK polish §Fix 3 backfill.",
+    )
     args = p.parse_args(argv)
 
     # --local-only: no Supabase client, no row write-back. Useful when
@@ -274,7 +315,10 @@ def main(argv: list[str] | None = None) -> int:
         log.info("local-only reprocess: %s @%s", args.id, args.username or "?")
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            reprocess_one(None, row, force_rename=args.force_rename)
+            if args.names_only:
+                name_only(None, row, force_rename=args.force_rename)
+            else:
+                reprocess_one(None, row, force_rename=args.force_rename)
             return 0
         except Exception as exc:
             log.error("[%s] FAILED: %s", args.id, exc)
@@ -305,20 +349,33 @@ def main(argv: list[str] | None = None) -> int:
 
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     succeeded, failed = 0, 0
+    name_log: list[tuple[str, str | None, str | None]] = []
     for row in rows:
         dance_id = row["id"]
         try:
-            reprocess_one(store, row, force_rename=args.force_rename)
+            if args.names_only:
+                before, after = name_only(store, row, force_rename=args.force_rename)
+                name_log.append((dance_id, before, after))
+            else:
+                reprocess_one(store, row, force_rename=args.force_rename)
             succeeded += 1
         except Exception as exc:
             failed += 1
             log.error("[%s] FAILED: %s", dance_id, exc)
             traceback.print_exc()
-            try:
-                store.mark_failed(dance_id, f"reprocess: {exc}")
-            except Exception:
-                log.exception("[%s] could not mark failed", dance_id)
+            if not args.names_only:
+                # --names-only never wants to flip a row to "failed"
+                # just because Gemini stuttered — the existing display
+                # data is still fine.
+                try:
+                    store.mark_failed(dance_id, f"reprocess: {exc}")
+                except Exception:
+                    log.exception("[%s] could not mark failed", dance_id)
     log.info("done — %d succeeded, %d failed", succeeded, failed)
+    if name_log:
+        log.info("=== display_name before/after ===")
+        for dance_id, before, after in name_log:
+            log.info("  %s: %r → %r", dance_id[:8], before, after)
     return 0 if failed == 0 else 1
 
 

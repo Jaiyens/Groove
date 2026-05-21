@@ -110,9 +110,17 @@ def _clean_caption(title: Optional[str]) -> Optional[str]:
     if m:
         return f"{m.group('artist').strip()} - {m.group('song').strip()}"
 
-    # No structural match. If it's short and word-like, accept it; otherwise
-    # fall through to Gemini.
-    if 3 <= len(raw) <= 60 and re.search(r"[A-Za-z]", raw) and not raw.startswith("#"):
+    # No structural match. Accept it ONLY if it looks like a curated
+    # title: at least one capitalized letter and not just a lowercase
+    # word-salad. "fetty wap birthday nola bounce" looks like raw fan
+    # search terms — send it to Gemini to canonicalize. "TAKA LA
+    # DENTRO" and "City Girls x Camila" have caps and read like titles.
+    if not (3 <= len(raw) <= 60):
+        return None
+    if not re.search(r"[A-Za-z]", raw) or raw.startswith("#"):
+        return None
+    has_upper = any(c.isupper() for c in raw)
+    if has_upper:
         return raw
     return None
 
