@@ -17,7 +17,6 @@
 // rest of the UI looks the same.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import SpeedToggle from '@/components/SpeedToggle';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
@@ -431,19 +430,28 @@ export default function CopyAlongPage({ params }: PageProps) {
             <div>{Math.round(rate * 100)}%</div>
           </div>
         </div>
+        {/* spec.md round-5 §Fix 1: the round-4 commits wired these as
+            next/link <Link>s. Real-phone testing showed the "I got it ·
+            test" tap did nothing. Switching to <button onClick=router.push>
+            removes any Link-specific quirk (prefetch, intercept, anchor
+            default action) and makes the click handler explicit and
+            traceable in DevTools. */}
         <div className="flex items-center gap-2">
-          <Link
-            href={`/dance/${dance.id}`}
+          <button
+            type="button"
+            onClick={() => router.push(`/dance/${dance.id}`)}
             className="flex-1 rounded-full bg-white/10 py-2.5 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
           >
             back to lesson
-          </Link>
-          <Link
-            href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
+          </button>
+          <button
+            type="button"
+            onClick={() => router.push(`/dance/${dance.id}/chunk/${chunkIndex}/test`)}
+            data-testid="i-got-it-test"
             className="flex-[2] rounded-full bg-coral py-2.5 text-center text-sm font-semibold text-white active:scale-[0.98]"
           >
             I got it · test
-          </Link>
+          </button>
         </div>
       </div>
 
