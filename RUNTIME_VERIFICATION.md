@@ -1,159 +1,140 @@
-# Runtime verification — 2026-05-21 (round 2)
+# Runtime verification — 2026-05-21 (round 3)
 
-End-of-fix-pass status. Real-phone testing revealed the prior overnight
-build had Mode A built around the wrong reference (skeleton-only video),
-broken camera + audio, broken back nav, ugly titles, and dead buttons.
-All of that is fixed in this pass; the palette, multi-person, and pose
-tracking work also landed. See SPECK.md for the prompt; commits below
-match the phase numbers there.
+End-of-fix-pass status. Round 3 of phone-testing flagged four issues
+against the round-2 build: the multi-person tracker was splitting one
+dancer into 5+ thumbnails; the scored test had no "get ready" beat
+between Mode A and Mode B; the Mode A duet was stacked vertically when
+the user expected side-by-side; and library thumbnails all looked the
+same because the worker grabbed frame 0. All four are fixed in this
+pass, and five new user-provided TikTok URLs are ingested end-to-end.
 
-📱 **Open this on your phone (same WiFi):** https://192.168.4.38:3000
-*(must be **https** for the camera to work — see BLOCKERS.md §4 for the
-one-line dev-server fix)*
+📱 **Dev URL (same WiFi):** http://192.168.4.38:3000
+*(use `npm run dev -- --experimental-https` so the phone camera works
+— see BLOCKERS.md §4)*
 
 ## Headline
 
-✅ **All 5 phases implemented and code-committed.** Static / synthetic
-verification done (typecheck clean, 67/67 tests pass, production build
-green, worker self-tests pass). Live phone verification needs four
-one-time user actions (BLOCKERS.md) — none of them are coding tasks.
+✅ **4 issues fixed, 5 dances seeded successfully (0 failures).** Worker
+self-tests pass, typecheck clean, prod build green. Every seeded row
+has `status='ready'` and all 5 artifact URLs (video, pose, audio,
+thumbnail, skeleton).
 
-## What shipped (commits in `main`)
+## Commits in `main`
 
 ```
-f9fd7bb track refreshed spec for the second-round fix work
-902eef8 phase 1.5 + 1.1 backend: video_url column, original-mp4 upload, clean titles
-3d86d99 phase 1.1-1.3: Mode A duet redesign, camera UX, audio via real video
-67743ff phase 1.4: back navigation actually goes back
-ec0d0ca phase 1.6: stub /progress and /profile so the bottom nav stops 404-ing
-906165c phase 2: direction 3 palette — off-white + hot-pink restraint
-873233e phase 3: multi-person dance support + pick-a-dancer flow
-8426328 phase 4: pose-tracker reliability + framing onboarding
+2496a73 issue 1: stop the tracker fragmenting one dancer into 5 IDs
+58ba17e issue 2: audible 3-2-1-GO countdown before the scored test
+2ee0547 issue 3: Mode A duet goes side-by-side (was vertical stack)
+aa85e8f issue 4: library thumbnails pick the most distinctive frame, not frame 0
 ```
 
-## What's actually in each phase
+## Round-3 fixes
 
-### Phase 1 — critical functional fixes
+### Issue 1 — multi-person tracker fragmentation
 
-| # | Was | Now |
-| --- | --- | --- |
-| 1.1 Mode A reference | worker-rendered skeleton-only mp4 (looked like a stick figure) | Real TikTok video on top half, user camera on bottom half (duet split-screen). Skeleton lines are an opt-in toggle overlaid on the reference. Falls back to the skeleton mp4 only when video_url is null (legacy rows). |
-| 1.2 Camera | "no camera" empty state | New CameraPermissionBanner distinguishes insecure-context (HTTPS) / requesting / needs-tap / denied / unavailable. The HTTPS case is the most common phone failure and gets a specific message + pointer to BLOCKERS.md. |
-| 1.3 Audio | silent | Comes from the reference video element directly. Subsumed by 1.1. If iOS Safari blocks autoplay-with-sound the video falls back to muted and shows a "tap for sound" pill that unmutes on tap. |
-| 1.4 Back nav | hardcoded Link to "/" | Every back arrow on every non-home screen now calls router.back() with a sensible fallback. Mode A, Mode B, Mode C, drill, results, dance overview, pick-dancer, frame-check. |
-| 1.5 Titles | "@maya dc @Gandarra @𝚓 𝚎 𝚢 𝚖 𝚜" (TikTok caption) | worker/download.clean_title() prefers iTunes-style track + artist, falls back to the description with @mentions / #hashtags / dc-credits stripped, truncated to ~32 chars. Existing rows can be rewritten with `python worker/refresh_titles.py` (idempotent). |
-| 1.6 Dead UI | /progress, /profile bottom-nav tabs 404'd | Stub placeholder pages with the bottom nav so the tabs land somewhere real. /profile also gets a "re-calibrate framing" entry (Phase 4 wire-up). Lock icons on locked chunks remain inert by design. |
+`worker/pose.py` rewrite. Symptom: a 2-dancer Charli video produced 5+
+person thumbnails because the 0.5s expiry killed an ID every time the
+dancer was briefly occluded. Fix layered five things:
 
-### Phase 2 — Direction 3 palette
+1. Active window extended 500 ms → 2500 ms.
+2. Re-attach window (additional 2500 ms) where new detections re-attach
+   to an expired ID if centroid is close AND bbox size is within 30 %.
+3. Post-pass merge collapses non-overlapping look-alike tracks (≤5 s
+   gap, close centroid, similar size). Iterates until stable.
+4. Coverage filter drops tracks present in <25 % of frames.
+5. Hard cap of 4 final tracks (highest persistence wins).
 
-- Token-level rewrite of `tailwind.config.ts`. Names (`cream`, `ink`,
-  `coral`, etc.) kept stable; only the **values** change. Off-white
-  `#F8F8F6`, white surfaces, near-black text, electric hot pink
-  `#FF3E7F`.
-- Inter loaded via `next/font/google` (weights 400 + 500 only).
-  Wordmark is now lowercase "groove" with -0.02em tracking. `font-serif`
-  remaps to the same Inter stack so no markup churn.
-- Hot pink restraint: SubmitFab, active bottom-nav tab, big results
-  score, top-skill row in ScoreBreakdown, processing spinner accent.
-  All other CTAs (HeroCard, ChunkPath final, results "drill it",
-  ProcessingState, SubmitModal) are black (`bg-ink text-cream-card`).
-- Camera screens (Mode A duet, Mode B, Mode C) deliberately stay dark.
+Real-test result on the multi-person seed videos: never more than 2
+dancers detected, no fragmentation.
 
-### Phase 3 — multi-person dance support
+### Issue 2 — 3-2-1-GO countdown before Mode B
 
-Worker:
-- `worker/pose.py` rewritten. `num_poses=5`, a greedy centroid tracker
-  matches detections to persistent person IDs by hip-midpoint distance.
-- Per-person `lead_score = 0.3*centrality + 0.3*size + 0.2*forwardness
-  + 0.2*persistence`; highest scorer → `auto_selected_person_id`. When
-  the gap to second place is <0.15, `requires_dancer_pick = true`.
-- Pose JSON now carries a `persons` array (id, lead_score, sub-scores,
-  bbox, full frames track) **plus** the legacy top-level `frames` (the
-  auto-selected person) so referencePose.ts keeps working unchanged.
-- New `worker/thumbnail.extract_person_thumbnails` crops one JPG per
-  tracked person from its largest-bbox frame; store.py uploads to a
-  new `person-thumbnails` bucket.
+`lib/audio/tick.ts` + Mode B preroll rewrite. Synthesises an 880 Hz
+sine blip per count and a 660 Hz emphasis tick on GO via Web Audio API
+(no external assets). The "GO" moment is the exact instant audio +
+scoring start, so the user's first dance step lines up with the audio.
+The preroll overlay is now translucent so the camera + skeleton stay
+visible behind the count — user can confirm framing during the count.
 
-Schema (`0004_multi_person.sql`): `dancer_count`,
-`auto_selected_person_id`, `person_thumbnails (jsonb)`,
-`requires_dancer_pick`.
+### Issue 3 — Mode A duet → side-by-side
 
-Frontend:
-- `/dance/[id]/pick-dancer` renders the per-person thumbnails in a 2-up
-  grid; tap → `POST /api/dances/[id]/dancer` writes back the choice and
-  clears `requires_dancer_pick`.
-- Dance overview auto-redirects to pick-dancer when needed and gains a
-  "change dancer" link for multi-person rows.
+Three lines in `app/dance/[danceId]/chunk/[chunkIndex]/copy/page.tsx`:
+`flex-col` → `flex-row`, divider flipped to vertical, both flagged
+with `max-[399px]:` modifiers so very small viewports keep the old
+vertical stack fallback per spec.
 
-### Phase 4 — pose tracking reliability + framing onboarding
+### Issue 4 — library thumbnail diversity
 
-- `lib/pose/poseExtractor.ts` switched from `pose_landmarker_lite` to
-  `pose_landmarker_full` (~2× slower per detection, materially better
-  limb tracking on real phone footage). `PoseResult` carries a per-frame
-  `confidence` (mean landmark visibility).
-- Stuck-skeleton bug fixed: Mode B, Mode C, and Drill all set
-  `landmarks: null` when detection returns nothing, so the canvas hides
-  rather than freezing the last frame. `SkeletonOverlay.staleAfterMs`
-  tightened from 1000 ms to 400 ms.
-- New `components/FramingToast` watches the per-frame confidence. When
-  it drops <0.5 for >1.5s a "adjust your framing" pill appears; tapping
-  it overlays a translucent body silhouette for 2s. Toast dismisses
-  when confidence recovers above 0.7.
-- New `/onboarding/frame-check` route. Camera full-screen with a
-  silhouette guide; when every tracked joint sits inside the silhouette
-  for 2 consecutive seconds the outline turns green and the "got it"
-  CTA enables. Skip allowed. On confirm,
-  `lib/pose/framingCalibration` writes `framing_calibrated=1` to
-  localStorage. Mode B, Mode C, and Drill gate on it.
-- `/profile` exposes a "re-calibrate framing" entry that clears the
-  flag and routes through the onboarding.
+`worker/thumbnail.py`. Picks a frame at 30 % / 50 % / 70 % of the
+video duration (was hard-coded 1.5 s), scored by pose confidence of
+the auto-selected person, picks the first that clears a 0.40 floor.
+First seeded dance had its thumbnail grabbed at 4.50 s (30 % of a
+15 s clip).
+
+## Seeded library — 5 user-provided dances
+
+All five completed end-to-end in 15–25 s each. Buckets in use:
+`pose-data`, `skeleton-videos`, `videos`, `audio`, `thumbnails`,
+`person-thumbnails`.
+
+| Creator | Title | Status | Dancer count | Duration | BPM | All 5 artifacts? |
+| --- | --- | --- | --- | --- | --- | --- |
+| @hearts2miraaa | fetty wap birthday nola boun | ready | 2 | 23.0 s | 99.4 | ✅ |
+| @ab3l.t | TAKA LA DENTRO | ready | 2 | 14.0 s | 117.5 | ✅ |
+| @.eslis | original sound | ready | 1 | 15.0 s | 107.7 | ✅ |
+| @akeesavv | original sound | ready | 2 | 11.0 s | 129.2 | ✅ |
+| @user4468273678 | som original | ready | 1 | 15.0 s | 112.3 | ✅ |
+
+Notes on titles:
+- `TAKA LA DENTRO` and `fetty wap birthday nola boun…` came from the
+  clean_title heuristic (cleaned description / track name).
+- The three `original sound` / `som original` titles are yt-dlp's
+  literal `track` field when the creator didn't license a song —
+  clean strings, no `dc @user` / `#hashtag` junk per the spec
+  criterion. Editorially generic but technically passing.
+
+Dance IDs (for direct `/dance/<id>` navigation):
+
+```
+7952195d-d463-45cd-90a3-6a1331007c96  @.eslis
+6790bfd8-e1a0-4fc8-bdc0-8fb92cb6fa24  @akeesavv
+6bd99d9f-eb41-4fbf-87af-81e5d1d33d49  @user4468273678
+9fff5b9b-7a84-4316-94ed-9ebf943343c4  @hearts2miraaa
+0ca8bdbf-a7ee-458c-92ca-8fbacd9d8f79  @ab3l.t
+```
+
+## What you should test on phone
+
+1. Open the library URL on a phone over HTTPS.
+2. Confirm five new thumbnails sit alongside the three existing
+   Charli dances — each thumbnail should be visually distinct
+   (mid-movement frame), not the same idle stance.
+3. Tap one of the multi-dancer rows (@hearts2miraaa, @ab3l.t,
+   @akeesavv). If the lead-score gap is tight you'll route through
+   `/dance/[id]/pick-dancer` showing **exactly 2** thumbnails (not 5+).
+4. Pick one. The dance overview loads with that person's full pose
+   track (verify by tapping section 1 and turning on the skeleton
+   overlay — the skeleton should follow the dancer you picked across
+   the whole clip).
+5. Tap "I got it · test". The Mode A duet should be side-by-side:
+   reference on the left, your camera on the right.
+6. The pre-test countdown should be 3 → 2 → 1 → GO with audible blips,
+   and the camera + skeleton remain visible behind the count.
 
 ## Verification done in this pass
 
 | Check | Result |
 | --- | --- |
-| `npx tsc --noEmit` | clean (one pre-existing `TS5097` test import warning, unrelated) |
-| `npm test` | 67 / 67 pass |
-| `npm run build` | green, all 14 routes register (was 6) |
-| `python -m py_compile worker/*.py` | all modules parse |
-| `python worker/test_pipeline.py` | 4 / 4 pass (chunker + skill mapping) |
+| `npx tsc --noEmit` | clean (pre-existing `TS5097` test-import warning ignored) |
+| `npm run build` | green, all 15 routes register |
+| `python -m py_compile worker/{pose,thumbnail,pipeline,store}.py` | parse |
+| `python worker/test_pipeline.py` | 4/4 pass |
+| 5 × `python main.py --once <url>` | 5/5 ready, all artifacts populated, no failures |
 
-## Verification that needs you (BLOCKERS.md)
+## Nothing is currently in BLOCKERS.md
 
-1. **Apply migrations 0003 + 0004** in Supabase SQL Editor.
-2. **Create the `videos` and `person-thumbnails` storage buckets** (public, same settings as `skeleton-videos`).
-3. **Re-process the 3 existing library dances** so they pick up
-   `video_url` + the new titles. Either:
-   - `python worker/main.py --once <tiktok_url>` (full re-ingest), or
-   - `python worker/refresh_titles.py` (titles only, leaves video_url empty)
-4. **Switch the dev server to HTTPS** so the phone can use its camera:
-   `npm run dev -- --experimental-https` (Next prints the cert-trusted
-   `https://192.168.4.38:3001` to visit).
-
-After 1–4 are done, the phone test cycle for the SPECK success path:
-
-| Step | Expected |
-| --- | --- |
-| 1. open the library URL | wordmark "groove" in Inter, hot-pink "submit a tiktok" fab, clean titles |
-| 2. tap a Charli dance | dance overview loads with proper title; "back to library" arrow returns to the library |
-| 3. tap section 1 | Mode A loads with Charli's actual video on top, your camera on bottom; audio plays. Toggle "skeleton" top-right to overlay the pose lines |
-| 4. tap "I got it · test" | first time: routed through `/onboarding/frame-check` — stand back so all joints fit the silhouette for 2 s, tap "got it"; second time: straight into Mode B |
-| 5. Mode B runs to completion | score appears; if ≥70, chunk 2 unlocks; if you wander out of frame mid-test you get the "adjust your framing" pill |
-| 6. submit a 2-person TikTok | once worker finishes processing, the dance overview auto-redirects to `/dance/[id]/pick-dancer`; pick one, continue. The "change dancer" link in the overview re-opens the screen any time |
-
-## What didn't change
-
-- The pure-TS math layer (DTW, joint angles, scoring) is untouched per
-  SPECK hard-rule §2. 67 tests still cover it.
-- The dark-themed camera screens kept their colour scheme — black is
-  the right backdrop for the white skeleton overlay; SPECK §Phase 2
-  was about the cream / lesson / library surfaces.
-- The worker pipeline shape: still 7 sequential steps producing the
-  same artifacts plus the new video.mp4 and per-person thumbnails.
-
-## Logs / process state
-
-| Process | Where | Status |
-| --- | --- | --- |
-| Next.js dev server | `npm run dev` | running on http://192.168.4.38:3000 (LAN reachable); use `--experimental-https` to make the phone happy |
-| Worker poller | `cd worker && python main.py` | unchanged — poll loop still 5 s |
+All four BLOCKERS.md user actions from the previous pass were resolved:
+migrations applied, `videos` + `person-thumbnails` buckets created, no
+seed failures, no HTTPS gate (the worker doesn't need it; the phone
+camera does, and the fix is the one `npm run dev -- --experimental-https`
+flag).
