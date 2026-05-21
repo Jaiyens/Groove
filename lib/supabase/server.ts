@@ -13,8 +13,23 @@ export function getServerSupabase(): SupabaseClient | null {
     cached = null;
     return null;
   }
-  cached = createClient(url, key, {
+  cached = createClient(normaliseUrl(url), key, {
     auth: { persistSession: false, autoRefreshToken: false },
+    // Next.js wraps fetch and caches by default; force no-store so reads
+    // always hit Supabase. Polling routes (/api/dances/:id during ingest)
+    // were returning stale `processing` after the row had flipped to ready.
+    global: {
+      fetch: ((url: RequestInfo | URL, init?: RequestInit) =>
+        fetch(url, { ...init, cache: 'no-store' })) as typeof fetch,
+    },
   });
   return cached;
+}
+
+function normaliseUrl(raw: string): string {
+  let url = raw.trim().replace(/\/$/, '');
+  for (const suffix of ['/rest/v1', '/rest']) {
+    if (url.endsWith(suffix)) url = url.slice(0, -suffix.length);
+  }
+  return url;
 }

@@ -14,10 +14,18 @@ export function getBrowserSupabase(): SupabaseClient | null {
     cached = null;
     return null;
   }
-  cached = createClient(url, key, {
+  cached = createClient(normaliseUrl(url), key, {
     auth: { persistSession: false },
   });
   return cached;
+}
+
+function normaliseUrl(raw: string): string {
+  let url = raw.trim().replace(/\/$/, '');
+  for (const suffix of ['/rest/v1', '/rest']) {
+    if (url.endsWith(suffix)) url = url.slice(0, -suffix.length);
+  }
+  return url;
 }
 
 export function hasSupabaseConfig(): boolean {

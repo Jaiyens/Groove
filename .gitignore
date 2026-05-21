@@ -19,3 +19,6 @@ worker/.env
 
 # seed urls (may contain unreleased picks)
 seed_urls.txt
+worker/venv/
+worker/out_test/
+worker/out/
