@@ -21,6 +21,51 @@ class DownloadedMedia:
     fps: float
 
 
+# Heuristic title cleanup. TikTok captions are typically:
+#   "@maya dc @Gandarra @𝚓 𝚎 𝚢 𝚖 𝚜 #fyp #foryou"
+# We prefer the iTunes-style audio metadata (track + artist) when available,
+# then fall back to the description with hashtags/mentions stripped, then
+# the creator handle as a last resort.
+_HANDLE_RE = __import__("re").compile(r"@\S+")
+_HASHTAG_RE = __import__("re").compile(r"#\S+")
+_DC_RE = __import__("re").compile(r"\b(dc|cc|ib)\s*[:|@]?", __import__("re").IGNORECASE)
+_WS_RE = __import__("re").compile(r"\s+")
+
+
+def clean_title(info: dict, creator_handle: str | None) -> str | None:
+    """Compose a human-friendly title from yt-dlp info.
+
+    Priority:
+      1. `track` (audio metadata) — pure song title when present.
+      2. `track` + ` — ` + `artist` if both available.
+      3. First ~30 chars of the description after stripping hashtags,
+         @mentions, "dc"/"cc"/"ib" credits.
+      4. None — caller may fall back to "Untitled".
+    """
+    track = (info.get("track") or "").strip()
+    artist = (info.get("artist") or "").strip()
+    if track:
+        return track  # Just the song title; the creator handle is the subtitle.
+
+    raw = (info.get("description") or info.get("title") or "").strip()
+    if not raw:
+        return None
+
+    cleaned = _HASHTAG_RE.sub("", raw)
+    cleaned = _HANDLE_RE.sub("", cleaned)
+    cleaned = _DC_RE.sub("", cleaned)
+    cleaned = _WS_RE.sub(" ", cleaned).strip(" -|·:.,")
+
+    if not cleaned:
+        # All we have left is creator credits. Don't echo the handle as a
+        # title — let the caller decide on "Untitled".
+        return None
+
+    if len(cleaned) > 32:
+        cleaned = cleaned[:32].rstrip(" -|·:.,") + "…"
+    return cleaned
+
+
 def download_tiktok(url: str, out_dir: Path) -> DownloadedMedia:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -66,8 +111,8 @@ def download_tiktok(url: str, out_dir: Path) -> DownloadedMedia:
     if info_path.exists():
         info = json.loads(info_path.read_text())
 
-    title = info.get("title") or info.get("description")
     creator_handle = info.get("uploader") or info.get("uploader_id")
+    title = clean_title(info, creator_handle)
     duration_seconds = float(info.get("duration") or 0.0)
     fps = float(info.get("fps") or 30.0)
 

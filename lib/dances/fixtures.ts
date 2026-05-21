@@ -41,6 +41,7 @@ export function resolveDance(
     name: fixture.name,
     artist: fixture.artist,
     video_url: fixture.video_url,
+    skeleton_video_url: null,
     audio_url: fixture.video_url,
     thumbnail_url: null,
     tiktok_url: '',

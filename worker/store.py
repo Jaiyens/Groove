@@ -25,6 +25,7 @@ log = logging.getLogger("worker.store")
 
 BUCKET_POSE = "pose-data"
 BUCKET_SKELETON = "skeleton-videos"
+BUCKET_VIDEO = "videos"
 BUCKET_AUDIO = "audio"
 BUCKET_THUMBNAIL = "thumbnails"
 
@@ -166,6 +167,10 @@ class SupabaseStore:
         if result.skeleton_video_path:
             urls["skeleton_video_url"] = self._upload(
                 BUCKET_SKELETON, f"{dance_id}/skeleton.mp4", result.skeleton_video_path
+            )
+        if result.video_path:
+            urls["video_url"] = self._upload(
+                BUCKET_VIDEO, f"{dance_id}/video.mp4", result.video_path
             )
         if result.audio_path:
             # Re-encode wav → mp3 for the browser; here we just upload the wav

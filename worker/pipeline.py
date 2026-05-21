@@ -39,6 +39,7 @@ class PipelineResult:
     skill_weights: dict[str, float] = field(default_factory=dict)
     pose_data_path: Path | None = None
     skeleton_video_path: Path | None = None
+    video_path: Path | None = None
     audio_path: Path | None = None
     thumbnail_path: Path | None = None
     low_quality: bool = False
@@ -52,6 +53,7 @@ class PipelineResult:
             "out_dir",
             "pose_data_path",
             "skeleton_video_path",
+            "video_path",
             "audio_path",
             "thumbnail_path",
         ):
@@ -73,6 +75,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     result.creator_handle = media.creator_handle
     result.duration_seconds = media.duration_seconds
     result.audio_path = media.audio_path
+    result.video_path = media.video_path
 
     # 2. Beat detection
     from audio_analysis import detect_beats

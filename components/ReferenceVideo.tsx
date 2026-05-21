@@ -24,11 +24,12 @@ export default function ReferenceVideo({
     if (videoRef) videoRef.current = localRef.current;
   }, [videoRef]);
 
+  const src = dance.video_url ?? dance.skeleton_video_url ?? undefined;
   return (
     <div className="relative h-full w-full overflow-hidden rounded-xl ring-1 ring-white/10 bg-bg-card">
       <video
         ref={localRef}
-        src={dance.video_url}
+        src={src}
         playsInline
         muted={muted}
         autoPlay={autoplay}
@@ -37,7 +38,7 @@ export default function ReferenceVideo({
         onError={() => setMissing(true)}
         aria-label={`${dance.name} reference video`}
       />
-      {missing && (
+      {(missing || !src) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-bg-card to-black p-2 text-center">
           <div className="text-[10px] font-bold uppercase tracking-widest text-accent">
             no video

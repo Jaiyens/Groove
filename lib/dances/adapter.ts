@@ -9,16 +9,21 @@ export function recordToDance(record: DanceRecord): Dance | null {
     record.duration_seconds == null ||
     record.bpm == null ||
     !record.required_skills ||
-    !record.skill_weights ||
-    !record.skeleton_video_url
+    !record.skill_weights
   ) {
+    return null;
+  }
+  // Either the original video (preferred) OR the skeleton video must be
+  // present — otherwise the lesson has no reference to play.
+  if (!record.video_url && !record.skeleton_video_url) {
     return null;
   }
   return {
     id: record.id,
     name: record.title ?? 'Untitled',
     artist: record.creator_handle ?? 'unknown',
-    video_url: record.skeleton_video_url,
+    video_url: record.video_url,
+    skeleton_video_url: record.skeleton_video_url,
     audio_url: record.audio_url,
     thumbnail_url: record.thumbnail_url,
     tiktok_url: record.tiktok_url,
