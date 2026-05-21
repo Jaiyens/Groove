@@ -140,6 +140,16 @@ export default function PickDancerPage({ params }: PageProps) {
                     alt={`dancer ${id}`}
                     className="aspect-[3/4] w-full object-cover"
                   />
+                  {/* spec.md round-5 §Fix 5b: VLM recommendation badge.
+                      The auto_selected_person_id is the detector's
+                      pick — show it loudly so the user knows which
+                      thumbnail we'd default to. */}
+                  {isCurrent && (
+                    <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1 rounded-full bg-coral/95 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white shadow-soft">
+                      <span aria-hidden>✨</span>
+                      <span>our guess</span>
+                    </div>
+                  )}
                   <div className="px-3 py-2.5">
                     <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted">
                       dancer {id}
@@ -158,6 +168,14 @@ export default function PickDancerPage({ params }: PageProps) {
             );
           })}
         </ul>
+
+        {/* VLM reasoning: short, italicised, just below the grid.
+            Hidden when the detector wasn't consulted. */}
+        {record.vlm_reasoning && (
+          <p className="mt-4 text-xs italic leading-snug text-ink-muted">
+            {record.vlm_reasoning}
+          </p>
+        )}
 
         <div className="mt-6">
           <Link

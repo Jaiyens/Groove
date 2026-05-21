@@ -45,6 +45,12 @@ export interface DanceRecord {
   auto_selected_person_id?: string | null;
   requires_dancer_pick?: boolean;
   person_thumbnails?: Record<string, string> | null;
+  // spec.md round-5 §Fix 5: VLM-driven lead-dancer detection. Null
+  // when the VLM wasn't consulted (single dancer) or fell through to
+  // the heuristic. The picker uses these to render an "✨ our guess"
+  // badge on the auto-selected card and a short reasoning blurb below.
+  vlm_confidence?: string | null;
+  vlm_reasoning?: string | null;
   created_at: string;
   ready_at: string | null;
 }
