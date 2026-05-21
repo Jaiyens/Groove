@@ -64,6 +64,7 @@ export interface DanceListItem {
   duration_seconds: number | null;
   view_count: number;
   ready_at: string | null;
+  created_at: string;
 }
 
 // Adapter shape consumed by the existing practice routes / scoring code.

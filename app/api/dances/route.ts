@@ -1,8 +1,15 @@
-// GET /api/dances — paginated library of READY dances, sorted by view_count desc.
+// GET /api/dances — paginated library of READY dances, sorted by created_at desc.
 // Query params:
 //   ?limit=50           page size (default 50, max 100)
 //   ?offset=0           page offset
 //   ?seed=true          only return seeded dances (those with NULL session id)
+//
+// SPECK polish §Fix 5: sort is `created_at DESC` (newest first) and is
+// deliberately NOT usage-based. The old `view_count DESC` sort made the
+// library feel like it was learning from the user when it wasn't —
+// `bumpView` increments on every visit, so the dance the user opened
+// last would creep to the top, looking like an opaque "for you" ranking.
+// Usage-based / personalized sort is deferred (see DECISIONS.md).
 
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/supabase/server';
@@ -24,11 +31,13 @@ export async function GET(request: Request) {
   let query = supabase
     .from('dances')
     .select(
-      'id, title, creator_handle, thumbnail_url, duration_seconds, view_count, ready_at',
+      'id, title, creator_handle, thumbnail_url, duration_seconds, view_count, ready_at, created_at',
     )
     .eq('status', 'ready')
-    .order('view_count', { ascending: false })
-    .order('ready_at', { ascending: false })
+    // SPECK polish §Fix 5: newest first, deterministic. `id` tiebreaks
+    // when two rows share a created_at down to the millisecond.
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (seedOnly) {

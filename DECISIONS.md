@@ -204,3 +204,7 @@ with `.env.local` + the storage buckets in place. The expected outcome is a `dan
 ## Mirror toggle scope: Mode A only
 
 SPECK polish §Fix 2 calls for mirroring the reference video in Mode A AND Mode B. Mode B is the scored test page and has no reference video element — the user dances against reference audio only, with their own camera full-screen. The `groov_mirror_enabled` preference therefore only takes effect in Mode A's REF panel (copy/page.tsx). The toggle button is also only rendered in Mode A. Joint-angle DTW is mirroring-invariant by construction (joint angles are intrinsic geometry, not screen-space coordinates), so flipping the visual orientation does not affect scoring on either page.
+
+## Library sort: created_at DESC (not usage-based)
+
+SPECK polish §Fix 5. The library lists dances in `created_at DESC` order with `id DESC` as a tiebreaker. The previous order was `view_count DESC, ready_at DESC`, which combined with `bumpView` (which increments view_count on every visit to a dance detail page) made the last-opened dance creep to the top. That looked like a personalized "for you" sort but wasn't — it was just incidental usage tracking driving the order. A real usage-aware sort needs a clear UX (recency, mastery, recommendations) and is deferred.
