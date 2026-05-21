@@ -10,7 +10,7 @@
 // On confirm: localStorage flips framing_calibrated=true. The caller
 // (Mode B test page) reads this and skips the gate next time.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import CameraPermissionBanner, {
   isInsecureContext,
@@ -37,6 +37,22 @@ const SILHOUETTE_Y0 = 0.05;
 const SILHOUETTE_Y1 = 0.97;
 
 export default function FrameCheckPage() {
+  // Wrap in Suspense per Next 14 rules: useSearchParams() forces this page
+  // out of static generation otherwise.
+  return (
+    <Suspense
+      fallback={
+        <main className="theme-dark flex h-full items-center justify-center bg-black text-white/60">
+          loading…
+        </main>
+      }
+    >
+      <FrameCheckInner />
+    </Suspense>
+  );
+}
+
+function FrameCheckInner() {
   const router = useRouter();
   const search = useSearchParams();
   const returnTo = search.get('return') ?? '/';

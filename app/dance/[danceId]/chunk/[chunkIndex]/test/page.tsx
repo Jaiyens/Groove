@@ -218,6 +218,7 @@ export default function TestPage({ params }: PageProps) {
           lastDetectAtRef.current = performance.now();
           if (poseStatus !== 'ok') setPoseStatus('ok');
           setLandmarks(res.landmarks);
+          setConfidence(res.confidence);
           if (res.worldLandmarks.length > 0) {
             const vec = computeJointAngles(res.worldLandmarks);
             // Tag the frame with the absolute routine timestamp so DTW lines
@@ -235,8 +236,15 @@ export default function TestPage({ params }: PageProps) {
               setHint(correctionHint(vec, ref));
             }
           }
-        } else if (performance.now() - lastDetectAtRef.current > 1500) {
-          if (poseStatus === 'ok') setPoseStatus('lost');
+        } else {
+          // SPECK §4.2: when detection returns nothing, hide the skeleton
+          // rather than freezing the last frame; FramingToast picks this up
+          // as zero confidence after the configured hold window.
+          setLandmarks(null);
+          setConfidence(0);
+          if (performance.now() - lastDetectAtRef.current > 1500) {
+            if (poseStatus === 'ok') setPoseStatus('lost');
+          }
         }
       }
 
@@ -322,7 +330,8 @@ export default function TestPage({ params }: PageProps) {
           autoPlay
           className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
         />
-        <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror />
+        <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
+        {runState === 'running' && <FramingToast confidence={confidence} />}
 
         {/* Chunk progress + live score pill */}
         <div className="pointer-events-none absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2">

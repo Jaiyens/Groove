@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import FramingToast from '@/components/FramingToast';
 import LiveScore from '@/components/LiveScore';
 import ProgressBar from '@/components/ProgressBar';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import { useGraph } from '@/lib/graph/context';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { PoseLandmark } from '@/lib/pose/types';
@@ -50,12 +52,21 @@ export default function DrillPage({ params }: PageProps) {
   const [progress, setProgress] = useState(0);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [confidence, setConfidence] = useState<number | null>(null);
 
   const duration = skill?.drill_duration_seconds ?? 60;
 
   useEffect(() => {
     if (graph && !skill) router.replace('/');
   }, [graph, skill, router]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isFramingCalibrated()) {
+      const here = `/drill/${params.skillId}${fromAttempt ? `?from=${fromAttempt}` : ''}`;
+      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+    }
+  }, [params.skillId, fromAttempt, router]);
 
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -138,6 +149,7 @@ export default function DrillPage({ params }: PageProps) {
         const res = ex.detectFromVideo(v, sessionT);
         if (res) {
           setLandmarks(res.landmarks);
+          setConfidence(res.confidence);
           if (res.worldLandmarks.length > 0) {
             const vec = computeJointAngles(res.worldLandmarks);
             const ref = neutralReferenceFrame(sessionT, DRILL_BPM);
@@ -147,6 +159,9 @@ export default function DrillPage({ params }: PageProps) {
             accScoreRef.current.n += 1;
             setLiveScore((p) => p * 0.75 + s * 0.25);
           }
+        } else {
+          setLandmarks(null);
+          setConfidence(0);
         }
       }
       if (sessionT >= durationMs) {
@@ -236,7 +251,8 @@ export default function DrillPage({ params }: PageProps) {
             autoPlay
             className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
           />
-          <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror />
+          <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
+          {runState === 'running' && <FramingToast confidence={confidence} />}
           {runState === 'preroll' && camState === 'granted' && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
               <div className="text-text-muted text-xs uppercase tracking-widest">Drill starts in</div>
