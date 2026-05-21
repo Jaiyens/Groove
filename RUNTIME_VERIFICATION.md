@@ -1,165 +1,159 @@
-# Runtime verification — 2026-05-21
+# Runtime verification — 2026-05-21 (round 2)
 
-End-to-end runtime test against a real Supabase + real TikTok URLs.
+End-of-fix-pass status. Real-phone testing revealed the prior overnight
+build had Mode A built around the wrong reference (skeleton-only video),
+broken camera + audio, broken back nav, ugly titles, and dead buttons.
+All of that is fixed in this pass; the palette, multi-person, and pose
+tracking work also landed. See SPECK.md for the prompt; commits below
+match the phase numbers there.
+
+📱 **Open this on your phone (same WiFi):** https://192.168.4.38:3000
+*(must be **https** for the camera to work — see BLOCKERS.md §4 for the
+one-line dev-server fix)*
 
 ## Headline
 
-✅ **3 dances ingested end-to-end** through yt-dlp → MediaPipe → librosa →
-chunker → skeleton mp4 → Supabase Storage → frontend.
+✅ **All 5 phases implemented and code-committed.** Static / synthetic
+verification done (typecheck clean, 67/67 tests pass, production build
+green, worker self-tests pass). Live phone verification needs four
+one-time user actions (BLOCKERS.md) — none of them are coding tasks.
 
-📱 **Open this on your phone (same WiFi):** http://192.168.4.38:3000
+## What shipped (commits in `main`)
 
-| What | URL |
+```
+f9fd7bb track refreshed spec for the second-round fix work
+902eef8 phase 1.5 + 1.1 backend: video_url column, original-mp4 upload, clean titles
+3d86d99 phase 1.1-1.3: Mode A duet redesign, camera UX, audio via real video
+67743ff phase 1.4: back navigation actually goes back
+ec0d0ca phase 1.6: stub /progress and /profile so the bottom nav stops 404-ing
+906165c phase 2: direction 3 palette — off-white + hot-pink restraint
+873233e phase 3: multi-person dance support + pick-a-dancer flow
+8426328 phase 4: pose-tracker reliability + framing onboarding
+```
+
+## What's actually in each phase
+
+### Phase 1 — critical functional fixes
+
+| # | Was | Now |
+| --- | --- | --- |
+| 1.1 Mode A reference | worker-rendered skeleton-only mp4 (looked like a stick figure) | Real TikTok video on top half, user camera on bottom half (duet split-screen). Skeleton lines are an opt-in toggle overlaid on the reference. Falls back to the skeleton mp4 only when video_url is null (legacy rows). |
+| 1.2 Camera | "no camera" empty state | New CameraPermissionBanner distinguishes insecure-context (HTTPS) / requesting / needs-tap / denied / unavailable. The HTTPS case is the most common phone failure and gets a specific message + pointer to BLOCKERS.md. |
+| 1.3 Audio | silent | Comes from the reference video element directly. Subsumed by 1.1. If iOS Safari blocks autoplay-with-sound the video falls back to muted and shows a "tap for sound" pill that unmutes on tap. |
+| 1.4 Back nav | hardcoded Link to "/" | Every back arrow on every non-home screen now calls router.back() with a sensible fallback. Mode A, Mode B, Mode C, drill, results, dance overview, pick-dancer, frame-check. |
+| 1.5 Titles | "@maya dc @Gandarra @𝚓 𝚎 𝚢 𝚖 𝚜" (TikTok caption) | worker/download.clean_title() prefers iTunes-style track + artist, falls back to the description with @mentions / #hashtags / dc-credits stripped, truncated to ~32 chars. Existing rows can be rewritten with `python worker/refresh_titles.py` (idempotent). |
+| 1.6 Dead UI | /progress, /profile bottom-nav tabs 404'd | Stub placeholder pages with the bottom nav so the tabs land somewhere real. /profile also gets a "re-calibrate framing" entry (Phase 4 wire-up). Lock icons on locked chunks remain inert by design. |
+
+### Phase 2 — Direction 3 palette
+
+- Token-level rewrite of `tailwind.config.ts`. Names (`cream`, `ink`,
+  `coral`, etc.) kept stable; only the **values** change. Off-white
+  `#F8F8F6`, white surfaces, near-black text, electric hot pink
+  `#FF3E7F`.
+- Inter loaded via `next/font/google` (weights 400 + 500 only).
+  Wordmark is now lowercase "groove" with -0.02em tracking. `font-serif`
+  remaps to the same Inter stack so no markup churn.
+- Hot pink restraint: SubmitFab, active bottom-nav tab, big results
+  score, top-skill row in ScoreBreakdown, processing spinner accent.
+  All other CTAs (HeroCard, ChunkPath final, results "drill it",
+  ProcessingState, SubmitModal) are black (`bg-ink text-cream-card`).
+- Camera screens (Mode A duet, Mode B, Mode C) deliberately stay dark.
+
+### Phase 3 — multi-person dance support
+
+Worker:
+- `worker/pose.py` rewritten. `num_poses=5`, a greedy centroid tracker
+  matches detections to persistent person IDs by hip-midpoint distance.
+- Per-person `lead_score = 0.3*centrality + 0.3*size + 0.2*forwardness
+  + 0.2*persistence`; highest scorer → `auto_selected_person_id`. When
+  the gap to second place is <0.15, `requires_dancer_pick = true`.
+- Pose JSON now carries a `persons` array (id, lead_score, sub-scores,
+  bbox, full frames track) **plus** the legacy top-level `frames` (the
+  auto-selected person) so referencePose.ts keeps working unchanged.
+- New `worker/thumbnail.extract_person_thumbnails` crops one JPG per
+  tracked person from its largest-bbox frame; store.py uploads to a
+  new `person-thumbnails` bucket.
+
+Schema (`0004_multi_person.sql`): `dancer_count`,
+`auto_selected_person_id`, `person_thumbnails (jsonb)`,
+`requires_dancer_pick`.
+
+Frontend:
+- `/dance/[id]/pick-dancer` renders the per-person thumbnails in a 2-up
+  grid; tap → `POST /api/dances/[id]/dancer` writes back the choice and
+  clears `requires_dancer_pick`.
+- Dance overview auto-redirects to pick-dancer when needed and gains a
+  "change dancer" link for multi-person rows.
+
+### Phase 4 — pose tracking reliability + framing onboarding
+
+- `lib/pose/poseExtractor.ts` switched from `pose_landmarker_lite` to
+  `pose_landmarker_full` (~2× slower per detection, materially better
+  limb tracking on real phone footage). `PoseResult` carries a per-frame
+  `confidence` (mean landmark visibility).
+- Stuck-skeleton bug fixed: Mode B, Mode C, and Drill all set
+  `landmarks: null` when detection returns nothing, so the canvas hides
+  rather than freezing the last frame. `SkeletonOverlay.staleAfterMs`
+  tightened from 1000 ms to 400 ms.
+- New `components/FramingToast` watches the per-frame confidence. When
+  it drops <0.5 for >1.5s a "adjust your framing" pill appears; tapping
+  it overlays a translucent body silhouette for 2s. Toast dismisses
+  when confidence recovers above 0.7.
+- New `/onboarding/frame-check` route. Camera full-screen with a
+  silhouette guide; when every tracked joint sits inside the silhouette
+  for 2 consecutive seconds the outline turns green and the "got it"
+  CTA enables. Skip allowed. On confirm,
+  `lib/pose/framingCalibration` writes `framing_calibrated=1` to
+  localStorage. Mode B, Mode C, and Drill gate on it.
+- `/profile` exposes a "re-calibrate framing" entry that clears the
+  flag and routes through the onboarding.
+
+## Verification done in this pass
+
+| Check | Result |
 | --- | --- |
-| Home / library | http://192.168.4.38:3000 |
-| API health | http://192.168.4.38:3000/api/dances |
+| `npx tsc --noEmit` | clean (one pre-existing `TS5097` test import warning, unrelated) |
+| `npm test` | 67 / 67 pass |
+| `npm run build` | green, all 14 routes register (was 6) |
+| `python -m py_compile worker/*.py` | all modules parse |
+| `python worker/test_pipeline.py` | 4 / 4 pass (chunker + skill mapping) |
 
-## Library state (3 dances, all `status='ready'`)
+## Verification that needs you (BLOCKERS.md)
 
-| ID | Source | Duration | Chunks | All artifacts |
-| --- | --- | --- | --- | --- |
-| `9f0c1d0e…` | tiktok.com/@charlidamelio/video/7566416574874275085 | 18s | 3 | ✅ skel+audio+pose+thumb |
-| `7d45ecca…` | tiktok.com/@charlidamelio/video/7474124403421236522 | — | 3 | ✅ |
-| `f3ec351e…` | tiktok.com/@charlidamelio/video/7416004338205658399 | — | 3 | ✅ |
+1. **Apply migrations 0003 + 0004** in Supabase SQL Editor.
+2. **Create the `videos` and `person-thumbnails` storage buckets** (public, same settings as `skeleton-videos`).
+3. **Re-process the 3 existing library dances** so they pick up
+   `video_url` + the new titles. Either:
+   - `python worker/main.py --once <tiktok_url>` (full re-ingest), or
+   - `python worker/refresh_titles.py` (titles only, leaves video_url empty)
+4. **Switch the dev server to HTTPS** so the phone can use its camera:
+   `npm run dev -- --experimental-https` (Next prints the cert-trusted
+   `https://192.168.4.38:3001` to visit).
 
-The two follow-up URLs were submitted through the real `POST /api/dances/submit`
-endpoint (not the worker's `--once` CLI), picked up by the polling worker, and
-ended up `ready` automatically — proves the full submit → worker → frontend
-loop works end-to-end.
+After 1–4 are done, the phone test cycle for the SPECK success path:
 
-## What worked first try
+| Step | Expected |
+| --- | --- |
+| 1. open the library URL | wordmark "groove" in Inter, hot-pink "submit a tiktok" fab, clean titles |
+| 2. tap a Charli dance | dance overview loads with proper title; "back to library" arrow returns to the library |
+| 3. tap section 1 | Mode A loads with Charli's actual video on top, your camera on bottom; audio plays. Toggle "skeleton" top-right to overlay the pose lines |
+| 4. tap "I got it · test" | first time: routed through `/onboarding/frame-check` — stand back so all joints fit the silhouette for 2 s, tap "got it"; second time: straight into Mode B |
+| 5. Mode B runs to completion | score appears; if ≥70, chunk 2 unlocks; if you wander out of frame mid-test you get the "adjust your framing" pill |
+| 6. submit a 2-person TikTok | once worker finishes processing, the dance overview auto-redirects to `/dance/[id]/pick-dancer`; pick one, continue. The "change dancer" link in the overview re-opens the screen any time |
 
-- All worker imports (yt-dlp, mediapipe, librosa, cv2, ffmpeg-python, supabase, dotenv)
-- `worker/test_pipeline.py` self-tests (4/4 chunker + skill-mapping cases)
-- yt-dlp download → mp4 + 22 kHz mono wav
-- librosa beat detection (BPM 107.67, 32 beats on the test URL)
-- Auto-chunker (3 chunks of ~6 s each — well within the 3–8 s target)
-- Skill-mapping heuristics (7 detected, weights sum to 1.000)
-- cv2 + ffmpeg skeleton mp4 render (552 frames, H.264 + faststart)
-- Thumbnail extraction
-- All 4 Supabase Storage uploads (pose-data, skeleton-videos, audio, thumbnails — every URL returns 200 OK)
-- Next.js `npm test` → 67/67 pass
-- All 5 frontend routes return 200 (home, dance overview, Mode A, Mode B, Mode C)
+## What didn't change
 
-## What needed fixing (commits will follow)
+- The pure-TS math layer (DTW, joint angles, scoring) is untouched per
+  SPECK hard-rule §2. 67 tests still cover it.
+- The dark-themed camera screens kept their colour scheme — black is
+  the right backdrop for the white skeleton overlay; SPECK §Phase 2
+  was about the cream / lesson / library surfaces.
+- The worker pipeline shape: still 7 sequential steps producing the
+  same artifacts plus the new video.mp4 and per-person thumbnails.
 
-### Fix 1 — MediaPipe `solutions` API removed in 0.10.30+
-
-The worker's `pose.py` was written against the legacy
-`mediapipe.solutions.pose` API. MediaPipe 0.10.35 (current pin) only exposes
-the new Tasks API.
-
-**Fix:** rewrote `worker/pose.py` to use `mediapipe.tasks.python.vision.PoseLandmarker`
-in VIDEO running mode. Model (`pose_landmarker_lite.task`, ~5 MB) is
-auto-downloaded on first run to `~/.cache/groove/`.
-
-### Fix 2 — `SUPABASE_URL` had trailing `/rest/v1/`
-
-The value pasted into `.env.local` ended with `/rest/v1/`. The supabase
-client appends `/rest/v1/dances` itself, producing
-`https://xxxx.supabase.co/rest/v1/rest/v1/dances` → 404.
-
-**Fix:** added `normaliseUrl()` helpers in `worker/store.py`,
-`lib/supabase/server.ts`, and `lib/supabase/client.ts` that strip
-trailing `/`, `/rest`, or `/rest/v1` before constructing the client.
-Now resilient to either format.
-
-### Fix 3 — live DB schema was a v1 of the migration
-
-The user's actual `dances` table is missing two columns my migration adds:
-`low_quality` and `audio_start_offset_ms`. The worker's UPDATE was
-failing with PostgREST `PGRST204` (column not in schema cache).
-
-**Fix:**
-- Worker now introspects the live schema on first upload and silently drops
-  any fields the table doesn't accept (logs them as a warning).
-- New migration `supabase/migrations/0002_quality_fields.sql` adds the two
-  columns with safe defaults. **Optional follow-up:** open Supabase SQL
-  editor, paste the file contents, run it. The worker already works without
-  this, but the UI's "low quality reference" badge won't show on flagged
-  dances until the column exists.
-
-### Fix 4 — `--once` mode tripped the unique constraint on retry
-
-When a prior run uploaded artifacts but failed on the final UPDATE, the
-row stayed in the DB. Re-running `python main.py --once <same-url>` hit the
-`dances_tiktok_url_key` unique constraint.
-
-**Fix:** `insert_queued()` is now find-or-create. If the URL already
-exists, it reuses the row and re-marks it `processing`. Makes retries
-idempotent.
-
-### Fix 5 — Next.js fetch cache served stale `processing` after row was `ready`
-
-The `/api/dances/:id` endpoint kept returning `status='processing'`
-indefinitely after the worker flipped the row to `ready`. Next.js wraps
-the global `fetch` and caches Route Handler reads even when the route is
-`dynamic = 'force-dynamic'`.
-
-**Fix:** `getServerSupabase()` now installs a `global.fetch` wrapper
-that passes `cache: 'no-store'` on every Supabase HTTP request. The
-submit-modal polling now correctly transitions to the dance page when
-the worker finishes.
-
-### Fix 6 — stale `.next/` cache from earlier Next 14 / React build
-
-Initial dev server start returned `Invariant: missing bootstrap script.
-This is a bug in Next.js` for every page (API routes still worked).
-
-**Fix:** `rm -rf .next && npm run dev`. Likely a leftover from a
-Next.js / React version bump in the dependency install. Not something
-the code can prevent — flagging here so it's a known recipe.
-
-## Running processes
+## Logs / process state
 
 | Process | Where | Status |
 | --- | --- | --- |
-| Next.js dev server | `npm run dev`, PID-bound to port 3000 | running, listens on `*:3000` (LAN reachable) |
-| Worker poller | `cd worker && source venv/bin/activate && python main.py` | running, polls Supabase every 5 s |
-
-Logs are tailing to `/tmp/groove-dev.log` and `/tmp/groove-worker.log` if
-you want to watch.
-
-## What still needs your attention
-
-1. **Apply migration 0002** (optional but recommended) in Supabase SQL
-   editor — re-enables the `low_quality` UI badge for dances with poor
-   pose tracking.
-
-2. **Phone test the practice loop.** I verified that the routes serve and
-   the data is correct, but Modes A / B / C need a real device to verify:
-   - Mode A — skeleton video playback + audio sync at 50 / 75 / 100% speed
-   - Mode B — camera + pose overlay + scored chunk attempt
-   - Mode C — full-routine DTW + results screen + TikTok embed iframe
-
-3. **Title quality.** yt-dlp pulls TikTok's caption as the title (e.g.
-   `'@maya dc @Gandarra @𝚓 𝚎 𝚢 𝚖 𝚜 '`). For seeded library entries you
-   may want to override the title manually in Supabase. The worker could
-   fall back to the creator handle + a short description if the caption
-   contains mostly @-mentions — flag this if you'd like that as a
-   follow-up.
-
-## How to repeat the end-to-end test yourself
-
-```bash
-# terminal 1 — worker
-cd worker
-source venv/bin/activate
-python main.py
-
-# terminal 2 — dev server
-cd .
-npm run dev
-
-# browser
-open http://localhost:3000   # or http://192.168.4.38:3000 on your phone
-# tap "submit a tiktok", paste a public TikTok URL,
-# watch the rotating loader,
-# land on /dance/<new-id>
-```
-
-## Nothing is currently broken
-
-Every step in the SPECK success path executes. Tests pass, build is clean,
-all routes serve, all 3 library dances render with their full set of
-artifacts.
+| Next.js dev server | `npm run dev` | running on http://192.168.4.38:3000 (LAN reachable); use `--experimental-https` to make the phone happy |
+| Worker poller | `cd worker && python main.py` | unchanged — poll loop still 5 s |
