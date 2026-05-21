@@ -13,8 +13,13 @@ import type {
 import type { PoseLandmark, PoseResult } from './types';
 
 const WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm';
+// SPECK §Phase 4: switched from `lite` → `full` for limb-tracking accuracy.
+// Full is ~2× slower per detection but stays well within real-time on a
+// modern phone (Pixel 7 / iPhone 12 and up). If you need to go back to the
+// faster model for a specific device, override at the call site or change
+// the URL.
 const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
+  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task';
 
 let _vision: typeof import('@mediapipe/tasks-vision') | null = null;
 let _filesetPromise: Promise<unknown> | null = null;
@@ -143,5 +148,10 @@ function resultToPoseResult(
   if (!result || !result.landmarks || result.landmarks.length === 0) return null;
   const landmarks = toLandmarks(result.landmarks[0]);
   const worldLandmarks = toLandmarks(result.worldLandmarks?.[0]);
-  return { landmarks, worldLandmarks, timestampMs };
+  // Mean visibility — cheap "tracker is confident in this frame" proxy.
+  const confidence =
+    landmarks.length === 0
+      ? 0
+      : landmarks.reduce((s, l) => s + l.visibility, 0) / landmarks.length;
+  return { landmarks, worldLandmarks, timestampMs, confidence };
 }

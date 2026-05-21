@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import BackHomeButton from '@/components/BackHomeButton';
 import CorrectionToast from '@/components/CorrectionToast';
+import FramingToast from '@/components/FramingToast';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
@@ -22,6 +23,7 @@ import {
   recordChunkScore,
 } from '@/lib/mastery/chunkProgress';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -54,6 +56,17 @@ export default function TestPage({ params }: PageProps) {
   const { loading, notFound, dance, chunks } = useDance(params.danceId);
   const chunk = chunks[chunkIndex];
 
+  // SPECK §4 onboarding: first time the user enters the scored test flow,
+  // route through the framing-check screen and come back here. Pure client
+  // gate (no SSR concern — useEffect always runs in the browser).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isFramingCalibrated()) {
+      const here = `/dance/${params.danceId}/chunk/${chunkIndex}/test`;
+      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+    }
+  }, [params.danceId, chunkIndex, router]);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const extractorRef = useRef<PoseExtractor | null>(null);
@@ -71,6 +84,7 @@ export default function TestPage({ params }: PageProps) {
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [unlockedNext, setUnlockedNext] = useState(false);
   const [volume, setVolume] = useState(1);

@@ -1,0 +1,131 @@
+'use client';
+
+// Floating "adjust your framing" toast for the camera screens. Triggered by
+// the parent's pose-tracking confidence: shown when confidence < 0.5 for
+// >1.5s, dismissed when confidence recovers above 0.7.
+//
+// Tapping the toast overlays a translucent body-silhouette guide for 2s
+// (the same silhouette used in /onboarding/frame-check) so the user has
+// a visual target for where to stand.
+
+import { useEffect, useState } from 'react';
+
+interface FramingToastProps {
+  // Latest per-frame confidence, 0..1. Pass NaN or null when no pose was
+  // detected at all — the toast will treat that as "very low confidence".
+  confidence: number | null;
+  // The camera <video> ref so the silhouette guide can size itself.
+  className?: string;
+}
+
+const LOW_THRESHOLD = 0.5;
+const HIGH_THRESHOLD = 0.7;
+const LOW_HOLD_MS = 1500;
+const SILHOUETTE_DISPLAY_MS = 2000;
+
+export default function FramingToast({
+  confidence,
+  className = '',
+}: FramingToastProps) {
+  const [visible, setVisible] = useState(false);
+  const [showSilhouette, setShowSilhouette] = useState(false);
+
+  useEffect(() => {
+    let lowSinceMs: number | null = null;
+    let raf = 0;
+    const tick = () => {
+      const c = confidence ?? 0;
+      const now = performance.now();
+      if (c < LOW_THRESHOLD) {
+        if (lowSinceMs === null) lowSinceMs = now;
+        if (!visible && now - lowSinceMs >= LOW_HOLD_MS) {
+          setVisible(true);
+        }
+      } else {
+        lowSinceMs = null;
+        if (visible && c > HIGH_THRESHOLD) {
+          setVisible(false);
+          setShowSilhouette(false);
+        }
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [confidence, visible]);
+
+  useEffect(() => {
+    if (!showSilhouette) return;
+    const t = window.setTimeout(
+      () => setShowSilhouette(false),
+      SILHOUETTE_DISPLAY_MS,
+    );
+    return () => window.clearTimeout(t);
+  }, [showSilhouette]);
+
+  if (!visible) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setShowSilhouette(true)}
+        className={`pointer-events-auto absolute inset-x-0 top-20 z-30 mx-auto flex w-fit items-center gap-2 rounded-full bg-black/85 px-3.5 py-2 text-xs font-medium text-white ring-1 ring-white/20 backdrop-blur-sm active:scale-95 ${className}`}
+      >
+        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+        </svg>
+        adjust your framing
+      </button>
+      {showSilhouette && <SilhouetteGuide />}
+    </>
+  );
+}
+
+// Translucent body outline centred in the camera view. Used both here as
+// a transient hint and as the persistent target in
+// /onboarding/frame-check.
+export function SilhouetteGuide({
+  active = false,
+}: {
+  // When true, the outline is green (used by onboarding once the user is
+  // fully in-frame). Default white-ish.
+  active?: boolean;
+}) {
+  const color = active ? '#00C26B' : 'rgba(255,255,255,0.55)';
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 z-20 m-auto h-3/4 w-auto"
+      viewBox="0 0 100 200"
+      fill="none"
+      stroke={color}
+      strokeWidth={2.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      {/* Head */}
+      <circle cx="50" cy="22" r="11" />
+      {/* Neck + shoulders */}
+      <path d="M50 33 v8" />
+      <path d="M30 50 Q50 41 70 50" />
+      {/* Torso */}
+      <path d="M30 50 L34 110" />
+      <path d="M70 50 L66 110" />
+      {/* Hips */}
+      <path d="M34 110 L38 120" />
+      <path d="M66 110 L62 120" />
+      <path d="M38 120 L62 120" />
+      {/* Arms */}
+      <path d="M30 50 L20 95" />
+      <path d="M20 95 L25 130" />
+      <path d="M70 50 L80 95" />
+      <path d="M80 95 L75 130" />
+      {/* Legs */}
+      <path d="M38 120 L34 175" />
+      <path d="M34 175 L36 195" />
+      <path d="M62 120 L66 175" />
+      <path d="M66 175 L64 195" />
+    </svg>
+  );
+}

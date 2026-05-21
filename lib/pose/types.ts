@@ -15,6 +15,11 @@ export interface PoseResult {
   // 33 landmarks in world coords (meters, origin at hip midpoint).
   worldLandmarks: PoseLandmark[];
   timestampMs: number;
+  // Mean landmark visibility across the detected pose, 0..1. A quick proxy
+  // for "tracker is confident in this frame". Below 0.5 for >1.5s, the camera
+  // screens show a framing toast asking the user to reframe. Above 0.7
+  // dismisses it.
+  confidence: number;
 }
 
 // BlazePose 33-landmark topology indices. Names match MediaPipe so the math in
