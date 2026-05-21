@@ -14,9 +14,11 @@ marked status='failed' with the error message and the loop continues.
 Usage:
     cd worker
     source venv/bin/activate
-    python reprocess_all.py             # all ready rows
-    python reprocess_all.py --id <uuid> # one specific dance
-    python reprocess_all.py --dry-run   # list what would be reprocessed
+    python reprocess_all.py                       # all ready rows
+    python reprocess_all.py --id <uuid>           # one specific dance
+    python reprocess_all.py --dry-run             # list what would be reprocessed
+    python reprocess_all.py --local-only --id <uuid> --username <handle>
+                                                   # no Supabase auth needed
 """
 
 from __future__ import annotations
@@ -159,17 +161,97 @@ def reprocess_one(store, row: dict) -> bool:
         audio_start_offset_ms=0,
     )
 
+    if store is None:
+        # --local-only mode: write a manifest next to the artifacts
+        # instead of uploading. The user can inspect /tmp/groove-reprocess/<id>/
+        # to see the new pose.json + skeleton.mp4 + thumbnails the
+        # production upload WOULD push.
+        manifest_path = job_dir / "manifest.json"
+        result.write_manifest(manifest_path)
+        log.info(
+            "[%s] DONE (local-only): dancer_count=%d, auto_selected_person_id=%s, "
+            "requires_dancer_pick=%s, vlm_confidence=%s",
+            dance_id, dancer_count, auto_id, requires_pick, vlm_confidence,
+        )
+        log.info("[%s] artifacts: %s", dance_id, job_dir)
+        return True
+
     log.info("[%s] upload artifacts (dancer_count=%d, low_quality=%s)", dance_id, dancer_count, low_quality)
     store.upload_and_finalise(dance_id, result)
     log.info("[%s] DONE", dance_id)
     return True
 
 
+def _public_storage_base() -> str:
+    """The base of the Supabase public storage URL — needed by
+    --local-only mode so we can fetch video.mp4 + audio.wav without
+    service-role auth. Falls back to NEXT_PUBLIC_SUPABASE_URL with
+    /rest/v1 stripped (the storage origin is the same)."""
+    raw = (
+        os.environ.get("SUPABASE_URL")
+        or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+        or ""
+    ).rstrip("/")
+    for suffix in ("/rest/v1", "/rest"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)]
+    return raw
+
+
+def _local_only_row(dance_id: str, username: str | None) -> dict:
+    """Synthesize the minimal row dict reprocess_one() expects, with
+    URLs pointing at the public storage path."""
+    base = _public_storage_base()
+    if not base:
+        raise RuntimeError(
+            "no SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL set; --local-only "
+            "needs the storage origin to download cached media",
+        )
+    return {
+        "id": dance_id,
+        "creator_handle": username,
+        "title": None,
+        "tiktok_url": "",
+        "duration_seconds": None,
+        "video_url": f"{base}/storage/v1/object/public/videos/{dance_id}/video.mp4",
+        "audio_url": f"{base}/storage/v1/object/public/audio/{dance_id}/audio.wav",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--id", help="reprocess a single dance id")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--local-only",
+        action="store_true",
+        help="skip Supabase auth + uploads; fetch video/audio via the "
+             "public storage URL pattern. Requires --id and --username.",
+    )
+    p.add_argument(
+        "--username",
+        help="(local-only) creator handle to forward to the VLM detector",
+    )
     args = p.parse_args(argv)
+
+    # --local-only: no Supabase client, no row write-back. Useful when
+    # SUPABASE_SERVICE_ROLE_KEY is missing (production reprocess is
+    # blocked but you still want to verify the pipeline output on a
+    # known dance).
+    if args.local_only:
+        if not args.id:
+            log.error("--local-only requires --id <uuid>")
+            return 2
+        row = _local_only_row(args.id, args.username)
+        log.info("local-only reprocess: %s @%s", args.id, args.username or "?")
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            reprocess_one(None, row)
+            return 0
+        except Exception as exc:
+            log.error("[%s] FAILED: %s", args.id, exc)
+            traceback.print_exc()
+            return 1
 
     from store import make_store  # noqa: E402
     store = make_store()

@@ -1,23 +1,24 @@
 > ⚠️ **READ FIRST — overnight 2026-05-21 (round 5)**
 >
-> Round-5 (the five fixes from spec.md) is shipped in six commits, all
-> on `main`. **One blocker remains:** the production reprocess of the
-> existing rows did NOT run because `SUPABASE_SERVICE_ROLE_KEY` is
-> empty in `.env.local`. Paste the key from your Supabase project
-> settings → API, then run:
+> Round-5 (the five fixes from spec.md) is shipped in seven commits,
+> all on `main`. **One blocker remains:** the *production* reprocess
+> did NOT push back to Supabase because `SUPABASE_SERVICE_ROLE_KEY` is
+> empty in `.env.local`. I extended `worker/reprocess_all.py` with a
+> `--local-only` mode and ran it end-to-end against the cached
+> hearts2miraaa video pulled from the public storage URL — that
+> confirms the new pipeline picks **P2** (the blonde dancer in the
+> middle) with **`vlm_confidence = high`**. Artifacts are at
+> `/tmp/groove-reprocess/9fff5b9b-7a84-4316-94ed-9ebf943343c4/`.
+>
+> To actually push the new pose JSON / skeleton mp4 / person thumbs to
+> production: paste the service-role key into `.env.local`, apply
+> migration `0005_vlm_lead_detection.sql` in the Supabase SQL editor,
+> then:
 >
 > ```bash
 > cd worker && source venv/bin/activate
-> python reprocess_all.py
+> python reprocess_all.py   # without --local-only
 > ```
->
-> Until that runs, the live app still serves the round-4 pose JSON
-> (auto_selected_person_id = p13 for @hearts2miraaa), so the wrong
-> dancer's skeleton will continue to draw on the REF panel even though
-> the new VLM detector picks the right one. The local run of the new
-> pipeline against `/tmp/hearts2miraaa.mp4` confirms the VLM picks
-> **P2** (the blonde dancer in the middle) with **`vlm_confidence =
-> high`** — see commit `e6e715f` and the §Fix 5 verification below.
 
 # Blockers — user action required
 
