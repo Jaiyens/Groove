@@ -134,7 +134,12 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     from thumbnail import extract_person_thumbnails, extract_thumbnail
 
     log.info("[7/7] thumbnail")
-    thumb = extract_thumbnail(media.video_path, cfg.out_dir / "thumbnail.jpg")
+    thumb = extract_thumbnail(
+        media.video_path,
+        cfg.out_dir / "thumbnail.jpg",
+        pose_json_path=pose_path,
+        duration_seconds=media.duration_seconds,
+    )
     result.thumbnail_path = thumb
 
     # Read multi-person metadata out of pose.json so the upload step can
