@@ -26,7 +26,10 @@ import {
   type FramingPhase,
   isUpperBodyFramed,
 } from '@/lib/pose/framingCheck';
-import { markFramingCalibrated } from '@/lib/pose/framingCalibration';
+import {
+  markFramingCalibrated,
+  markFramingGateJustFired,
+} from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 
 export default function FrameCheckPage() {
@@ -124,6 +127,10 @@ function FrameCheckInner() {
         if (result.fired && !firedRef.current) {
           firedRef.current = true;
           markFramingCalibrated();
+          // spec.md round-5 §Fix 2: hand off to Mode A so it knows to
+          // skip its own start-screen + countdown (the user is across
+          // the room and just heard 5-4-3-2-1-GO).
+          markFramingGateJustFired();
           // Defer the route swap by ~600 ms so the "GO" flash is
           // actually visible.
           window.setTimeout(() => router.replace(returnToRef.current), 600);

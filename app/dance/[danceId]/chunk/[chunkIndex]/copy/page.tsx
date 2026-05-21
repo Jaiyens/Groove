@@ -27,7 +27,10 @@ import CameraPermissionBanner, {
 } from '@/components/CameraPermissionBanner';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
-import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
+import {
+  consumeFramingGateRecent,
+  isFramingCalibrated,
+} from '@/lib/pose/framingCalibration';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { PoseLandmark } from '@/lib/pose/types';
 
@@ -59,7 +62,13 @@ export default function CopyAlongPage({ params }: PageProps) {
   // user taps "start" and the 3-2-1-GO countdown finishes. Re-entering
   // the chunk (back-arrow + tap-in) resets this because the route
   // remounts the page.
-  const [started, setStarted] = useState(false);
+  //
+  // spec.md round-5 §Fix 2: if the framing-check gate just fired (the
+  // user is 4-5 ft from the phone after the hands-free 5-4-3-2-1), skip
+  // the redundant start screen entirely — initial `started=true` does
+  // exactly that. consumeFramingGateRecent() also clears the flag so a
+  // browser back/forward to the same chunk doesn't keep auto-starting.
+  const [started, setStarted] = useState(() => consumeFramingGateRecent());
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -136,6 +145,19 @@ export default function CopyAlongPage({ params }: PageProps) {
     },
     [],
   );
+
+  // spec.md round-5 §Fix 2: bypass mode (started=true on mount via the
+  // framing-gate handoff) needs to kick the camera permission flow
+  // itself, since the user never tapped the StartOverlay's start
+  // button. Browsers remember the framing-check page's getUserMedia
+  // grant for this origin so the call doesn't re-prompt.
+  useEffect(() => {
+    if (started && camState === 'idle') {
+      void startCamera();
+    }
+    // Run-once intent; subsequent state changes are handled elsewhere.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reference-video chunk loop. Drives video playback within [startMs, endMs]
   // at the chosen rate. Audio is the video's own audio track. Gated on
