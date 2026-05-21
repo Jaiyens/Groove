@@ -8,9 +8,9 @@
 // Bottom half: the user's front-facing camera, mirrored, same vertical
 //            aspect ratio. Direct split-screen, not a floating PIP.
 //
-// Skeleton overlay: small toggle on the reference video. Off by default
-// (user wants to see Charli's actual body). When on, draws white pose
-// lines over the reference using the worker's pose JSON.
+// Skeleton overlay: small toggle on the reference video. On by default;
+// pressing the skeleton button hides it. When on, draws white pose lines
+// over the reference using the worker's pose JSON.
 //
 // Falls back to the legacy skeleton video when video_url is missing (rows
 // ingested before Phase 1.1 schema landed). That fallback is silent — the
@@ -60,7 +60,7 @@ export default function CopyAlongPage({ params }: PageProps) {
   const [rate, setRate] = useState(0.6);
   const [camState, setCamState] = useState<CamState>('idle');
   const [refMissing, setRefMissing] = useState(false);
-  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [showSkeleton, setShowSkeleton] = useState(true);
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
