@@ -56,7 +56,7 @@ def fetch(url: str, dest: Path) -> None:
         shutil.copyfileobj(resp, fh)
 
 
-def reprocess_one(store, row: dict) -> bool:
+def reprocess_one(store, row: dict, *, force_rename: bool = False) -> bool:
     dance_id = row["id"]
     video_url = row.get("video_url")
     audio_url = row.get("audio_url")
@@ -92,6 +92,7 @@ def reprocess_one(store, row: dict) -> bool:
 
     from audio_analysis import detect_beats  # noqa: E402
     from chunker import auto_chunk  # noqa: E402
+    from naming import generate_display_name  # noqa: E402
     from pose import extract_pose  # noqa: E402
     from skeleton_video import render_skeleton  # noqa: E402
     from skill_mapping import map_skills  # noqa: E402
@@ -99,6 +100,25 @@ def reprocess_one(store, row: dict) -> bool:
 
     log.info("[%s] beats", dance_id)
     beat_info = detect_beats(audio_path)
+
+    # SPECK polish §Fix 3: generate display_name during reprocess if the
+    # row doesn't have one yet (or --force-rename was passed). Cheap when
+    # the caption already looks clean; spends one Gemini audio call
+    # otherwise. The store's _known_columns() check still gates the
+    # write so this is safe to run against pre-migration databases.
+    existing_display_name = row.get("display_name")
+    if existing_display_name and not force_rename:
+        log.info("[%s] keep display_name = %r", dance_id, existing_display_name)
+        new_display_name = existing_display_name
+    else:
+        log.info("[%s] naming", dance_id)
+        new_display_name = generate_display_name(
+            title=row.get("title"),
+            creator_handle=row.get("creator_handle"),
+            audio_path=audio_path,
+            dance_id=dance_id,
+        )
+        log.info("[%s] display_name: %r → %r", dance_id, existing_display_name, new_display_name)
 
     log.info("[%s] pose (BoT-SORT + VLM lead detection)", dance_id)
     pose_path, low_quality = extract_pose(
@@ -139,6 +159,7 @@ def reprocess_one(store, row: dict) -> bool:
         url=row.get("tiktok_url", ""),
         out_dir=job_dir,
         title=row.get("title"),
+        display_name=new_display_name,
         creator_handle=row.get("creator_handle"),
         duration_seconds=duration_s,
         bpm=beat_info.bpm,
@@ -232,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
         "--username",
         help="(local-only) creator handle to forward to the VLM detector",
     )
+    p.add_argument(
+        "--force-rename",
+        action="store_true",
+        help="regenerate display_name even if the row already has one. "
+             "Without this, naming only runs on rows where display_name "
+             "IS NULL (the typical post-migration backfill case).",
+    )
     args = p.parse_args(argv)
 
     # --local-only: no Supabase client, no row write-back. Useful when
@@ -246,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("local-only reprocess: %s @%s", args.id, args.username or "?")
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            reprocess_one(None, row)
+            reprocess_one(None, row, force_rename=args.force_rename)
             return 0
         except Exception as exc:
             log.error("[%s] FAILED: %s", args.id, exc)
@@ -280,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     for row in rows:
         dance_id = row["id"]
         try:
-            reprocess_one(store, row)
+            reprocess_one(store, row, force_rename=args.force_rename)
             succeeded += 1
         except Exception as exc:
             failed += 1

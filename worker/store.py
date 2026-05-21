@@ -196,6 +196,9 @@ class SupabaseStore:
         candidate: dict[str, Any] = {
             "status": "ready",
             "title": result.title,
+            # SPECK polish §Fix 3: gated by _known_columns() so this is a
+            # no-op on databases that haven't had migration 0006 applied.
+            "display_name": result.display_name,
             "creator_handle": result.creator_handle,
             "duration_seconds": result.duration_seconds,
             "bpm": result.bpm,

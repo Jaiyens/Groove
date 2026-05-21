@@ -30,6 +30,9 @@ class PipelineResult:
     url: str
     out_dir: Path
     title: str | None = None
+    # SPECK polish §Fix 3: AI-cleaned name shown in the library. Falls
+    # back to title when worker hasn't generated one yet.
+    display_name: str | None = None
     creator_handle: str | None = None
     duration_seconds: float | None = None
     bpm: float | None = None
@@ -96,6 +99,19 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     beat_info = detect_beats(media.audio_path)
     result.bpm = beat_info.bpm
     result.beats = beat_info.beat_times_seconds
+
+    # 2b. AI-generated display name. Runs after audio download so the
+    # Gemini fallback has something to listen to. Cheap (<200 ms when
+    # the caption already looks clean, ~2 s with Gemini audio call).
+    from naming import generate_display_name
+
+    log.info("[2b/7] display name")
+    result.display_name = generate_display_name(
+        title=result.title,
+        creator_handle=result.creator_handle,
+        audio_path=media.audio_path,
+    )
+    log.info("display_name = %r", result.display_name)
 
     # 3. Pose extraction (+ VLM lead detection on multi-person clips)
     from pose import extract_pose
