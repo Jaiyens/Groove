@@ -31,6 +31,7 @@ import {
   consumeFramingGateRecent,
   isFramingCalibrated,
 } from '@/lib/pose/framingCalibration';
+import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { PoseLandmark } from '@/lib/pose/types';
 
@@ -50,6 +51,11 @@ export default function CopyAlongPage({ params }: PageProps) {
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const overlayRafRef = useRef<number | null>(null);
+  // spec.md round-5 §Fix 3: dual skeleton overlay. The YOU panel runs
+  // a live MediaPipe extractor whenever the skeleton toggle is on, in
+  // parallel with the REF panel's worker-precomputed track.
+  const userExtractorRef = useRef<PoseExtractor | null>(null);
+  const userExtractorRafRef = useRef<number | null>(null);
 
   const [rate, setRate] = useState(0.6);
   const [camState, setCamState] = useState<CamState>('idle');
@@ -58,6 +64,7 @@ export default function CopyAlongPage({ params }: PageProps) {
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
+  const [userLandmarks, setUserLandmarks] = useState<PoseLandmark[] | null>(null);
   // SPECK round-4 §Fix 2: the reference video does not play until the
   // user taps "start" and the 3-2-1-GO countdown finishes. Re-entering
   // the chunk (back-arrow + tap-in) resets this because the route
@@ -217,6 +224,43 @@ export default function CopyAlongPage({ params }: PageProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chunk, rate, muted, started]);
+
+  // spec.md round-5 §Fix 3: live MediaPipe loop for the YOU panel's
+  // skeleton overlay. Only runs while the skeleton toggle is on AND
+  // the user camera is granted — keeps the extractor off the critical
+  // path of Mode A's normal "watch the reference" flow.
+  useEffect(() => {
+    if (!showSkeleton || camState !== 'granted') {
+      setUserLandmarks(null);
+      return;
+    }
+    let cancelled = false;
+    const ex = new PoseExtractor();
+    userExtractorRef.current = ex;
+    ex.init().catch(() => { /* init failure → skeleton just won't draw */ });
+    const tick = () => {
+      const v = camVideoRef.current;
+      if (v && ex.ready && v.readyState >= 2) {
+        const res = ex.detectFromVideo(v, performance.now());
+        if (res) setUserLandmarks(res.landmarks);
+        else setUserLandmarks(null);
+      }
+      if (!cancelled) {
+        userExtractorRafRef.current = requestAnimationFrame(tick);
+      }
+    };
+    userExtractorRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      if (userExtractorRafRef.current !== null) {
+        cancelAnimationFrame(userExtractorRafRef.current);
+        userExtractorRafRef.current = null;
+      }
+      ex.close();
+      userExtractorRef.current = null;
+      setUserLandmarks(null);
+    };
+  }, [showSkeleton, camState]);
 
   // Drive the skeleton overlay's landmark state from the reference video's
   // currentTime. Cheap (binary search per frame), only runs while the toggle
@@ -408,6 +452,19 @@ export default function CopyAlongPage({ params }: PageProps) {
               autoPlay
               className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
             />
+            {/* spec.md round-5 §Fix 3: skeleton on the YOU side too.
+                Live MediaPipe loop fills userLandmarks; same drawing
+                fn + same colour as the REF side for visual parity. */}
+            {showSkeleton && camState === 'granted' && (
+              <SkeletonOverlay
+                landmarks={userLandmarks}
+                videoRef={camVideoRef}
+                mirror
+                edgeColor="#ffffff"
+                jointColor="#ffffff"
+                staleAfterMs={400}
+              />
+            )}
             {camState !== 'granted' && (
               <CameraPermissionBanner
                 state={camState}
