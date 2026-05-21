@@ -17,17 +17,27 @@ setup, ~20 minutes.
    - `Project URL` (looks like `https://xxxx.supabase.co`)
    - `anon public` key (JWT starting `eyJ…`)
    - `service_role` key (JWT — KEEP SECRET, do not commit)
-4. Create `.env.local` at the repo root with:
+4. Copy [`.env.example`](.env.example) to `.env.local` at the repo
+   root and fill in:
 
    ```
    NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
    NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ…
    SUPABASE_SERVICE_ROLE_KEY=eyJ…
+   GEMINI_API_KEY=…   # spec.md round-5 §Fix 5; get from aistudio.google.com
    ```
 
-5. Apply the migration. From the Supabase dashboard, open **SQL Editor**,
-   paste the contents of [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql),
-   and run it. (Or use the Supabase CLI: `supabase db push` after `supabase login`.)
+   `GEMINI_API_KEY` powers the worker's primary lead-dancer detector.
+   Missing → the worker falls back to a stronger geometric heuristic
+   automatically. Cost is ~$0.002 per ingested dance.
+
+5. Apply the migrations. From the Supabase dashboard, open **SQL Editor**,
+   paste the contents of each file under
+   [`supabase/migrations/`](supabase/migrations/) in numeric order
+   (0001, 0002, …, 0005) and run them. (Or use the Supabase CLI:
+   `supabase db push` after `supabase login`.) The round-5 migration
+   `0005_vlm_lead_detection.sql` adds `vlm_confidence` + `vlm_reasoning`
+   columns that the worker writes after detecting the lead dancer.
 
 6. Create two **Storage buckets** (public-read):
    - `pose-data` — for the per-dance pose JSON

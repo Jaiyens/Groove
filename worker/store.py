@@ -208,6 +208,8 @@ class SupabaseStore:
             "auto_selected_person_id": result.auto_selected_person_id,
             "requires_dancer_pick": result.requires_dancer_pick,
             "person_thumbnails": person_thumb_urls or None,
+            "vlm_confidence": result.vlm_confidence,
+            "vlm_reasoning": result.vlm_reasoning,
             "ready_at": datetime.now(timezone.utc).isoformat(),
             **urls,
         }

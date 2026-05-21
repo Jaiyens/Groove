@@ -98,8 +98,13 @@ def reprocess_one(store, row: dict) -> bool:
     log.info("[%s] beats", dance_id)
     beat_info = detect_beats(audio_path)
 
-    log.info("[%s] pose (BoT-SORT)", dance_id)
-    pose_path, low_quality = extract_pose(video_path, job_dir / "pose.json")
+    log.info("[%s] pose (BoT-SORT + VLM lead detection)", dance_id)
+    pose_path, low_quality = extract_pose(
+        video_path,
+        job_dir / "pose.json",
+        username=row.get("creator_handle"),
+        dance_id=dance_id,
+    )
 
     log.info("[%s] chunker", dance_id)
     chunks = auto_chunk(pose_path, beat_info.beat_times_seconds, duration_s)
@@ -119,6 +124,8 @@ def reprocess_one(store, row: dict) -> bool:
     dancer_count = int(pose_doc.get("dancer_count") or 1)
     auto_id = pose_doc.get("auto_selected_person_id")
     requires_pick = bool(pose_doc.get("requires_dancer_pick"))
+    vlm_confidence = pose_doc.get("vlm_confidence")
+    vlm_reasoning = pose_doc.get("vlm_reasoning")
 
     person_thumbs: dict[str, Path] = {}
     if dancer_count > 1:
@@ -146,6 +153,8 @@ def reprocess_one(store, row: dict) -> bool:
         auto_selected_person_id=auto_id,
         requires_dancer_pick=requires_pick,
         person_thumbnails=person_thumbs,
+        vlm_confidence=vlm_confidence,
+        vlm_reasoning=vlm_reasoning,
         low_quality=low_quality,
         audio_start_offset_ms=0,
     )

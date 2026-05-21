@@ -47,6 +47,10 @@ class PipelineResult:
     auto_selected_person_id: str | None = None
     requires_dancer_pick: bool = False
     person_thumbnails: dict[str, Path] = field(default_factory=dict)
+    # spec.md round-5 §Fix 5: VLM lead-detector outputs. Null when the
+    # detector wasn't consulted (1 dancer) or fell through to heuristic.
+    vlm_confidence: str | None = None
+    vlm_reasoning: str | None = None
     low_quality: bool = False
     audio_start_offset_ms: int = 0
     error: str | None = None
@@ -93,11 +97,15 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     result.bpm = beat_info.bpm
     result.beats = beat_info.beat_times_seconds
 
-    # 3. Pose extraction
+    # 3. Pose extraction (+ VLM lead detection on multi-person clips)
     from pose import extract_pose
 
     log.info("[3/7] pose")
-    pose_path, low_quality = extract_pose(media.video_path, cfg.out_dir / "pose.json")
+    pose_path, low_quality = extract_pose(
+        media.video_path,
+        cfg.out_dir / "pose.json",
+        username=media.creator_handle,
+    )
     result.pose_data_path = pose_path
     result.low_quality = low_quality
 
@@ -149,6 +157,8 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         result.dancer_count = int(pose_doc.get("dancer_count") or 1)
         result.auto_selected_person_id = pose_doc.get("auto_selected_person_id")
         result.requires_dancer_pick = bool(pose_doc.get("requires_dancer_pick"))
+        result.vlm_confidence = pose_doc.get("vlm_confidence")
+        result.vlm_reasoning = pose_doc.get("vlm_reasoning")
     except Exception:
         pass
 

@@ -9,3 +9,7 @@ opencv-python>=4.10
 ffmpeg-python>=0.2.0
 supabase>=2.7.4
 python-dotenv>=1.0.1
+# spec.md round-5 §Fix 5: Gemini VLM as primary lead-dancer detector
+# (~$0.002 / clip; falls through to heuristic if missing/failing).
+google-generativeai>=0.7.0
+Pillow>=10.0.0

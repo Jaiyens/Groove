@@ -37,10 +37,13 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
+
+from lead_detector import compute_lead_score_heuristic, detect_lead_dancer
 
 log = logging.getLogger("worker.pose")
 
@@ -201,7 +204,20 @@ def _feet_y_from_mp(lms: list[dict]) -> float:
     return (left["y"] + right["y"]) / 2.0
 
 
-def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
+def extract_pose(
+    video_path: Path,
+    out_path: Path,
+    *,
+    username: Optional[str] = None,
+    dance_id: Optional[str] = None,
+) -> tuple[Path, bool]:
+    """Run BoT-SORT pose extraction + lead-dancer detection.
+
+    `username` and `dance_id` are forwarded to the VLM lead detector
+    (spec.md round-5 §Fix 5) when dancer_count >= 2. Both default to
+    None — callers that don't have the metadata can omit them; the VLM
+    just uses generic phrasing.
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"cv2 cannot open {video_path}")
@@ -215,6 +231,19 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
     total_frames = 0
     no_detection_count = 0
     frame_idx = 0
+
+    # spec.md round-5 §Fix 5: capture the opening frame BGR + per-track
+    # pixel bboxes at ~0.75 s in (past title cards, before big motion)
+    # so the VLM has something stable to look at.
+    opening_capture_idx = max(1, int(round(fps * 0.75)))
+    opening_frame_bgr: np.ndarray | None = None
+    opening_track_bboxes_px: dict[str, tuple[float, float, float, float]] = {}
+
+    # Heuristic Layer-3 input: average centrality over the opening
+    # 0.5 – 1.5 s window per track (frames 15 – 45 at 30 fps).
+    opening_window = (max(0, int(round(fps * 0.5))), max(1, int(round(fps * 1.5))))
+    opening_centrality_sum: dict[str, float] = {}
+    opening_centrality_n: dict[str, int] = {}
 
     while True:
         ok, frame_bgr = cap.read()
@@ -234,7 +263,7 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
         )
         r = results[0]
 
-        detections: list[tuple[str, list[dict], tuple[float, float, float, float]]] = []
+        detections: list[tuple[str, list[dict], tuple[float, float, float, float], tuple[float, float, float, float]]] = []
         if r.boxes is not None and r.boxes.id is not None and r.keypoints is not None:
             ids = r.boxes.id.int().cpu().tolist()
             xyxy = r.boxes.xyxy.cpu().numpy()           # pixels
@@ -249,23 +278,41 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
                     kp_xyn[di],
                     kp_conf[di] if kp_conf is not None else None,
                 )
-                # Convert pixel bbox to normalised.
-                nx0 = max(0.0, float(xyxy[di, 0]) / width)
-                ny0 = max(0.0, float(xyxy[di, 1]) / height)
-                nx1 = min(1.0, float(xyxy[di, 2]) / width)
-                ny1 = min(1.0, float(xyxy[di, 3]) / height)
-                detections.append((tid, lms, (nx0, ny0, nx1, ny1)))
+                # Pixel bbox (for VLM annotation) + normalised (for everything else).
+                px = (
+                    float(xyxy[di, 0]),
+                    float(xyxy[di, 1]),
+                    float(xyxy[di, 2]),
+                    float(xyxy[di, 3]),
+                )
+                nx0 = max(0.0, px[0] / width)
+                ny0 = max(0.0, px[1] / height)
+                nx1 = min(1.0, px[2] / width)
+                ny1 = min(1.0, px[3] / height)
+                detections.append((tid, lms, (nx0, ny0, nx1, ny1), px))
 
         if not detections:
             no_detection_count += 1
         seen_ids: set[str] = set()
-        for tid, lms, bbox in detections:
+        for tid, lms, bbox, px in detections:
             seen_ids.add(tid)
             tr = tracks.get(tid)
             if tr is None:
                 tr = _PersonTrack(id=tid, first_seen_ms=t_ms)
                 tracks[tid] = tr
             _append_detection(tr, lms, bbox, t_ms, frame_idx)
+            # Opening-window centrality (Layer 3 input).
+            if opening_window[0] <= frame_idx < opening_window[1]:
+                cx = (bbox[0] + bbox[2]) / 2.0
+                opening_centrality_sum[tid] = opening_centrality_sum.get(tid, 0.0) + max(
+                    0.0, 1.0 - 2.0 * abs(cx - 0.5)
+                )
+                opening_centrality_n[tid] = opening_centrality_n.get(tid, 0) + 1
+
+        # Snapshot the opening frame + per-track pixel bboxes once.
+        if opening_frame_bgr is None and frame_idx >= opening_capture_idx and detections:
+            opening_frame_bgr = frame_bgr.copy()
+            opening_track_bboxes_px = {tid: px for tid, _, _, px in detections}
 
         # Existing tracks not seen this frame → null timeline entry so
         # the per-track frame array stays length-aligned with the video.
@@ -320,11 +367,15 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
         centrality = tr.centrality_sum / n
         size = tr.size_sum / n
         forwardness = tr.forwardness_sum / n
-        lead_score = (
-            0.30 * centrality
-            + 0.30 * size
-            + 0.20 * forwardness
-            + 0.20 * persistence
+        opening_n = opening_centrality_n.get(tr.id, 0)
+        opening_centrality = (
+            opening_centrality_sum.get(tr.id, 0.0) / opening_n if opening_n else 0.0
+        )
+        lead_score = compute_lead_score_heuristic(
+            persistence=persistence,
+            opening_centrality=opening_centrality,
+            size_avg=size,
+            forwardness_avg=forwardness,
         )
         bbox = [tr.bbox_x0, tr.bbox_y0, tr.bbox_x1, tr.bbox_y1]
         persons_payload.append(
@@ -332,6 +383,7 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
                 "id": tr.id,
                 "lead_score": lead_score,
                 "centrality": centrality,
+                "opening_centrality": opening_centrality,
                 "size": size,
                 "forwardness": forwardness,
                 "persistence": persistence,
@@ -343,13 +395,40 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
         )
     persons_payload.sort(key=lambda p: p["lead_score"], reverse=True)
 
-    top = persons_payload[0]
-    auto_id = top["id"]
-    requires_pick = (
-        len(persons_payload) > 1
-        and top["lead_score"] - persons_payload[1]["lead_score"] < PICK_AMBIGUITY_GAP
-    )
+    # spec.md round-5 §Fix 5: three-layer lead detection.
+    # Layer 1 = Gemini VLM; Layer 2 = picker policy (3+ dancers always
+    # pick); Layer 3 = stronger heuristic, already used as the
+    # lead_score above and re-checked by the detector module on
+    # fallback.
+    vlm_confidence: Optional[str] = None
+    vlm_reasoning: Optional[str] = None
+    if len(persons_payload) == 1:
+        auto_id = persons_payload[0]["id"]
+        requires_pick = False
+    else:
+        detection = detect_lead_dancer(
+            opening_frame_bgr,
+            {tid: bbox for tid, bbox in opening_track_bboxes_px.items()
+             if tid in {p["id"] for p in persons_payload}},
+            persons_payload,
+            username=username,
+            dance_id=dance_id,
+        )
+        auto_id = detection.lead_track_id
+        vlm_confidence = detection.confidence
+        vlm_reasoning = detection.reasoning
+        # Picker policy:
+        #   3+ dancers: ALWAYS pick (spec edge case).
+        #   2 dancers + VLM high: skip picker.
+        #   2 dancers + VLM medium/low/heuristic: pick (confirmation).
+        if len(persons_payload) >= 3:
+            requires_pick = True
+        elif detection.confidence == "high":
+            requires_pick = False
+        else:
+            requires_pick = True
 
+    top = next(p for p in persons_payload if p["id"] == auto_id)
     top_frames = top["frames"]
     miss_rate = no_detection_count / max(1, total_frames)
     mean_vis = top["visibility"]
@@ -366,16 +445,19 @@ def extract_pose(video_path: Path, out_path: Path) -> tuple[Path, bool]:
         "dancer_count": len(persons_payload),
         "auto_selected_person_id": auto_id,
         "requires_dancer_pick": requires_pick,
+        "vlm_confidence": vlm_confidence,
+        "vlm_reasoning": vlm_reasoning,
         "persons": persons_payload,
         "frames": top_frames,
     }
     out_path.write_text(json.dumps(payload))
     log.info(
-        "pose: %d frames, %d person(s), top=%s lead=%.2f, pick=%s, low_quality=%s",
+        "pose: %d frames, %d person(s), top=%s lead=%.2f, vlm=%s, pick=%s, low_quality=%s",
         total_frames,
         len(persons_payload),
         auto_id,
         top["lead_score"],
+        vlm_confidence or "n/a",
         requires_pick,
         low_quality,
     )
