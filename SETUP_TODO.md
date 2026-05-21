@@ -71,6 +71,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> ⏱ **First-time install is slow.** `ultralytics` (Round 4 §Fix 1) pulls
+> `torch` + `torchvision` wheels — expect 10–20 minutes on a fresh
+> machine. The 6 MB `yolo11n-pose.pt` weights download lazily on the
+> first `extract_pose` call and are cached in `worker/models/` (also
+> gitignored).
+
 Add the Supabase env vars to a `.env` inside `worker/` (the worker uses the
 service role key, since it bypasses RLS to write rows):
 

@@ -16,6 +16,7 @@ worker/.venv/
 worker/out/
 worker/__pycache__/
 worker/.env
+worker/models/
 
 # seed urls (may contain unreleased picks)
 seed_urls.txt

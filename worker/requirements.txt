@@ -1,5 +1,8 @@
 yt-dlp>=2024.10.7
-mediapipe>=0.10.14
+# pose detection + tracking (BoT-SORT). pulls in torch/torchvision; the
+# install is ~10-20 min on a fresh machine due to PyTorch wheels.
+ultralytics>=8.3.0
+lap>=0.4.0
 librosa>=0.10.2
 numpy>=1.26
 opencv-python>=4.10
