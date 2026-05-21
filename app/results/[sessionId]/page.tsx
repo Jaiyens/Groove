@@ -73,15 +73,22 @@ export default function ResultsPage({ params }: PageProps) {
   return (
     <main className="theme-cream flex h-full w-full flex-col bg-cream">
       <header className="safe-top flex items-center gap-3 px-5 pt-5 pb-2">
-        <Link
-          href={`/dance/${dance.id}`}
-          aria-label="Back to lesson"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-cream-card text-ink shadow-soft"
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.history.length > 1) {
+              router.back();
+            } else {
+              router.push(`/dance/${dance.id}`);
+            }
+          }}
+          aria-label="Back"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-cream-card text-ink shadow-soft active:scale-95"
         >
           <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M15 18l-6-6 6-6" />
           </svg>
-        </Link>
+        </button>
         <div className="flex-1 text-center text-xs font-semibold uppercase tracking-[0.18em] text-coral">
           full attempt
         </div>

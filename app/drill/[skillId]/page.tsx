@@ -198,15 +198,22 @@ export default function DrillPage({ params }: PageProps) {
   return (
     <main className="flex h-full w-full flex-col bg-black">
       <header className="safe-top flex items-center gap-3 px-4 pt-3 pb-3">
-        <Link
-          href={fromAttempt ? `/results/${fromAttempt}` : '/'}
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.history.length > 1) {
+              router.back();
+            } else {
+              router.push(fromAttempt ? `/results/${fromAttempt}` : '/');
+            }
+          }}
           aria-label="Back"
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-bg-card text-white"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-bg-card text-white active:scale-95"
         >
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M15 18l-6-6 6-6" />
           </svg>
-        </Link>
+        </button>
         <div className="flex-1 min-w-0">
           <div className="text-[10px] uppercase tracking-widest text-text-muted">Drill</div>
           <div className="truncate text-base font-bold">{skill.name}</div>
