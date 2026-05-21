@@ -61,6 +61,21 @@ export default function CopyAlongPage({ params }: PageProps) {
   const [camState, setCamState] = useState<CamState>('idle');
   const [refMissing, setRefMissing] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
+  // SPECK polish §Fix 2: REF video mirrored by default so the dancer's
+  // left maps to the user's left. Persisted in localStorage so the
+  // preference survives page reloads. Joint-angle DTW is mirroring-
+  // invariant, so scoring is unaffected. The REF SkeletonOverlay also
+  // gets this transform so it stays glued to the joints.
+  const [mirrorRef, setMirrorRef] = useState(true);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('groov_mirror_enabled');
+    if (stored !== null) setMirrorRef(stored === 'true');
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('groov_mirror_enabled', String(mirrorRef));
+  }, [mirrorRef]);
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
@@ -384,7 +399,9 @@ export default function CopyAlongPage({ params }: PageProps) {
                 preload="auto"
                 loop={false}
                 onError={() => setRefMissing(true)}
-                className="absolute inset-0 h-full w-full object-contain"
+                className={`absolute inset-0 h-full w-full object-contain ${
+                  mirrorRef ? '[transform:scaleX(-1)]' : ''
+                }`}
                 aria-label={`${dance.name} reference`}
               />
             ) : (
@@ -409,7 +426,7 @@ export default function CopyAlongPage({ params }: PageProps) {
               <SkeletonOverlay
                 landmarks={refLandmarks}
                 videoRef={refVideoRef}
-                mirror={false}
+                mirror={mirrorRef}
                 edgeColor="#ffffff"
                 jointColor="#ffffff"
                 staleAfterMs={300}
@@ -487,6 +504,24 @@ export default function CopyAlongPage({ params }: PageProps) {
       <div className="safe-bottom relative z-30 flex h-[120px] flex-col justify-between bg-black px-4 pt-2 pb-3">
         <div className="flex items-center justify-between gap-3">
           <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
+          <button
+            type="button"
+            onClick={() => setMirrorRef((m) => !m)}
+            aria-pressed={mirrorRef}
+            aria-label={mirrorRef ? 'unmirror reference' : 'mirror reference'}
+            className={`flex h-9 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
+              mirrorRef
+                ? 'bg-white text-black ring-white'
+                : 'bg-white/10 text-white ring-white/15'
+            }`}
+          >
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 3v18" />
+              <path d="M8 7L4 12l4 5" />
+              <path d="M16 7l4 5-4 5" />
+            </svg>
+            <span className="text-xs font-semibold">mirror</span>
+          </button>
           <button
             type="button"
             onClick={() => setShowSkeleton((s) => !s)}

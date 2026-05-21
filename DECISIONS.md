@@ -200,3 +200,7 @@ python worker/main.py --once <url>   # uploads to Supabase
 
 with `.env.local` + the storage buckets in place. The expected outcome is a `dances` row with all fields populated and the four storage URLs (`pose_data_url`, `skeleton_video_url`, `audio_url`, `thumbnail_url`) returning 200.
 
+
+## Mirror toggle scope: Mode A only
+
+SPECK polish §Fix 2 calls for mirroring the reference video in Mode A AND Mode B. Mode B is the scored test page and has no reference video element — the user dances against reference audio only, with their own camera full-screen. The `groov_mirror_enabled` preference therefore only takes effect in Mode A's REF panel (copy/page.tsx). The toggle button is also only rendered in Mode A. Joint-angle DTW is mirroring-invariant by construction (joint angles are intrinsic geometry, not screen-space coordinates), so flipping the visual orientation does not affect scoring on either page.
