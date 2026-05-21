@@ -42,6 +42,11 @@ class PipelineResult:
     video_path: Path | None = None
     audio_path: Path | None = None
     thumbnail_path: Path | None = None
+    # Phase 3 multi-person metadata. None / empty when single-dancer.
+    dancer_count: int = 1
+    auto_selected_person_id: str | None = None
+    requires_dancer_pick: bool = False
+    person_thumbnails: dict[str, Path] = field(default_factory=dict)
     low_quality: bool = False
     audio_start_offset_ms: int = 0
     error: str | None = None
@@ -59,6 +64,9 @@ class PipelineResult:
         ):
             value = manifest.get(key)
             manifest[key] = str(value) if value else None
+        manifest["person_thumbnails"] = {
+            k: str(v) for k, v in (self.person_thumbnails or {}).items()
+        }
         path.write_text(json.dumps(manifest, indent=2))
 
 
@@ -122,12 +130,28 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     )
     result.skeleton_video_path = sk_path
 
-    # 7. Thumbnail
-    from thumbnail import extract_thumbnail
+    # 7. Thumbnail (library + per-person)
+    from thumbnail import extract_person_thumbnails, extract_thumbnail
 
     log.info("[7/7] thumbnail")
     thumb = extract_thumbnail(media.video_path, cfg.out_dir / "thumbnail.jpg")
     result.thumbnail_path = thumb
+
+    # Read multi-person metadata out of pose.json so the upload step can
+    # write it back to the row.
+    try:
+        pose_doc = json.loads(pose_path.read_text())
+        result.dancer_count = int(pose_doc.get("dancer_count") or 1)
+        result.auto_selected_person_id = pose_doc.get("auto_selected_person_id")
+        result.requires_dancer_pick = bool(pose_doc.get("requires_dancer_pick"))
+    except Exception:
+        pass
+
+    if result.dancer_count > 1:
+        person_thumbs = extract_person_thumbnails(
+            media.video_path, pose_path, cfg.out_dir / "persons"
+        )
+        result.person_thumbnails = person_thumbs
 
     return result
 

@@ -39,6 +39,12 @@ export interface DanceRecord {
   view_count: number;
   low_quality: boolean;
   audio_start_offset_ms: number;
+  // Phase 3 multi-person fields. Optional so older rows without these
+  // columns still parse.
+  dancer_count?: number;
+  auto_selected_person_id?: string | null;
+  requires_dancer_pick?: boolean;
+  person_thumbnails?: Record<string, string> | null;
   created_at: string;
   ready_at: string | null;
 }

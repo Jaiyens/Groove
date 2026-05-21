@@ -58,6 +58,16 @@ export default function DanceOverviewPage({ params }: PageProps) {
     if (notFound) router.replace('/');
   }, [notFound, router]);
 
+  // Multi-person dances may require the user to pick which dancer to learn.
+  // When the worker flagged requires_dancer_pick=true and we haven't yet
+  // resolved it, route through the pick-dancer screen first.
+  useEffect(() => {
+    if (!record) return;
+    if (record.requires_dancer_pick) {
+      router.replace(`/dance/${record.id}/pick-dancer`);
+    }
+  }, [record, router]);
+
   if (loading) {
     return (
       <main className="theme-cream flex h-full w-full items-center justify-center bg-cream text-ink-muted">
@@ -107,7 +117,16 @@ export default function DanceOverviewPage({ params }: PageProps) {
         <div className="flex-1 text-center text-xs font-medium uppercase tracking-[0.18em] text-ink">
           lesson
         </div>
-        <div className="w-10" aria-hidden />
+        {record?.dancer_count && record.dancer_count > 1 ? (
+          <Link
+            href={`/dance/${record.id}/pick-dancer?change=1`}
+            className="text-xs font-medium text-coral underline-offset-4 hover:underline"
+          >
+            change dancer
+          </Link>
+        ) : (
+          <div className="w-10" aria-hidden />
+        )}
       </header>
 
       <div className="flex-1 overflow-y-auto no-scrollbar px-5 pb-8">

@@ -28,6 +28,7 @@ BUCKET_SKELETON = "skeleton-videos"
 BUCKET_VIDEO = "videos"
 BUCKET_AUDIO = "audio"
 BUCKET_THUMBNAIL = "thumbnails"
+BUCKET_PERSON_THUMB = "person-thumbnails"
 
 
 def make_store() -> "SupabaseStore":
@@ -183,6 +184,15 @@ class SupabaseStore:
                 BUCKET_THUMBNAIL, f"{dance_id}/thumbnail.jpg", result.thumbnail_path
             )
 
+        # Per-person thumbnails (multi-dancer flow). Empty when single-person.
+        person_thumb_urls: dict[str, str] = {}
+        for person_id, path in (result.person_thumbnails or {}).items():
+            person_thumb_urls[person_id] = self._upload(
+                BUCKET_PERSON_THUMB,
+                f"{dance_id}/{person_id}.jpg",
+                path,
+            )
+
         candidate: dict[str, Any] = {
             "status": "ready",
             "title": result.title,
@@ -194,6 +204,10 @@ class SupabaseStore:
             "skill_weights": result.skill_weights,
             "low_quality": result.low_quality,
             "audio_start_offset_ms": result.audio_start_offset_ms,
+            "dancer_count": result.dancer_count,
+            "auto_selected_person_id": result.auto_selected_person_id,
+            "requires_dancer_pick": result.requires_dancer_pick,
+            "person_thumbnails": person_thumb_urls or None,
             "ready_at": datetime.now(timezone.utc).isoformat(),
             **urls,
         }

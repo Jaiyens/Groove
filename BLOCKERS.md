@@ -6,7 +6,19 @@ quality-of-life improvements.
 
 ---
 
-## 1. Apply migration `0003_video_url.sql` in Supabase
+## 1. Apply migrations in Supabase
+
+Two new migrations from this fix pass need to be applied:
+
+```sql
+-- supabase/migrations/0003_video_url.sql   (Phase 1.1)
+-- supabase/migrations/0004_multi_person.sql (Phase 3)
+```
+
+Both are `alter table ... add column if not exists` — idempotent and
+safe to re-run.
+
+### 1a. `0003_video_url.sql`
 
 Phase 1.1 (new Mode A) adds a `video_url` column to `dances`. Until you run
 this migration, the worker can still upload artifacts but `video_url` will
@@ -21,20 +33,32 @@ columns — see RUNTIME_VERIFICATION.md fix #3).
 
 Idempotent — safe to run again.
 
-## 2. Create the `videos` storage bucket in Supabase
+### 1b. `0004_multi_person.sql`
 
-The original TikTok mp4 uploads to a new bucket (`videos`) so Mode A's
-duet view can play the real footage.
+Adds the columns Phase 3 (multi-person dance) needs:
 
-**Steps:**
+- `dancer_count int default 1`
+- `auto_selected_person_id text`
+- `person_thumbnails jsonb`
+- `requires_dancer_pick boolean default false`
+
+## 2. Create the `videos` and `person-thumbnails` storage buckets in Supabase
+
+Two new buckets:
+
+| Bucket | Why |
+| --- | --- |
+| `videos` | Mode A's duet view plays the original TikTok mp4 from here. |
+| `person-thumbnails` | Pick-a-dancer screen reads per-person crops from here when the video has 2+ dancers. |
+
+**Steps (for each):**
 
 1. Supabase dashboard → Storage → New bucket
-2. Name: `videos`
-3. Public: **yes** (same as `skeleton-videos`)
-4. Create
+2. Public: **yes** (same as `skeleton-videos`)
+3. Create
 
 After this, restart the worker (it caches the schema on first poll, so a
-restart re-introspects the new `video_url` column).
+restart re-introspects new columns).
 
 ## 3. Re-process the three existing library dances
 
