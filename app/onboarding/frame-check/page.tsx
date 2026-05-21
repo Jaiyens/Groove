@@ -1,14 +1,15 @@
 'use client';
 
-// One-time framing calibration (SPECK §4 onboarding).
+// Hands-free framing gate (spec.md round-5).
 //
-// Shows the camera full-screen with a translucent body silhouette.
-// Detects pose every frame; when all 17 "skeleton" joints have been
-// inside the silhouette for 2 consecutive seconds the silhouette turns
-// green and a Got it button appears. Skipping is allowed.
-//
-// On confirm: localStorage flips framing_calibrated=true. The caller
-// (Mode B test page) reads this and skips the gate next time.
+// Shows the camera full-screen with a knees-up silhouette overlay.
+// Detects pose every frame and feeds `isUpperBodyFramed` into a
+// FramingGate. Once the user is framed for 1.5 s, the gate counts down
+// 5 → 4 → 3 → 2 → 1 → GO at 800 ms intervals with audible ticks; if
+// framing breaks for ≥0.5 s mid-count, the gate resets and the
+// silhouette guide is shown again. On GO we flip framing_calibrated
+// in localStorage and route to the original target — no tap required.
+// A small bottom-left "skip" link is the only escape hatch.
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -16,25 +17,17 @@ import CameraPermissionBanner, {
   isInsecureContext,
   type CamState,
 } from '@/components/CameraPermissionBanner';
-import { SilhouetteGuide } from '@/components/FramingToast';
-import { markFramingCalibrated } from '@/lib/pose/framingCalibration';
+import { UpperBodySilhouetteGuide } from '@/components/FramingToast';
+import { playTick } from '@/lib/audio/tick';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import {
+  COUNT_START,
+  FramingGate,
+  type FramingPhase,
+  isUpperBodyFramed,
+} from '@/lib/pose/framingCheck';
+import { markFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
-import { SKELETON_EDGES } from '@/lib/pose/types';
-
-// All landmark indices that draw in the skeleton overlay; we check that
-// each of them is inside the silhouette before confirming.
-const TRACKED_LANDMARKS = Array.from(
-  new Set(SKELETON_EDGES.flatMap(([a, b]) => [a, b])),
-);
-
-const HOLD_MS = 2000;
-// Silhouette occupies the middle ~80% of the frame horizontally and the
-// top 90% vertically (matches SilhouetteGuide's viewBox layout).
-const SILHOUETTE_X0 = 0.12;
-const SILHOUETTE_X1 = 0.88;
-const SILHOUETTE_Y0 = 0.05;
-const SILHOUETTE_Y1 = 0.97;
 
 export default function FrameCheckPage() {
   // Wrap in Suspense per Next 14 rules: useSearchParams() forces this page
@@ -61,10 +54,16 @@ function FrameCheckInner() {
   const streamRef = useRef<MediaStream | null>(null);
   const extractorRef = useRef<PoseExtractor | null>(null);
   const rafRef = useRef<number | null>(null);
-  const inFrameSinceRef = useRef<number | null>(null);
+  const gateRef = useRef<FramingGate>(new FramingGate());
+  const firedRef = useRef(false);
+  const returnToRef = useRef(returnTo);
+  useEffect(() => {
+    returnToRef.current = returnTo;
+  }, [returnTo]);
 
   const [camState, setCamState] = useState<CamState>('idle');
-  const [allInside, setAllInside] = useState(false);
+  const [phase, setPhase] = useState<FramingPhase>('searching');
+  const [count, setCount] = useState<number>(COUNT_START);
 
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -104,7 +103,7 @@ function FrameCheckInner() {
     };
   }, []);
 
-  // Init pose extractor + detection loop when camera is ready.
+  // Init pose extractor + per-frame loop when camera is granted.
   useEffect(() => {
     if (camState !== 'granted') return;
     let cancelled = false;
@@ -115,37 +114,19 @@ function FrameCheckInner() {
       const v = videoRef.current;
       if (v && ex.ready && v.readyState >= 2) {
         const res = ex.detectFromVideo(v, performance.now());
-        if (res) {
-          let allIn = true;
-          for (const i of TRACKED_LANDMARKS) {
-            const lm = res.landmarks[i];
-            if (!lm || (lm.visibility ?? 0) < 0.3) {
-              allIn = false;
-              break;
-            }
-            if (
-              lm.x < SILHOUETTE_X0 ||
-              lm.x > SILHOUETTE_X1 ||
-              lm.y < SILHOUETTE_Y0 ||
-              lm.y > SILHOUETTE_Y1
-            ) {
-              allIn = false;
-              break;
-            }
-          }
-          const now = performance.now();
-          if (allIn) {
-            if (inFrameSinceRef.current === null) inFrameSinceRef.current = now;
-            if (now - inFrameSinceRef.current >= HOLD_MS) {
-              setAllInside(true);
-            }
-          } else {
-            inFrameSinceRef.current = null;
-            setAllInside(false);
-          }
-        } else {
-          inFrameSinceRef.current = null;
-          setAllInside(false);
+        const framed = res ? isUpperBodyFramed(res.landmarks) : false;
+        const result = gateRef.current.tick(framed, performance.now());
+        setPhase((prev) => (prev === result.phase ? prev : result.phase));
+        setCount((prev) => (prev === result.count ? prev : result.count));
+        if (result.tickFired !== undefined) {
+          playTick({ emphasis: result.tickFired === 'go' });
+        }
+        if (result.fired && !firedRef.current) {
+          firedRef.current = true;
+          markFramingCalibrated();
+          // Defer the route swap by ~600 ms so the "GO" flash is
+          // actually visible.
+          window.setTimeout(() => router.replace(returnToRef.current), 600);
         }
       }
       if (!cancelled) rafRef.current = requestAnimationFrame(tick);
@@ -155,19 +136,22 @@ function FrameCheckInner() {
       cancelled = true;
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [camState]);
+  }, [camState, router]);
 
-  function finish() {
+  const skip = useCallback(() => {
     markFramingCalibrated();
-    router.replace(returnTo);
-  }
+    router.replace(returnToRef.current);
+  }, [router]);
+
+  const isFramed = phase === 'arming' || phase === 'counting' || phase === 'fired';
+  const showCountdown = phase === 'counting' || phase === 'fired';
 
   return (
     <main className="theme-dark relative flex h-full w-full flex-col bg-black text-white">
       <header className="safe-top relative z-30 flex flex-col items-center gap-1 px-4 pt-4 pb-3">
-        <h1 className="text-lg font-semibold text-white">let&rsquo;s get you framed</h1>
+        <h1 className="text-lg font-semibold text-white">step back so we can see you</h1>
         <p className="text-center text-xs text-white/70">
-          find a spot where your whole body fits — back up if you need to
+          knees up is enough — dance starts automatically when you&rsquo;re framed
         </p>
       </header>
 
@@ -179,40 +163,43 @@ function FrameCheckInner() {
           autoPlay
           className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
         />
-        <SilhouetteGuide active={allInside} />
+        {!showCountdown && <UpperBodySilhouetteGuide active={isFramed} />}
         {camState !== 'granted' && (
           <CameraPermissionBanner state={camState} onRequest={startCamera} />
         )}
         {camState === 'idle' && (
-          // First render is `idle` — auto-request once.
           <RequestCameraOnMount onRequest={startCamera} />
+        )}
+
+        {/* 5-4-3-2-1 → GO. Hot pink, centred, big enough to read from
+            across the room. Visible while phase === 'counting' or
+            'fired' (fired briefly shows GO before navigation). */}
+        {showCountdown && (
+          <div
+            className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <div
+              className="text-[28vh] font-medium leading-none tabular-nums text-coral drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]"
+              data-testid="framing-countdown"
+            >
+              {phase === 'fired' ? 'GO' : count}
+            </div>
+          </div>
         )}
       </div>
 
-      <div className="safe-bottom relative flex flex-col gap-3 bg-black px-5 pt-4 pb-5">
-        {/* SPECK round-4 §Fix 4: skip link sits bottom-left, doesn't
-            block — onboarding is firm but the user can override. */}
+      {/* spec.md round-5 §3: tiny low-contrast skip link, bottom-left.
+          The skip itself flips framing_calibrated so the user isn't
+          bounced back here on the next chunk tap. */}
+      <div className="safe-bottom relative bg-black px-5 pt-3 pb-5">
         <button
           type="button"
-          onClick={() => {
-            markFramingCalibrated();
-            router.replace(returnTo);
-          }}
-          className="absolute left-5 top-3 text-xs font-medium text-white/55 active:text-white"
+          onClick={skip}
+          className="text-xs font-medium text-white/40 active:text-white/80"
         >
           skip
-        </button>
-        <button
-          type="button"
-          disabled={!allInside}
-          onClick={finish}
-          className={`mt-4 rounded-full py-4 text-center text-base font-semibold transition-colors ${
-            allInside
-              ? 'bg-coral text-white active:scale-[0.98]'
-              : 'bg-white/15 text-white/50'
-          }`}
-        >
-          {allInside ? 'got it' : 'hold the pose…'}
         </button>
       </div>
     </main>

@@ -1,3 +1,58 @@
+# Runtime verification — 2026-05-21 (round 5 update)
+
+## Round-5 update: hands-free framing gate
+
+`/onboarding/frame-check` no longer demands the user tap "got it". The
+new flow per spec.md:
+
+1. **Joint set**: 15 upper-body MediaPipe landmarks (head, eyes, ears,
+   shoulders, elbows, wrists, hips, knees). Ankles / heels / feet are
+   no longer required — users can stand closer.
+2. **Silhouette**: new `UpperBodySilhouetteGuide` SVG draws head to
+   mid-shin (viewBox 100×165, h-[80%]) so the visual matches the new
+   rule. The full-body `SilhouetteGuide` is retained for Mode B's
+   mid-session toast where scoring still wants ankles.
+3. **Auto-start**: 1.5 s framing hold → countdown 5 → 4 → 3 → 2 → 1
+   → GO at 800 ms intervals, each tick audible via `lib/audio/tick.ts`
+   (emphasis tick on GO). At GO the framing flag flips and we route
+   to the original return URL — no tap, no "got it" button.
+4. **Resilience**: if framing breaks for ≥500 ms mid-count the gate
+   resets and the silhouette returns; the next time the user is
+   framed for 1.5 s the count restarts from 5.
+5. **Skip**: tiny bottom-left link is the only tap option; it also
+   flips the framing flag so the user isn't bounced back here on
+   their next chunk tap.
+
+### Verification done
+
+| Check | Result |
+| --- | --- |
+| `npm test` | 84/84 pass (67 prior + 17 new `framingCheck.test.ts`) |
+| `npx tsc --noEmit` | clean (pre-existing TS5097 test-import warning ignored) |
+| `npx tsx scripts/verify_framing_hearts2miraaa.ts` | 11/11 acceptance checks pass |
+
+The acceptance script feeds the worker's pose JSON for
+`@hearts2miraaa` (the same source that MediaPipe would emit live)
+into the new `FramingGate`, then runs two scenarios:
+
+1. **Continuous in-frame** — auto dancer p2 is framed 68 % of frames,
+   gate fires after 1.5 s arm + 5 × 800 ms count + GO, ticks fire
+   in 5,4,3,2,1,go order at exactly 800 ms spacing.
+2. **Step-out for 1 s mid-count** — gate observes `resetCount=1`,
+   silhouette reappears, then when the dancer is "back in frame"
+   the count restarts from 5 and fires later (delay 3967 ms vs the
+   happy path).
+
+Run locally:
+```
+npx tsx scripts/verify_framing_hearts2miraaa.ts
+```
+
+(The script reads `/tmp/pose_hearts2miraaa.json`. Regenerate with
+`cd worker && source venv/bin/activate && python -c "from pathlib import Path; from pose import extract_pose; extract_pose(Path('/tmp/hearts2miraaa.mp4'), Path('/tmp/pose_hearts2miraaa.json'))"` if missing.)
+
+---
+
 # Runtime verification — 2026-05-21 (round 3)
 
 End-of-fix-pass status. Round 3 of phone-testing flagged four issues
