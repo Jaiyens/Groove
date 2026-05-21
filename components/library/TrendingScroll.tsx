@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import type { DanceListItem } from '@/lib/dances/types';
-import DanceThumb from './DanceThumb';
+import PreviewablePoster from './PreviewablePoster';
 
 interface TrendingScrollProps {
   dances: DanceListItem[];
@@ -16,7 +16,7 @@ export default function TrendingScroll({ dances }: TrendingScrollProps) {
         {dances.map((dance) => (
           <li key={dance.id} className="w-[160px] shrink-0">
             <Link href={`/dance/${dance.id}`} className="block">
-              <DanceThumb
+              <PreviewablePoster
                 dance={dance}
                 rounded="2xl"
                 className="h-[200px] w-[160px] shadow-soft"

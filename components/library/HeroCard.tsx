@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import type { DanceListItem } from '@/lib/dances/types';
-import DanceThumb from './DanceThumb';
+import PreviewablePoster from './PreviewablePoster';
 
 interface HeroCardProps {
   dance: DanceListItem;
@@ -14,10 +14,10 @@ export default function HeroCard({ dance }: HeroCardProps) {
       href={`/dance/${dance.id}`}
       className="block overflow-hidden rounded-[28px] bg-cream-card shadow-soft transition-transform active:scale-[0.99]"
     >
-      <DanceThumb
+      <PreviewablePoster
         dance={dance}
         rounded="lg"
-        className="aspect-[4/3] w-full rounded-none"
+        className="aspect-[4/3] w-full"
       />
       <div className="px-5 pt-4 pb-5">
         <div className="text-xs font-medium uppercase tracking-[0.18em] text-ink-muted">

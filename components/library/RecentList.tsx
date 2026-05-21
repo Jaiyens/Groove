@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import type { DanceListItem } from '@/lib/dances/types';
-import DanceThumb from './DanceThumb';
+import PreviewablePoster from './PreviewablePoster';
 
 interface RecentListProps {
   dances: DanceListItem[];
@@ -18,7 +18,7 @@ export default function RecentList({ dances }: RecentListProps) {
             href={`/dance/${dance.id}`}
             className="flex items-center gap-4 rounded-2xl bg-cream-card p-3 shadow-soft active:bg-cream-deep"
           >
-            <DanceThumb
+            <PreviewablePoster
               dance={dance}
               rounded="xl"
               className="h-16 w-16 shrink-0"

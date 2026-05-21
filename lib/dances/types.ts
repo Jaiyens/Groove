@@ -61,6 +61,9 @@ export interface DanceListItem {
   title: string | null;
   creator_handle: string | null;
   thumbnail_url: string | null;
+  // SPECK polish §Fix 6: surfaced to the library so cards can show a
+  // 3-second muted preview when the play icon is tapped.
+  video_url: string | null;
   duration_seconds: number | null;
   view_count: number;
   ready_at: string | null;
