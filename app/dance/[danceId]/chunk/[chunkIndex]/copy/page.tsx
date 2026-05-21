@@ -1,26 +1,34 @@
 'use client';
 
-// Mode A — copy-along chunk practice.
+// Mode A — TikTok Duet copy-along.
 //
-// Reference is the worker-generated SKELETON VIDEO (silent). Audio plays
-// in parallel via useDanceAudio. Both loop over [chunk.startMs, chunk.endMs]
-// at the chosen speed (50/75/100%).
+// Top half:  the real TikTok video plays full-bleed vertical, looping the
+//            current chunk at the chosen speed (50/75/100%). Audio comes
+//            from this video element — no separate <audio>.
+// Bottom half: the user's front-facing camera, mirrored, same vertical
+//            aspect ratio. Direct split-screen, not a floating PIP.
 //
-// User camera shows as a small PIP overlay; tap to swap roles.
-// No skeleton overlay on the user (Mode A is just mirror practice).
-// Bottom CTA: "I got it · test" → Mode B for the same chunk.
+// Skeleton overlay: small toggle on the reference video. Off by default
+// (user wants to see Charli's actual body). When on, draws white pose
+// lines over the reference using the worker's pose JSON.
+//
+// Falls back to the legacy skeleton video when video_url is missing (rows
+// ingested before Phase 1.1 schema landed). That fallback is silent — the
+// rest of the UI looks the same.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import BackHomeButton from '@/components/BackHomeButton';
 import SpeedToggle from '@/components/SpeedToggle';
-import VolumeControl from '@/components/VolumeControl';
+import SkeletonOverlay from '@/components/SkeletonOverlay';
+import CameraPermissionBanner, {
+  isInsecureContext,
+  type CamState,
+} from '@/components/CameraPermissionBanner';
 import { useDance } from '@/lib/dances/useDance';
-import { useDanceAudio } from '@/lib/audio/danceAudio';
 import { attachStream } from '@/lib/pose/cameraAttach';
-
-type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
+import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
+import type { PoseLandmark } from '@/lib/pose/types';
 
 interface PageProps {
   params: { danceId: string; chunkIndex: string };
@@ -37,30 +45,44 @@ export default function CopyAlongPage({ params }: PageProps) {
   const refVideoRef = useRef<HTMLVideoElement | null>(null);
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const overlayRafRef = useRef<number | null>(null);
 
   const [rate, setRate] = useState(0.6);
-  const [volume, setVolume] = useState(1);
   const [camState, setCamState] = useState<CamState>('idle');
-  const [pipSwapped, setPipSwapped] = useState(false);
   const [refMissing, setRefMissing] = useState(false);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
+  const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
 
-  const audio = useDanceAudio(dance?.audio_url ?? null, {
-    initialPlaybackRate: rate,
-    initialVolume: volume,
-    loop: false,
-  });
-
-  // Bail if dance / chunk vanish
+  // Bail if dance / chunk vanish.
   useEffect(() => {
     if (!loading && (notFound || (dance && !chunk))) {
       router.replace(`/dance/${params.danceId}`);
     }
   }, [loading, notFound, dance, chunk, router, params.danceId]);
 
-  // Camera attach (PIP feed; no pose tracking in Mode A).
+  // Reference media: prefer the real TikTok video, fall back to the
+  // skeleton-only mp4 for legacy rows whose video_url is null.
+  const refSrc =
+    dance?.video_url ?? dance?.skeleton_video_url ?? undefined;
+  const isFallbackToSkeleton =
+    !dance?.video_url && !!dance?.skeleton_video_url;
+
+  // Skeleton overlay data — only fetched when the toggle is on.
+  const { data: poseData } = useReferencePose(
+    showSkeleton ? dance?.pose_data_url : null,
+  );
+
+  // Camera attach. Triggered by user tap so iOS Safari treats it as a gesture
+  // (autoplay-with-sound + getUserMedia both need that).
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setCamState('unavailable');
+      setCamState(isInsecureContext() ? 'insecure' : 'unavailable');
+      return;
+    }
+    if (isInsecureContext()) {
+      setCamState('insecure');
       return;
     }
     setCamState('requesting');
@@ -77,63 +99,142 @@ export default function CopyAlongPage({ params }: PageProps) {
       }
       const playing = await attachStream(v, stream);
       setCamState(playing ? 'granted' : 'needs_tap');
-    } catch {
-      setCamState('denied');
+    } catch (err) {
+      const name = (err as { name?: string } | null)?.name;
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setCamState('denied');
+      } else {
+        setCamState('unavailable');
+      }
     }
   }, []);
-
-  useEffect(() => {
-    if (camState === 'idle') startCamera();
-  }, [camState, startCamera]);
 
   useEffect(
     () => () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      if (overlayRafRef.current !== null) {
+        cancelAnimationFrame(overlayRafRef.current);
+      }
     },
     [],
   );
 
-  // Audio rate + volume sync.
-  useEffect(() => {
-    audio.setPlaybackRate(rate);
-  }, [rate, audio]);
-  useEffect(() => {
-    audio.setVolume(volume);
-  }, [volume, audio]);
-
-  // Reference (skeleton) video chunk-loop driver.
+  // Reference-video chunk loop. Drives video playback within [startMs, endMs]
+  // at the chosen rate. Audio is the video's own audio track.
   useEffect(() => {
     const v = refVideoRef.current;
     if (!v || !chunk) return;
     v.playbackRate = rate;
-    v.muted = true; // skeleton is silent; audio is separate
+    v.muted = muted;
+
     const onTimeUpdate = () => {
       const tMs = v.currentTime * 1000;
       if (tMs >= chunk.endMs || tMs < chunk.startMs - 50) {
         v.currentTime = chunk.startMs / 1000;
-        audio.seekMs(chunk.startMs);
       }
     };
-    const onLoaded = () => {
-      v.currentTime = chunk.startMs / 1000;
-      v.playbackRate = rate;
-      audio.seekMs(chunk.startMs);
-      void v.play().catch(() => {});
-      void audio.play();
+    const seekToStart = () => {
+      try {
+        v.currentTime = chunk.startMs / 1000;
+        v.playbackRate = rate;
+      } catch {
+        /* ignore — happens if the seek runs before metadata is ready */
+      }
+    };
+    const tryPlay = () => {
+      v.play().catch((err: unknown) => {
+        // Autoplay-with-sound blocked. Mute + retry; surface unmute prompt.
+        const name = (err as { name?: string } | null)?.name;
+        if (name === 'NotAllowedError' && !v.muted) {
+          v.muted = true;
+          setMuted(true);
+          setNeedsUnmuteTap(true);
+          void v.play().catch(() => {});
+        }
+      });
     };
     v.addEventListener('timeupdate', onTimeUpdate);
-    v.addEventListener('loadedmetadata', onLoaded);
-    if (v.readyState >= 1) onLoaded();
+    v.addEventListener('loadedmetadata', () => {
+      seekToStart();
+      tryPlay();
+    });
+    if (v.readyState >= 1) {
+      seekToStart();
+      tryPlay();
+    }
     return () => {
       v.removeEventListener('timeupdate', onTimeUpdate);
-      v.removeEventListener('loadedmetadata', onLoaded);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunk, rate]);
+  }, [chunk, rate, muted]);
 
-  // Cleanup audio on unmount
-  useEffect(() => () => audio.stop(), [audio]);
+  // Drive the skeleton overlay's landmark state from the reference video's
+  // currentTime. Cheap (binary search per frame), only runs while the toggle
+  // is on and pose data has loaded.
+  useEffect(() => {
+    if (!showSkeleton || !poseData) {
+      setRefLandmarks(null);
+      return;
+    }
+    const tick = () => {
+      const v = refVideoRef.current;
+      if (v) {
+        const tMs = v.currentTime * 1000;
+        setRefLandmarks(landmarkAt(poseData, tMs));
+      }
+      overlayRafRef.current = requestAnimationFrame(tick);
+    };
+    overlayRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (overlayRafRef.current !== null) {
+        cancelAnimationFrame(overlayRafRef.current);
+        overlayRafRef.current = null;
+      }
+    };
+  }, [showSkeleton, poseData]);
+
+  // Pause when the tab is hidden so audio doesn't keep going in the
+  // background; resume when it returns.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVis = () => {
+      const v = refVideoRef.current;
+      if (!v) return;
+      if (document.hidden) v.pause();
+      else void v.play().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
+  const handleUnmuteTap = useCallback(() => {
+    const v = refVideoRef.current;
+    if (!v) return;
+    v.muted = false;
+    setMuted(false);
+    setNeedsUnmuteTap(false);
+    void v.play().catch(() => {});
+  }, []);
+
+  const handleStartTap = useCallback(() => {
+    // One gesture that unmutes (if needed) AND requests camera permission.
+    const v = refVideoRef.current;
+    if (v && v.muted) {
+      v.muted = false;
+      setMuted(false);
+      setNeedsUnmuteTap(false);
+      void v.play().catch(() => {});
+    }
+    if (camState === 'idle' || camState === 'needs_tap' || camState === 'denied') {
+      void startCamera();
+    }
+  }, [camState, startCamera]);
+
+  const chunkDurationSec = useMemo(
+    () => (chunk ? (chunk.endMs - chunk.startMs) / 1000 : 0),
+    [chunk],
+  );
 
   if (loading || !dance || !chunk) {
     return (
@@ -143,119 +244,170 @@ export default function CopyAlongPage({ params }: PageProps) {
     );
   }
 
-  const chunkDurationSec = (chunk.endMs - chunk.startMs) / 1000;
-
   return (
-    <main className="relative flex h-full w-full flex-col bg-black">
+    <main className="relative flex h-full w-full flex-col bg-black text-white">
       <header className="safe-top relative z-30 flex items-center gap-3 px-4 pt-3 pb-2">
-        <BackHomeButton />
-        <div className="flex-1 text-center">
-          <div className="text-[10px] uppercase tracking-widest text-text-muted">
-            copy along · chunk {chunkIndex + 1}/{chunks.length}
-          </div>
-          <div className="truncate text-sm font-bold">{chunk.label}</div>
-        </div>
-        <VolumeControl volume={volume} onChange={setVolume} />
-      </header>
-
-      <div className="relative flex-1 overflow-hidden bg-bg-card">
-        <video
-          ref={refVideoRef}
-          src={dance.video_url}
-          playsInline
-          muted
-          autoPlay
-          loop={false}
-          onError={() => setRefMissing(true)}
-          className="absolute inset-0 h-full w-full object-cover"
-          aria-label={`${dance.name} skeleton reference`}
-        />
-
-        {refMissing && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-bg-card to-black text-center p-6">
-            <div className="text-xs uppercase tracking-widest text-accent">
-              skeleton video unavailable
-            </div>
-            <p className="mt-2 max-w-xs text-sm text-text-muted">
-              The worker hasn’t finished rendering this dance’s skeleton mp4.
-              Try going back and resubmitting.
-            </p>
-          </div>
-        )}
-
-        {/* PiP user camera */}
         <button
           type="button"
-          onClick={() => setPipSwapped((s) => !s)}
-          aria-label="Swap PIP / reference"
-          className={`absolute z-10 overflow-hidden rounded-2xl shadow-2xl ring-2 ring-white/80 transition-all ${
-            pipSwapped
-              ? 'inset-x-3 top-3 h-2/3 w-auto'
-              : 'right-3 bottom-24 h-40 w-28'
+          onClick={() => router.back()}
+          aria-label="Back"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
+        >
+          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+        <div className="flex-1 text-center">
+          <div className="text-[10px] uppercase tracking-widest text-white/50">
+            copy along · {chunkIndex + 1}/{chunks.length}
+          </div>
+          <div className="truncate text-sm font-semibold">{chunk.label}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowSkeleton((s) => !s)}
+          aria-pressed={showSkeleton}
+          aria-label={showSkeleton ? 'hide skeleton' : 'show skeleton'}
+          className={`flex h-10 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
+            showSkeleton
+              ? 'bg-white text-black ring-white'
+              : 'bg-white/10 text-white ring-white/15'
           }`}
         >
-          {camState === 'granted' ? (
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="5" r="2" />
+            <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
+          </svg>
+          <span className="text-xs font-semibold">skeleton</span>
+        </button>
+      </header>
+
+      {/* Duet stack: top = reference, bottom = user camera. */}
+      <div className="relative flex flex-1 flex-col overflow-hidden">
+        {/* Top: reference video */}
+        <div className="relative flex-1 overflow-hidden bg-black">
+          {refSrc ? (
             <video
-              ref={camVideoRef}
+              ref={refVideoRef}
+              src={refSrc}
               playsInline
-              muted
               autoPlay
-              className="h-full w-full object-cover [transform:scaleX(-1)]"
+              loop={false}
+              onError={() => setRefMissing(true)}
+              className="absolute inset-0 h-full w-full object-cover"
+              aria-label={`${dance.name} reference`}
             />
           ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center bg-black p-2 text-center">
-              {camState === 'requesting' ? (
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              ) : camState === 'denied' ? (
-                <span className="text-[10px] text-accent-red">camera blocked</span>
-              ) : camState === 'unavailable' ? (
-                <span className="text-[10px] text-text-muted">no camera</span>
-              ) : (
-                <span className="text-[10px] text-text-muted">tap to start</span>
-              )}
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
+              reference video unavailable
             </div>
           )}
-        </button>
 
-        {/* Chunk progress dots overlay */}
-        <div className="pointer-events-none absolute left-1/2 top-3 z-10 flex -translate-x-1/2 gap-1.5">
-          {chunks.map((c) => (
-            <span
-              key={c.index}
-              className={`h-1 w-6 rounded-full ${
-                c.index === chunkIndex
-                  ? 'bg-white'
-                  : c.index < chunkIndex
-                    ? 'bg-white/60'
-                    : 'bg-white/20'
-              }`}
-              aria-hidden
+          {refMissing && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
+              <div className="text-xs uppercase tracking-widest text-white/70">
+                reference video unavailable
+              </div>
+              <p className="mt-2 max-w-xs text-sm text-white/60">
+                the worker hasn’t finished rendering this dance. try going
+                back and resubmitting.
+              </p>
+            </div>
+          )}
+
+          {showSkeleton && refSrc && !refMissing && (
+            <SkeletonOverlay
+              landmarks={refLandmarks}
+              videoRef={refVideoRef}
+              mirror={false}
+              edgeColor="#ffffff"
+              jointColor="#ffffff"
+              staleAfterMs={300}
             />
-          ))}
+          )}
+
+          {isFallbackToSkeleton && (
+            <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white/80 ring-1 ring-white/10">
+              fallback: skeleton-only
+            </div>
+          )}
+
+          {needsUnmuteTap && (
+            <button
+              type="button"
+              onClick={handleUnmuteTap}
+              className="absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+            >
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M3 10v4h4l5 5V5L7 10H3z" />
+              </svg>
+              tap for sound
+            </button>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div aria-hidden className="h-px w-full bg-white/15" />
+
+        {/* Bottom: user camera */}
+        <div className="relative flex-1 overflow-hidden bg-zinc-950">
+          <video
+            ref={camVideoRef}
+            playsInline
+            muted
+            autoPlay
+            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+          />
+          {camState !== 'granted' && (
+            <CameraPermissionBanner
+              state={camState}
+              onRequest={startCamera}
+              compact
+            />
+          )}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-white/70 ring-1 ring-white/10"
+          >
+            you
+          </div>
         </div>
       </div>
 
       <div className="safe-bottom relative z-30 flex flex-col gap-3 bg-black px-4 pt-3 pb-4">
         <div className="flex items-center justify-between">
           <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
-          <div className="text-right text-[11px] text-text-muted">
-            <div>{chunkDurationSec.toFixed(1)}s chunk</div>
-            <div>looping at {Math.round(rate * 100)}%</div>
+          <div className="text-right text-[11px] text-white/50">
+            <div>{chunkDurationSec.toFixed(1)}s · {Math.round(rate * 100)}%</div>
+            <div>{chunks.length} chunks</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Link
-            href={`/dance/${dance.id}`}
-            className="flex-1 rounded-full bg-bg-card py-3 text-center text-sm font-bold text-white ring-1 ring-white/10 active:scale-[0.98]"
-          >
-            Back to lesson
-          </Link>
-          <Link
-            href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
-            className="flex-[2] rounded-full bg-coral py-3 text-center text-sm font-bold text-white active:scale-[0.98]"
-          >
-            I got it · test
-          </Link>
+          {camState !== 'granted' && (
+            <button
+              type="button"
+              onClick={handleStartTap}
+              className="flex-1 rounded-full bg-white py-3 text-center text-sm font-semibold text-black active:scale-[0.98]"
+            >
+              tap to start
+            </button>
+          )}
+          {camState === 'granted' && (
+            <>
+              <Link
+                href={`/dance/${dance.id}`}
+                className="flex-1 rounded-full bg-white/10 py-3 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
+              >
+                back to lesson
+              </Link>
+              <Link
+                href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
+                className="flex-[2] rounded-full bg-coral py-3 text-center text-sm font-semibold text-white active:scale-[0.98]"
+              >
+                I got it · test
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </main>
