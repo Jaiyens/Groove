@@ -269,7 +269,9 @@ export default function CopyAlongPage({ params }: PageProps) {
 
   return (
     <main className="relative flex h-full w-full flex-col bg-black text-white">
-      <header className="safe-top relative z-30 flex items-center gap-3 px-4 pt-3 pb-2">
+      {/* SPECK round-4 §Fix 3: compact header (~50 px). The skeleton
+          toggle moves to the bottom controls. */}
+      <header className="safe-top relative z-30 flex h-[50px] items-center gap-3 px-4">
         <button
           type="button"
           onClick={() => router.back()}
@@ -286,141 +288,147 @@ export default function CopyAlongPage({ params }: PageProps) {
           </div>
           <div className="truncate text-sm font-semibold">{chunk.label}</div>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowSkeleton((s) => !s)}
-          aria-pressed={showSkeleton}
-          aria-label={showSkeleton ? 'hide skeleton' : 'show skeleton'}
-          className={`flex h-10 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
-            showSkeleton
-              ? 'bg-white text-black ring-white'
-              : 'bg-white/10 text-white ring-white/15'
-          }`}
-        >
-          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="12" cy="5" r="2" />
-            <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
-          </svg>
-          <span className="text-xs font-semibold">skeleton</span>
-        </button>
+        <div className="h-10 w-10" aria-hidden />
       </header>
 
-      {/* Duet: TikTok-style split-screen. Side-by-side on phones
-          (reference left, user camera right). Falls back to vertical
-          stack on tiny viewports (<400 px) where 200 px per column
-          would be too narrow to read — SPECK rev 3 §Issue 3. */}
-      <div className="relative flex flex-1 flex-row max-[399px]:flex-col overflow-hidden">
-        {/* Left: reference video */}
-        <div className="relative flex-1 overflow-hidden bg-black">
-          {refSrc ? (
-            <video
-              ref={refVideoRef}
-              src={refSrc}
-              playsInline
-              preload="auto"
-              loop={false}
-              onError={() => setRefMissing(true)}
-              className="absolute inset-0 h-full w-full object-cover"
-              aria-label={`${dance.name} reference`}
-            />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
-              reference video unavailable
-            </div>
-          )}
-
-          {refMissing && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
-              <div className="text-xs uppercase tracking-widest text-white/70">
+      {/* Duet area: TikTok-Duet layout. Each side is exactly half the
+          screen width and locked to 9/16, so the two videos sit flush
+          and edge-to-edge, with black bars top + bottom (the header
+          and the controls fill those bars). SPECK round-4 §Fix 3. */}
+      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
+        <div className="relative flex w-full">
+          {/* Left: reference video */}
+          <div className="relative aspect-[9/16] w-1/2 overflow-hidden bg-black">
+            {refSrc ? (
+              <video
+                ref={refVideoRef}
+                src={refSrc}
+                playsInline
+                preload="auto"
+                loop={false}
+                onError={() => setRefMissing(true)}
+                className="absolute inset-0 h-full w-full object-contain"
+                aria-label={`${dance.name} reference`}
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
                 reference video unavailable
               </div>
-              <p className="mt-2 max-w-xs text-sm text-white/60">
-                the worker hasn’t finished rendering this dance. try going
-                back and resubmitting.
-              </p>
-            </div>
-          )}
+            )}
 
-          {showSkeleton && refSrc && !refMissing && (
-            <SkeletonOverlay
-              landmarks={refLandmarks}
-              videoRef={refVideoRef}
-              mirror={false}
-              edgeColor="#ffffff"
-              jointColor="#ffffff"
-              staleAfterMs={300}
-            />
-          )}
+            {refMissing && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
+                <div className="text-xs uppercase tracking-widest text-white/70">
+                  reference video unavailable
+                </div>
+                <p className="mt-2 max-w-xs text-sm text-white/60">
+                  the worker hasn’t finished rendering this dance. try going
+                  back and resubmitting.
+                </p>
+              </div>
+            )}
 
-          {isFallbackToSkeleton && (
-            <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white/80 ring-1 ring-white/10">
-              fallback: skeleton-only
-            </div>
-          )}
+            {showSkeleton && refSrc && !refMissing && (
+              <SkeletonOverlay
+                landmarks={refLandmarks}
+                videoRef={refVideoRef}
+                mirror={false}
+                edgeColor="#ffffff"
+                jointColor="#ffffff"
+                staleAfterMs={300}
+              />
+            )}
 
-          {needsUnmuteTap && (
-            <button
-              type="button"
-              onClick={handleUnmuteTap}
-              className="absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+            <div
+              aria-hidden
+              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
             >
-              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M3 10v4h4l5 5V5L7 10H3z" />
-              </svg>
-              tap for sound
-            </button>
-          )}
-        </div>
+              ref
+            </div>
 
-        {/* Divider — vertical in side-by-side, horizontal in stacked fallback. */}
-        <div
-          aria-hidden
-          className="w-px h-full bg-white/15 max-[399px]:h-px max-[399px]:w-full"
-        />
+            {isFallbackToSkeleton && (
+              <div className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white/80 ring-1 ring-white/10">
+                skeleton-only
+              </div>
+            )}
 
-        {/* Right: user camera */}
-        <div className="relative flex-1 overflow-hidden bg-zinc-950">
-          <video
-            ref={camVideoRef}
-            playsInline
-            muted
-            autoPlay
-            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
-          />
-          {camState !== 'granted' && (
-            <CameraPermissionBanner
-              state={camState}
-              onRequest={startCamera}
-              compact
+            {needsUnmuteTap && (
+              <button
+                type="button"
+                onClick={handleUnmuteTap}
+                className="absolute right-2 bottom-2 z-20 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+              >
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M3 10v4h4l5 5V5L7 10H3z" />
+                </svg>
+                tap for sound
+              </button>
+            )}
+          </div>
+
+          {/* Right: user camera */}
+          <div className="relative aspect-[9/16] w-1/2 overflow-hidden bg-zinc-950">
+            <video
+              ref={camVideoRef}
+              playsInline
+              muted
+              autoPlay
+              className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
             />
-          )}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
-          >
-            you
+            {camState !== 'granted' && (
+              <CameraPermissionBanner
+                state={camState}
+                onRequest={startCamera}
+                compact
+              />
+            )}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+            >
+              you
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="safe-bottom relative z-30 flex flex-col gap-3 bg-black px-4 pt-3 pb-4">
-        <div className="flex items-center justify-between">
+      {/* Bottom controls (~120 px). Skeleton + speed toggles on top
+          row, navigation CTAs on the bottom row. SPECK round-4 §Fix 3. */}
+      <div className="safe-bottom relative z-30 flex h-[120px] flex-col justify-between bg-black px-4 pt-2 pb-3">
+        <div className="flex items-center justify-between gap-3">
           <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
-          <div className="text-right text-[11px] text-white/50">
-            <div>{chunkDurationSec.toFixed(1)}s · {Math.round(rate * 100)}%</div>
-            <div>{chunks.length} chunks</div>
+          <button
+            type="button"
+            onClick={() => setShowSkeleton((s) => !s)}
+            aria-pressed={showSkeleton}
+            aria-label={showSkeleton ? 'hide skeleton' : 'show skeleton'}
+            className={`flex h-9 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
+              showSkeleton
+                ? 'bg-white text-black ring-white'
+                : 'bg-white/10 text-white ring-white/15'
+            }`}
+          >
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="12" cy="5" r="2" />
+              <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
+            </svg>
+            <span className="text-xs font-semibold">skeleton</span>
+          </button>
+          <div className="text-right text-[10px] leading-tight text-white/50">
+            <div>{chunkDurationSec.toFixed(1)}s</div>
+            <div>{Math.round(rate * 100)}%</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Link
             href={`/dance/${dance.id}`}
-            className="flex-1 rounded-full bg-white/10 py-3 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
+            className="flex-1 rounded-full bg-white/10 py-2.5 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
           >
             back to lesson
           </Link>
           <Link
             href={`/dance/${dance.id}/chunk/${chunkIndex}/test`}
-            className="flex-[2] rounded-full bg-coral py-3 text-center text-sm font-semibold text-white active:scale-[0.98]"
+            className="flex-[2] rounded-full bg-coral py-2.5 text-center text-sm font-semibold text-white active:scale-[0.98]"
           >
             I got it · test
           </Link>
