@@ -83,7 +83,6 @@ export default function FullAttemptPage({ params }: PageProps) {
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
-  const [confidence, setConfidence] = useState<number | null>(null);
   const [volume, setVolume] = useState(1);
 
   // Framing onboarding gate, same as Mode B.
@@ -211,7 +210,6 @@ export default function FullAttemptPage({ params }: PageProps) {
           lastDetectAtRef.current = performance.now();
           if (poseStatus !== 'ok') setPoseStatus('ok');
           setLandmarks(res.landmarks);
-          setConfidence(res.confidence);
           if (res.worldLandmarks.length > 0) {
             const vec = computeJointAngles(res.worldLandmarks);
             userFramesRef.current.push({ timestampMs: sessionT, vector: vec });
@@ -226,7 +224,6 @@ export default function FullAttemptPage({ params }: PageProps) {
           }
         } else {
           setLandmarks(null);
-          setConfidence(0);
           if (performance.now() - lastDetectAtRef.current > 1500) {
             if (poseStatus === 'ok') setPoseStatus('lost');
           }
@@ -308,7 +305,7 @@ export default function FullAttemptPage({ params }: PageProps) {
           className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
         />
         <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
-        {runState === 'running' && <FramingToast confidence={confidence} />}
+        {runState === 'running' && <FramingToast landmarks={landmarks} />}
 
         <div className="absolute left-3 top-3 z-10">
           <CorrectionToast hint={runState === 'running' ? hint : null} />

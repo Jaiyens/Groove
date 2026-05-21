@@ -52,7 +52,6 @@ export default function DrillPage({ params }: PageProps) {
   const [progress, setProgress] = useState(0);
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const [confidence, setConfidence] = useState<number | null>(null);
 
   const duration = skill?.drill_duration_seconds ?? 60;
 
@@ -149,7 +148,6 @@ export default function DrillPage({ params }: PageProps) {
         const res = ex.detectFromVideo(v, sessionT);
         if (res) {
           setLandmarks(res.landmarks);
-          setConfidence(res.confidence);
           if (res.worldLandmarks.length > 0) {
             const vec = computeJointAngles(res.worldLandmarks);
             const ref = neutralReferenceFrame(sessionT, DRILL_BPM);
@@ -161,7 +159,6 @@ export default function DrillPage({ params }: PageProps) {
           }
         } else {
           setLandmarks(null);
-          setConfidence(0);
         }
       }
       if (sessionT >= durationMs) {
@@ -252,7 +249,7 @@ export default function DrillPage({ params }: PageProps) {
             className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
           />
           <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
-          {runState === 'running' && <FramingToast confidence={confidence} />}
+          {runState === 'running' && <FramingToast landmarks={landmarks} />}
           {runState === 'preroll' && camState === 'granted' && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
               <div className="text-text-muted text-xs uppercase tracking-widest">Drill starts in</div>

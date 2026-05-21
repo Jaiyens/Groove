@@ -1,20 +1,27 @@
 'use client';
 
-// Floating "adjust your framing" toast for the camera screens. Triggered by
-// the parent's pose-tracking confidence: shown when confidence < 0.5 for
-// >1.5s, dismissed when confidence recovers above 0.7.
+// Floating "step back so we can see your upper body" toast for Mode B
+// (spec.md round-5 §Fix 4). Triggered when the upper-body landmark set
+// (head, shoulders, elbows, wrists, hips, knees — see
+// REQUIRED_LANDMARKS) has confidence < 0.5 for >1.5s. Dismissed when
+// upper-body confidence recovers above 0.7. We intentionally do NOT
+// gate on ankles/feet — most dances we score are upper-body and the
+// old toast spuriously fired any time the user's feet were off-screen.
 //
 // Tapping the toast overlays a translucent body-silhouette guide for 2s
 // (the same silhouette used in /onboarding/frame-check) so the user has
 // a visual target for where to stand.
 
 import { useEffect, useState } from 'react';
+import { REQUIRED_LANDMARKS } from '@/lib/pose/framingCheck';
+import type { PoseLandmark } from '@/lib/pose/types';
 
 interface FramingToastProps {
-  // Latest per-frame confidence, 0..1. Pass NaN or null when no pose was
-  // detected at all — the toast will treat that as "very low confidence".
-  confidence: number | null;
-  // The camera <video> ref so the silhouette guide can size itself.
+  // Latest detected landmarks (or null when MediaPipe returned nothing).
+  // The toast computes its own "upper-body confidence" — the mean
+  // visibility of the REQUIRED_LANDMARKS subset — and triggers off
+  // that, so ankles dropping off-screen no longer false-triggers.
+  landmarks: PoseLandmark[] | null;
   className?: string;
 }
 
@@ -23,8 +30,23 @@ const HIGH_THRESHOLD = 0.7;
 const LOW_HOLD_MS = 1500;
 const SILHOUETTE_DISPLAY_MS = 2000;
 
+// Mean visibility of the upper-body landmark subset (head, shoulders,
+// elbows, wrists, hips, knees). 0 when no detection.
+function upperBodyConfidence(landmarks: PoseLandmark[] | null): number {
+  if (!landmarks) return 0;
+  let sum = 0;
+  let n = 0;
+  for (const idx of REQUIRED_LANDMARKS) {
+    const lm = landmarks[idx];
+    if (!lm) continue;
+    sum += lm.visibility ?? 0;
+    n++;
+  }
+  return n === 0 ? 0 : sum / n;
+}
+
 export default function FramingToast({
-  confidence,
+  landmarks,
   className = '',
 }: FramingToastProps) {
   const [visible, setVisible] = useState(false);
@@ -34,7 +56,7 @@ export default function FramingToast({
     let lowSinceMs: number | null = null;
     let raf = 0;
     const tick = () => {
-      const c = confidence ?? 0;
+      const c = upperBodyConfidence(landmarks);
       const now = performance.now();
       if (c < LOW_THRESHOLD) {
         if (lowSinceMs === null) lowSinceMs = now;
@@ -52,7 +74,7 @@ export default function FramingToast({
     };
     raf = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(raf);
-  }, [confidence, visible]);
+  }, [landmarks, visible]);
 
   useEffect(() => {
     if (!showSilhouette) return;
@@ -75,7 +97,7 @@ export default function FramingToast({
         <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
         </svg>
-        step back so we can see all of you
+        step back so we can see your upper body
       </button>
       {showSilhouette && <SilhouetteGuide />}
     </>
