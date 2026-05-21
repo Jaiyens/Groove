@@ -1,16 +1,26 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
-import { Inter } from 'next/font/google';
+import { Inter, Bricolage_Grotesque } from 'next/font/google';
 import PhoneFrame from '@/components/PhoneFrame';
 import { GraphProvider } from '@/lib/graph/context';
 import './globals.css';
 
-// Inter is the only typeface — see SPECK §Phase 2. Weights 400 + 500 cover
-// body and display; we don't load 600/700 deliberately.
+// Inter remains the body face — neutral, calm, very legible at small sizes.
+// SPECK polish §Fix 4: the Groov wordmark moves to Bricolage Grotesque, a
+// kinetic display face (squared corners, off-axis terminals, optical-size
+// axis) that reads as quirky / weird-but-readable instead of corporate.
+// The wordmark layer adds an italic skew + a kicked-up V on top of the
+// typeface so the energy doesn't just live in the font.
 const inter = Inter({
   subsets: ['latin'],
   weight: ['400', '500'],
   variable: '--font-inter',
+  display: 'swap',
+});
+const bricolage = Bricolage_Grotesque({
+  subsets: ['latin'],
+  weight: ['700', '800'],
+  variable: '--font-bricolage',
   display: 'swap',
 });
 
@@ -32,7 +42,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en" className={`${inter.variable} ${bricolage.variable}`}>
       <body className="bg-cream text-ink">
         <GraphProvider>
           <PhoneFrame>{children}</PhoneFrame>

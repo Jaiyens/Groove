@@ -66,10 +66,32 @@ button {
   .no-scrollbar {
     scrollbar-width: none;
   }
-  /* Lowercase headline + slight optical tightening. Used by the wordmark
-     and other display-weight text per SPECK §Phase 2 typography. */
+  /* Lowercase headline + slight optical tightening. Used by other
+     display-weight text per SPECK §Phase 2 typography. The Groov
+     wordmark itself has its own dedicated class below. */
   .wordmark {
     font-weight: 500;
     letter-spacing: -0.02em;
+  }
+  /* SPECK polish §Fix 4: Groov wordmark.
+     - Bricolage Grotesque 800 (squared, off-axis, "weird-but-readable")
+     - -4° skew so the whole word leans forward
+     - hot-pink gradient (--coral → lighter pink) via background-clip
+     - kicker on the final letter rotates 12° + nudges up so the V kicks. */
+  .wordmark-groov {
+    font-family: var(--font-bricolage), 'Inter', system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.045em;
+    transform: skewX(-4deg);
+    transform-origin: 0% 100%;
+    background: linear-gradient(180deg, #FF3E7F 0%, #FF7AA2 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+  .wordmark-groov-kicker {
+    transform: rotate(12deg) translateY(-0.08em);
+    transform-origin: 0% 100%;
   }
 }
