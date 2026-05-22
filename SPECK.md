@@ -1,245 +1,147 @@
-# SPECK: Fix Mode B scoring via skeleton normalization + angle-based comparison
+# SPECK: Fix the left/right mirror bug in Mode B scoring
 
 ## Why this exists
 
-Mode B scoring is broken in a way that the previous rebuild (Stages 1–7) did not address. Symptoms from real-world testing:
+Verified by manual UI test just now: when the user raises their right hand, the reference skeleton in DualSkeletonOverlay raises its left hand. This means the scorer is comparing the user's right-labeled landmarks to the reference's left-labeled landmarks, scoring even a perfect mirror-copy attempt as ~40%.
 
-- When user dances next to the reference, the user's rendered skeleton is ~2x the size of the reference dancer's skeleton in the same frame. The size disparity itself signals the bug.
-- Scores feel uncorrelated with actual dance quality. "Good" attempts and "bad" attempts produce similar numbers.
-- The calibration suite (stand-still=21.9, noise-tracking=80.5, perfect=100) passes, but those tests use synthetic landmarks of the SAME body size as the reference. They do not exercise the real failure mode.
+This is the actual root cause of the bad Mode B scores. The full canonical normalization + angle-based rebuild from the last PR is correct and stays. This PR is a focused mirror fix on top of it.
 
-## Root cause (read this section before doing anything else)
+## Background on what's actually wrong
 
-The scoring pipeline is comparing skeletons in **image-space coordinates** of two **different-sized bodies** without normalization. Three compounding problems:
+The front camera produces a naturally-mirrored video feed — when the user raises their right hand, it appears on the right side of the screen (the camera-mirror convention, which matches how humans look in actual mirrors). MediaPipe Pose Landmarker runs on this mirrored feed and labels landmarks according to image position, so the landmark labeled `right_wrist` is actually the user's anatomical LEFT wrist appearing on the right side of the frame.
 
-1. **Translation not removed.** Reference dancer's pelvis is at one (x, y) in image space; user's pelvis is at a different (x, y). Every joint position carries an offset that has nothing to do with dance quality.
-2. **Scale not removed.** Reference dancer occupies ~50% of frame height; user occupies ~90%. Every limb position differs by ~1.8x even on identical poses. This is the "skeleton half my size" observation.
-3. **Positions compared instead of angles.** Even with translation and scale fixed, raw 2D positions are noisy under camera distance, framing, and rotation variation. The dance-tracking literature (Disney/Raptis 2011, Walloon-dance 2015, Kinect-Thai-dance 2017, Mruchus dance-sync, DeepDance Devpost) overwhelmingly converges on comparing joint **angles**, which are invariant to translation, scale, and most rotation by construction.
+The reference dancer's video is NOT mirrored. Her `right_wrist` landmark is her anatomical right wrist.
 
-The skill graph (public/data/knowledge_graph.json) further mixes units in `measurable_success_criterion`: some are angles in degrees (good, scale-invariant), some are positions in meters ("wrist.x − shoulder.x > 0.30m") that are NOT invariant to body size. Position thresholds must be expressed as fractions of the user's own arm/torso/shoulder lengths.
+A dance student copying a reference does so as a mirror — when the teacher raises her right hand, the student raises their left to face it. So the correct comparison is:
+- user's anatomical left ↔ reference's anatomical right
+- user's anatomical right ↔ reference's anatomical left
+
+This is the mirror semantics. We need to apply `mirrorLandmarksHorizontal` to exactly ONE side of the comparison (conventionally the user) so the labels line up. The previous rebuild added `mirrorLandmarksHorizontal` in `lib/pose/normalize.ts` but it's clearly not being applied at the right layer in the scoring pipeline, because the symptom shipped.
 
 ## What you are doing in this task
 
-A focused refactor of the scoring math layer to fix normalization and switch the comparison primitive from positions to angles. You are NOT swapping pose models. You are NOT changing Mode A. You are NOT touching the UI beyond the existing ResultsCard. You are NOT touching the worker or Supabase. You are NOT inventing new scoring features.
+A surgical fix. Find every place where user landmarks and reference landmarks meet, ensure the user side is mirrored exactly once before canonicalization, ensure the reference side is not mirrored, and ensure the overlay renders consistently with what the scorer sees. Add tests that would have caught this bug. Update docs.
 
-You ARE:
-
-- Normalizing every skeleton (reference and user) to a canonical body frame before comparison
-- Computing joint-angle vectors as the primary comparison primitive
-- Converting every absolute-meter threshold in the skill graph to a body-relative threshold at runtime
-- Updating the calibration suite to use **different-sized bodies** so it actually catches the bug class that shipped to me
-- Documenting every math change in `docs/scoring-normalization.md`
+You are NOT changing pose models. You are NOT changing the canonicalization math. You are NOT changing joint angles or DTW. You are NOT changing Mode A. You are NOT changing the UI beyond a possible one-line overlay wiring fix.
 
 ## Stages
 
-### Stage 1 — Diagnose against real data (do not skip)
+### Stage 1 — Trace the mirror state through the pipeline
 
-1.1. Re-read `docs/scoring-trace.md` and `docs/scoring-diagnosis.md` from the previous rebuild. Note what was fixed (the synthetic-reference bug, the exponential frame-score crush, the mirror). Note what was NOT fixed (translation/scale normalization, angle-based primitive).
+1.1. Search the codebase for every call to `mirrorLandmarksHorizontal` and every place where user-side landmarks enter scoring. Likely files:
+- `lib/pose/normalize.ts` (defines mirrorLandmarksHorizontal)
+- `lib/pose/canonicalize.ts` (canonical normalization, added last PR)
+- `lib/pose/referenceFrames.ts` (builds reference frame series from worker pose JSON)
+- `lib/scoring/scorer.ts` (the per-frame pipeline)
+- `app/.../test/page.tsx` or wherever Mode B wires user frames into the scorer
+- `components/DualSkeletonOverlay.tsx` (the visual layer that confirmed the bug)
 
-1.2. Open `lib/pose/normalize.ts`, `lib/pose/referenceFrames.ts`, `lib/pose/jointAngles.ts`, `lib/scoring/scorer.ts`, `lib/scoring/dtw.ts`, `lib/scoring/similarity.ts`. Map every place where two skeletons get compared — direct landmark comparison, angle comparison, distance comparison, anything. Write the map to `docs/scoring-normalization.md` under a "Comparison sites" header.
+1.2. For each location, write down in `docs/mirror-fix.md` under "Mirror state audit":
+- Whether user landmarks pass through `mirrorLandmarksHorizontal` here (yes/no)
+- Whether reference landmarks pass through it here (yes/no)
+- Whether the function is called for the SCORER path, the OVERLAY path, or both
+- The current behavior — which side ends up mirrored at the point of comparison
 
-1.3. For each comparison site, mark which of these it does:
-- Translates to pelvis-origin? (yes/no)
-- Scales by torso length or equivalent? (yes/no)
-- Compares angles (scale-invariant) or positions (not)?
+1.3. Identify the one wrong place. Almost certainly one of:
+- (A) `mirrorLandmarksHorizontal` is only applied inside DualSkeletonOverlay for rendering, but scorer.ts gets unmirrored user landmarks
+- (B) It's applied to both user and reference, which cancels out
+- (C) It's applied to reference instead of user (logically equivalent but wrong by convention)
+- (D) It's applied at the raw-landmark layer but canonicalization undoes the asymmetry because of how the rotation step works
 
-Almost every site will fail at least one of these. That is the bug surface.
+1.4. Commit: `docs(scoring): mirror state audit`.
 
-1.4. Commit: `docs(scoring): normalization audit + comparison-site map`.
+### Stage 2 — Define the canonical mirror convention
 
-### Stage 2 — Implement canonical skeleton normalization
-
-2.1. Add `lib/pose/canonicalize.ts`. Pure TypeScript, no browser deps. Export:
-
-```ts
-export interface CanonicalSkeleton {
-  // Every landmark translated so pelvis_midpoint = (0, 0) and scaled so torso_length = 1.
-  // Same landmark indices as MediaPipe Pose Landmarker (33 points).
-  // Optionally rotated so shoulder line is horizontal — controlled by `rotateToUpright` flag.
-  landmarks: Array<{ x: number; y: number; z: number; visibility: number }>;
-  torsoLength: number;       // original torso length in input units (image-space px or normalized 0-1)
-  shoulderWidth: number;     // original shoulder width
-  pelvis: { x: number; y: number; z: number };  // original pelvis midpoint
-  rotationApplied: number;   // radians, if rotateToUpright
-}
-
-export function canonicalizeSkeleton(
-  raw: PoseResult,                         // landmarks straight from MediaPipe
-  opts?: { rotateToUpright?: boolean }     // default false for now; angles handle most rotation
-): CanonicalSkeleton;
-```
-
-Algorithm:
-- Compute pelvis midpoint = midpoint of MediaPipe landmarks 23 (left_hip) and 24 (right_hip).
-- Translate every landmark by `-pelvis`.
-- Compute torso length = Euclidean distance from pelvis midpoint to shoulder midpoint (midpoint of landmarks 11, 12). If torso_length < 0.05 (degenerate / very low confidence), return null — calling code treats this as a dropped frame.
-- Divide every translated landmark by torso_length.
-- If `rotateToUpright`, compute the shoulder-line angle (atan2 of shoulder vector) and rotate the whole skeleton so it becomes 0.
-- Preserve visibility as-is.
-
-2.2. Unit-test in `tests/canonicalize.test.ts`:
-- Identical pose at 2 different scales → canonicalized landmarks match within 1e-6.
-- Identical pose at 2 different image positions → canonicalized landmarks match.
-- Mirrored pose (mirrorLandmarksHorizontal applied) → canonicalized form is the mirror.
-- A degenerate frame (all landmarks at origin, torso_length ≈ 0) → returns null.
-
-2.3. Commit: `feat(pose): canonical skeleton normalization (translate + scale)`.
-
-### Stage 3 — Joint-angle vector as the comparison primitive
-
-3.1. Extend `lib/pose/jointAngles.ts` (do not rewrite it; add a parallel exporter so the old code path keeps compiling). Export:
-
-```ts
-export interface JointAngleVector {
-  // All angles in radians, all in [0, π].
-  leftElbow: number;
-  rightElbow: number;
-  leftShoulder: number;       // angle at shoulder between (shoulder→hip) and (shoulder→elbow)
-  rightShoulder: number;
-  leftHip: number;            // angle at hip between (hip→shoulder) and (hip→knee)
-  rightHip: number;
-  leftKnee: number;
-  rightKnee: number;
-  torsoLean: number;          // angle between vertical (0,-1) and (pelvis→shoulderMid)
-  shoulderTilt: number;       // angle between horizontal (1,0) and (leftShoulder→rightShoulder)
-  hipTilt: number;            // angle between horizontal (1,0) and (leftHip→rightHip)
-  // Plus per-joint confidence = min(visibility of joints used in that angle).
-  confidence: Record<string, number>;
-}
-
-export function jointAnglesFromCanonical(c: CanonicalSkeleton): JointAngleVector;
-```
-
-3.2. Why these specific angles: they cover the four major limb articulations (elbows, shoulders, hips, knees), the spine alignment (torsoLean), and the two main body-frame tilts (shoulderTilt for body roll / chest iso, hipTilt for hip iso). They map cleanly onto the skill graph's success criteria for arm extension, dime stop, hip pop, body roll, etc.
-
-3.3. Compute angles using `acos((a·b)/(|a||b|))` with a guard for |a||b| < 1e-6 → return 0 and confidence=0 for that joint.
-
-3.4. Unit-test in `tests/jointAngles.test.ts`:
-- T-pose canonical skeleton (arms horizontal) → both shoulders at π/2 within 0.01 rad.
-- Arms-down rest pose → shoulders near 0.
-- Right elbow flexed 90° → rightElbow within 0.05 of π/2.
-- Whole-body scale 0.5x and 2x → angles unchanged within 1e-6 (this is THE test that proves scale invariance).
-- Skeleton translated by (100, 50) in pixels → angles unchanged within 1e-6 (translation invariance).
-
-3.5. Commit: `feat(pose): joint-angle vector primitive with scale-invariance tests`.
-
-### Stage 4 — Rewire scorer.ts to use angles on canonicalized skeletons
-
-4.1. In `lib/scoring/scorer.ts`, replace the existing per-frame scoring path with this pipeline:
+2.1. Add to the top of `lib/pose/normalize.ts` (or wherever `mirrorLandmarksHorizontal` lives) a comment block stating the project-wide convention:
 
 ```
-for each user frame F_u and reference frame F_r aligned by DTW:
-    c_u = canonicalizeSkeleton(F_u)
-    c_r = canonicalizeSkeleton(F_r)
-    if c_u or c_r is null: skip frame, count as dropped
-    a_u = jointAnglesFromCanonical(c_u)
-    a_r = jointAnglesFromCanonical(c_r)
-    per_joint_diff[j] = |a_u[j] - a_r[j]|        # in radians
-    frame_score = aggregate_per_joint(per_joint_diff, weights)
+MIRROR CONVENTION
+=================
+Front-camera user video is naturally horizontally mirrored. Reference dance video is not.
+For a dance student copying a teacher, the correct comparison is mirror-semantics:
+  user's anatomical left  ↔ reference's anatomical right
+  user's anatomical right ↔ reference's anatomical left
+
+Therefore, in the scoring pipeline, user landmarks pass through mirrorLandmarksHorizontal()
+EXACTLY ONCE before canonicalization. Reference landmarks are never mirrored. The overlay
+must use the same convention so what the user sees matches what the scorer scores.
+
+A passing test of this convention: user raises their physical right hand. The reference
+skeleton in the overlay raises the side that visually aligns with the user's right hand
+(which from the user's perspective is the same side, because the user video is mirrored).
 ```
 
-4.2. Aggregation rule (replaces the old quadratic curve, keeps it readable):
+2.2. Confirm `mirrorLandmarksHorizontal` does the right thing: it swaps every left/right landmark pair (e.g. swaps landmarks 11↔12 for shoulders, 23↔24 for hips, all the way through) AND flips x = 1 - x for normalized coords or x = width - x for pixel coords. If it only flips x without swapping labels, that's a bug — fix it. If it only swaps labels without flipping x, that's also a bug — fix it. It must do both.
 
-```
-per_joint_score[j] = max(0, 1 - (diff[j] / TOL[j])^2)        # 0 to 1
-where TOL[j] = 0.35 rad (~20°) for elbows/shoulders/hips/knees
-              0.20 rad (~11°) for torsoLean
-              0.25 rad (~14°) for shoulderTilt, hipTilt
+2.3. Commit: `docs(pose): mirror convention + verify mirrorLandmarksHorizontal correctness`.
 
-frame_score = sum(weight[j] * per_joint_score[j]) / sum(weight[j])
-overall_score = 100 * mean(frame_scores across valid frames)
-```
+### Stage 3 — Apply mirror at the single correct chokepoint
 
-4.3. Per-joint weights stay variance-driven as in Stage 3 of the previous rebuild — joints that vary more in the reference get more weight. Don't change that logic; just apply it to angle-space variance instead of position-space variance.
+3.1. The chokepoint is the entry to the scoring pipeline — the place where raw user landmarks from the live MediaPipe stream get passed to scorer.ts. Find this entry (likely in `app/.../test/page.tsx` or in scorer.ts itself). Apply `mirrorLandmarksHorizontal` to user landmarks exactly once, BEFORE canonicalization.
 
-4.4. Components (Arms / Legs / Body / Timing) — same idea as before, but rebuilt from the angle vector:
-- Arms = mean of left/right elbow + left/right shoulder per-joint scores
-- Legs = mean of left/right hip + left/right knee per-joint scores
-- Body = mean of torsoLean + shoulderTilt + hipTilt per-joint scores
-- Timing = computed from DTW warp path: 1 - mean(|warp[i] - i|) / (sequence_length * timing_tolerance)
+3.2. Remove `mirrorLandmarksHorizontal` from any other location in the scoring path. Specifically, audit:
+- The canonicalization step — it should NOT mirror internally
+- The angle vector computation — it should NOT mirror internally
+- The DTW step — it should NOT mirror internally
+- The reference frames builder — should NOT mirror reference
 
-4.5. Trouble spots: same 1.5s-window algorithm as before, but ranked by mean frame_score within window (now on the new scale), not by raw position distance.
+If the previous rebuild had any of these mirroring internally, that's the cancellation bug. Strip it.
 
-4.6. Commit: `feat(scoring): rewire per-frame scoring on canonical angles`.
+3.3. The overlay needs to match the scorer. Two options, pick whichever is simpler in the existing code:
+- (Preferred) The overlay rendering also pulls from the post-mirror user landmark stream, so what the user sees on screen is the same data the scorer sees.
+- (Acceptable) The overlay separately mirrors for rendering but uses identical mirror semantics.
 
-### Stage 5 — Body-relative thresholds for skill-graph position criteria
+Whatever you do, leave a single comment at the overlay's mirror application explaining the convention.
 
-5.1. The skill graph's `measurable_success_criterion` fields contain absolute-meter thresholds (e.g. "right_wrist.x − right_shoulder.x > 0.30 m"). These are calibrated to a specific body size and break for other bodies.
+3.4. Commit: `fix(scoring): apply mirror at single user-entry chokepoint`.
 
-5.2. Add `lib/graph/criteriaEvaluator.ts`. Export:
+### Stage 4 — Tests that would have caught this
 
-```ts
-export function evaluateCriterion(
-  criterion: string,                  // raw string from the graph
-  userSkeletonSeries: CanonicalSkeleton[],
-  refSkeletonSeries: CanonicalSkeleton[],
-  bpm: number
-): { passed: boolean; evidence: string };
-```
+4.1. Add `tests/mirror.test.ts`:
 
-5.3. Inside the evaluator: when the criterion mentions a distance in meters, convert it at runtime to "fraction of user's torso_length". E.g. "0.30 m" becomes "0.30 / reference_torso_length_m ≈ 0.6 torso-lengths", and the check on the user becomes "user_value > 0.6 * user_torso_length".
+- **Test: user_right_lifts_reference_right** (the test that would have caught the shipped bug). Construct a synthetic user landmark frame where right_wrist is raised (high y in image space). Construct a reference frame where her right_wrist is also raised. Pass through the full scoring pipeline. Expect: high per-joint score on the right-arm joints, NOT a low score. This is the unit test version of "raise your right hand and check the reference's right hand goes up."
 
-5.4. You don't have to support every criterion in the graph for this PR — start with the criteria for the three seeded routines (Golden, Dead Dance, NOT CUTE ANYMORE). Parse the common patterns (distance thresholds, angle thresholds, timing windows). For criteria you can't yet parse, return `{ passed: true, evidence: "criterion not yet supported" }` and log to console. List unsupported criteria in `docs/scoring-normalization.md` under "Unsupported criteria — followup".
+- **Test: mirrorLandmarksHorizontal_is_involution**. Apply the mirror twice and confirm you get the original landmarks back within 1e-6.
 
-5.5. Unit-test in `tests/criteriaEvaluator.test.ts`:
-- A user with 0.5x torso scale executing the reference arm extension → passes (was failing before because absolute meters didn't scale).
-- A user under-extending by 50% → fails.
-- An unsupported criterion → returns passed=true with the warning evidence string.
+- **Test: mirror_swaps_labels_correctly**. After one application, left_wrist's anatomical content is at the original right_wrist's position and vice versa, for at least three landmark pairs (shoulders, wrists, hips).
 
-5.6. Commit: `feat(graph): body-relative criterion evaluator`.
+- **Test: full_pipeline_handedness**. A canonical user-perfect-copy synthetic input (user landmarks are the reference landmarks with mirror semantics applied to simulate the camera flip) scores ≥ 95. This is the integration test of "the system correctly recognizes a mirror copy as a correct copy."
 
-### Stage 6 — Calibration suite that actually catches the shipped bug
+4.2. Run the existing calibration suite (137 tests). Verify nothing breaks. If the existing `half_scale_perfect` or `translated_perfect` tests break because they were constructed without mirror semantics, update them to use mirror-correct synthetic inputs, and note this in the commit message.
 
-6.1. The existing `tests/scoringCalibration.test.ts` uses synthetic landmarks at the same body size as the reference. Add new tests in the same file (do not delete the old ones; they still cover the synthetic-reference regression):
+4.3. Commit: `test(pose): mirror-aware handedness suite`.
 
-- **half_scale_perfect**: user landmarks = reference landmarks scaled by 0.5x about an arbitrary translated origin. Expected score: ≥ 95. THIS IS THE KEY NEW TEST. If this passes, the size disparity bug is fixed.
-- **double_scale_perfect**: same, 2.0x. Expected ≥ 95.
-- **translated_perfect**: user landmarks = reference landmarks + offset (e.g. +200px x, -100px y). Expected ≥ 95.
-- **rotated_5deg_perfect**: shoulder line rotated 5° vs reference. Expected ≥ 90 (small penalty acceptable).
-- **half_scale_wrong**: user is 0.5x scale BUT arms in wrong position. Expected ≤ 40.
-- **half_scale_8deg_noise**: 0.5x scale + 8° gaussian noise on joints. Expected 55–85.
+### Stage 5 — Manual UI verification
 
-6.2. Run all tests. The two failing-when-pasting tests are likely going to be half_scale_perfect and translated_perfect; that's the whole point — they should fail against the OLD code path and pass against the NEW one. If both pass, you've fixed the bug class.
+5.1. Run `npm run dev`. Open Mode B for the Golden chunk.
 
-6.3. Commit: `test(scoring): body-size-invariant calibration suite`.
+5.2. Perform the handedness check:
+- Raise your physical right hand. The reference skeleton must raise the side that visually corresponds to your right hand in the overlay.
+- Raise your physical left hand. Same check, opposite side.
+- Wave one hand. The reference's matching hand should be moving in the overlay.
 
-### Stage 7 — End-to-end verification
+5.3. Perform the rough scoring check: do a real attempt at the Golden chunk. Compare the score to the bad-attempt and standing-still cases. We're looking for the rank-order to be obvious (good > bad > still) with meaningful gaps. Document the three scores in `docs/mirror-fix.md` under "Post-fix score check."
 
-7.1. Run `npm test`. Expect all tests green (97 existing + ~15 new).
+5.4. If the handedness check passes but the score still feels low, do NOT chase it in this PR. Note it in `BLOCKERS.md` with the symptom and proposed next step (tune TOL[j] thresholds, or investigate the legacy vs canonical path divergence). The mirror fix is the one thing this PR does.
 
-7.2. Run `npx tsc --noEmit`. Expect clean.
-
-7.3. Run `npm run dev`. Manually navigate to Mode B for the Golden routine. Confirm:
-- The reference and user skeletons in DualSkeletonOverlay now appear at the same canonical size (this is implicit from canonicalizeSkeleton being called before render — wire it into the overlay component if it isn't already; if the overlay still renders raw landmarks, add a canonicalized rendering toggle and default it ON).
-- Scoring numbers change vs the previous rebuild on the same input recording, if you have one cached.
-
-7.4. Write `docs/scoring-normalization.md` covering:
-- Comparison-site audit results
-- Math changes (translation + scale + angles)
-- Body-relative criterion conversion
-- New calibration tests and what bug class each catches
-- Known limitations (rotation invariance still partial, criteria parser incomplete, etc.)
-- Why we did NOT swap pose models in this PR (preserves scope, MediaPipe accuracy improvements are a separate decision tracked in a followup doc)
-
-7.5. Commit: `docs(scoring): normalization rebuild summary`.
+5.5. Commit: `docs(scoring): post-mirror-fix verification log`.
 
 ## Hard rules
 
-1. **Do not swap pose models.** Stay on MediaPipe Pose Landmarker. RTMPose-via-Modal is a separate decision being evaluated outside this PR.
-2. **Do not modify Mode A copy-along or the practice-loop routing.** Scope is the scoring math only.
-3. **Do not regress the existing 97 tests.** If you have to change one, it's because it asserted the old buggy behavior — say so explicitly in the commit message.
-4. **Keep `lib/pose/` and `lib/scoring/` pure TypeScript** — no browser-only APIs. They will port to Swift later.
-5. **Do not invent new product features.** No new buttons, no new screens, no new fields on the ResultsCard.
-6. **One stage per commit, in order.** If a stage is blocked, write to `BLOCKERS.md` and stop. Do not skip ahead.
-7. **All thresholds in TOL[j] and timing_tolerance are parameters at the top of scorer.ts**, not magic numbers buried in functions. The next iteration will tune them against real recordings.
-8. **The canonicalization invariance unit tests are not optional.** They are the proof that the bug is fixed. Do not commit Stage 2 without them passing.
+1. **One mirror application, one location, before canonicalization.** Not two, not zero. If you find more than one, strip the extras. If you find zero, that's the bug.
+2. **Do not change the canonical normalization math, the joint angle math, DTW, or the scorer aggregation.** Those are now considered correct.
+3. **Do not swap pose models.** Stay on MediaPipe.
+4. **Do not modify Mode A.**
+5. **The handedness unit test from Stage 4 is the gating test.** It must pass before you commit Stage 4. If it doesn't pass, debug Stage 3 until it does.
+6. **The manual UI handedness check in Stage 5 is also gating.** If the overlay still shows wrong-side mirroring after Stage 3, the fix is incomplete regardless of what unit tests pass.
+7. **Reference data is never mirrored.** If you find code that mirrors reference landmarks anywhere, that's a bug — remove it.
 
 ## Tiebreaker for ambiguity
 
-When something is ambiguous, default to whichever interpretation:
-1. Is most portable to Swift later (no browser-only types, no React-only patterns)
-2. Is most testable with synthetic landmarks (so the calibration suite stays the source of truth)
-3. Preserves angle-space comparison as the primary primitive
-4. Keeps the canonicalization step as the single chokepoint where every skeleton enters the scoring pipeline
+When something is ambiguous, default to:
+1. Applying the mirror as close to the live MediaPipe output as possible — ideally the very first thing that happens to a user frame
+2. Keeping the canonical pipeline (canonicalize → angles → DTW) ignorant of mirror state
+3. Making the overlay visually match what the scorer scores, not the other way around
+4. Preferring deletion of redundant mirror calls over adding new ones
 
 Begin.
