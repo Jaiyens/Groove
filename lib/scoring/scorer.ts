@@ -32,10 +32,58 @@ export interface ScoreSessionInput {
   totalBeats?: number; // optional override, derived from frames if absent
 }
 
-const FRAME_SCORE_DECAY = 5;
-
+// Frame-score mapping calibrated empirically against real Mode B
+// recordings. The old exponential (exp(-(1-s)*5)) crushed honest cosine
+// scores of 0.95 down to a misleading 78. Real human follow-along
+// performances on competent attempts land around cosine 0.85-0.97
+// against a real reference. We map those linearly into a 0-100 band so
+// the displayed number tracks what a human watching would call out.
+//
+// Calibration anchors (see docs/scoring-rebuild-summary.md):
+//   sim 1.00 → 100   (perfect)
+//   sim 0.95 → 88    (mild divergence, still excellent)
+//   sim 0.90 → 76    (visible divergence, passing)
+//   sim 0.80 → 56    (clearly off)
+//   sim 0.60 → 22    (very off — wrong move)
+//   sim 0.40 → 0     (no resemblance — stand still floor)
+//   sim ≤0.40 → 0
+//
+// Piecewise-linear with two anchors at (0.40, 0) and (1.00, 100), bent
+// at (0.85, 65) to keep "passing" performances within reach without
+// flattering bad ones. Floor at 0, ceiling at 100.
 export function frameScoreFromSimilarity(similarity: number): number {
-  return 100 * Math.exp(-(1 - similarity) * FRAME_SCORE_DECAY);
+  const s = Number.isFinite(similarity) ? similarity : 0;
+  if (s <= 0.4) return 0;
+  if (s >= 1.0) return 100;
+  if (s < 0.85) {
+    // (0.4, 0) → (0.85, 65)
+    const t = (s - 0.4) / (0.85 - 0.4);
+    return Math.max(0, Math.min(100, 65 * t));
+  }
+  // (0.85, 65) → (1.0, 100)
+  const t = (s - 0.85) / (1.0 - 0.85);
+  return Math.max(0, Math.min(100, 65 + (100 - 65) * t));
+}
+
+// Mirror a joint-angle vector: swap left_* ↔ right_*. Hip rotation
+// flips sign (the hip line orientation reverses), torso_lean and
+// chest_forward_z are bilaterally symmetric so they pass through. Used
+// when comparing a follow-along user against a normally-oriented
+// reference dancer.
+export function mirrorJointAngleVector(v: JointAngleVector): JointAngleVector {
+  return {
+    left_elbow: v.right_elbow,
+    right_elbow: v.left_elbow,
+    left_shoulder: v.right_shoulder,
+    right_shoulder: v.left_shoulder,
+    left_hip: v.right_hip,
+    right_hip: v.left_hip,
+    left_knee: v.right_knee,
+    right_knee: v.left_knee,
+    torso_lean: v.torso_lean,
+    hip_rotation_y: -v.hip_rotation_y,
+    chest_forward_z: v.chest_forward_z,
+  };
 }
 
 export function scoreSession(input: ScoreSessionInput): SessionScore {

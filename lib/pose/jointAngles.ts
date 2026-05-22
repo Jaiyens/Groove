@@ -116,6 +116,73 @@ export function computeJointAngles(worldLandmarks: PoseLandmark[]): JointAngleVe
   };
 }
 
+// 2D variant: computes joint angles from MediaPipe normalized image
+// landmarks (x,y ∈ [0,1], z ignored). Used when comparing a live user
+// pose to a reference pose whose JSON has only 2D coordinates (the
+// worker pipeline writes z=0 for every joint — it runs an off-the-shelf
+// COCO-17 detector, not full 3D BlazePose). Returns the same
+// JointAngleVector shape as computeJointAngles, with hip_rotation_y and
+// chest_forward_z forced to 0 because both require depth to be
+// meaningful and would contaminate a 2D-only similarity score.
+//
+// Caller is responsible for using this consistently on BOTH the user
+// stream and the reference stream so the units line up.
+export function compute2DJointAngles(landmarks: PoseLandmark[]): JointAngleVector {
+  const Ls = v(landmarks[LANDMARK.LEFT_SHOULDER]);
+  const Rs = v(landmarks[LANDMARK.RIGHT_SHOULDER]);
+  const Le = v(landmarks[LANDMARK.LEFT_ELBOW]);
+  const Re = v(landmarks[LANDMARK.RIGHT_ELBOW]);
+  const Lw = v(landmarks[LANDMARK.LEFT_WRIST]);
+  const Rw = v(landmarks[LANDMARK.RIGHT_WRIST]);
+  const Lh = v(landmarks[LANDMARK.LEFT_HIP]);
+  const Rh = v(landmarks[LANDMARK.RIGHT_HIP]);
+  const Lk = v(landmarks[LANDMARK.LEFT_KNEE]);
+  const Rk = v(landmarks[LANDMARK.RIGHT_KNEE]);
+  const La = v(landmarks[LANDMARK.LEFT_ANKLE]);
+  const Ra = v(landmarks[LANDMARK.RIGHT_ANKLE]);
+
+  // Force z to 0 so 2D math is unambiguous regardless of whether the
+  // input has populated z values or not.
+  const flat = (p: Vec3): Vec3 => ({ x: p.x, y: p.y, z: 0 });
+
+  const fLs = flat(Ls);
+  const fRs = flat(Rs);
+  const fLe = flat(Le);
+  const fRe = flat(Re);
+  const fLw = flat(Lw);
+  const fRw = flat(Rw);
+  const fLh = flat(Lh);
+  const fRh = flat(Rh);
+  const fLk = flat(Lk);
+  const fRk = flat(Rk);
+  const fLa = flat(La);
+  const fRa = flat(Ra);
+
+  const hipMid = midpoint(fLh, fRh);
+  const shoulderMid = midpoint(fLs, fRs);
+
+  return {
+    left_elbow: angleAt(fLs, fLe, fLw),
+    right_elbow: angleAt(fRs, fRe, fRw),
+    left_shoulder: angleAt(fLh, fLs, fLe),
+    right_shoulder: angleAt(fRh, fRs, fRe),
+    left_hip: angleAt(fLs, fLh, fLk),
+    right_hip: angleAt(fRs, fRh, fRk),
+    left_knee: angleAt(fLh, fLk, fLa),
+    right_knee: angleAt(fRh, fRk, fRa),
+    // Image y is +DOWN — spine vector "up" is -y. Negate the y
+    // component before measuring angle from +Y.
+    torso_lean: angleFromY({
+      x: shoulderMid.x - hipMid.x,
+      y: -(shoulderMid.y - hipMid.y),
+      z: 0,
+    }),
+    // Depth-dependent fields zeroed for 2D consistency.
+    hip_rotation_y: 0,
+    chest_forward_z: 0,
+  };
+}
+
 // Euclidean distance between two joint-angle vectors. Used as the local cost
 // in DTW. Angles are in degrees; chest_forward_z is in meters — we keep them
 // in their natural units since both move on roughly the same scale once the

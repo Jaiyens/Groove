@@ -55,9 +55,26 @@ describe('scorer', () => {
     assert.ok(Math.abs(frameScoreFromSimilarity(1.0) - 100) < 1e-9);
   });
 
-  it('frame_score(0.0) = 100*e^-5 ≈ 0.67', () => {
-    const got = frameScoreFromSimilarity(0);
-    assert.ok(Math.abs(got - 100 * Math.exp(-5)) < 1e-9, `got ${got}`);
+  it('frame_score floors at 0 below the 0.4 floor', () => {
+    // Piecewise-linear mapping (lib/scoring/scorer.ts): everything at
+    // or below 0.4 cosine maps to 0. This is the "no resemblance" floor;
+    // standing still must not score nontrivially.
+    assert.equal(frameScoreFromSimilarity(0), 0);
+    assert.equal(frameScoreFromSimilarity(0.4), 0);
+    assert.equal(frameScoreFromSimilarity(0.3), 0);
+  });
+
+  it('frame_score is calibrated for honest dance similarity', () => {
+    // The whole point of the rebuild: a competent dance lands in the
+    // 0.85-0.97 cosine band, and the score should reflect that as
+    // "passing", not the old exponential's 37-86. Lock the calibration
+    // anchors in so we notice if anyone re-bends the curve.
+    const at95 = frameScoreFromSimilarity(0.95);
+    const at90 = frameScoreFromSimilarity(0.9);
+    const at85 = frameScoreFromSimilarity(0.85);
+    assert.ok(at95 > 80 && at95 < 95, `0.95 → ${at95}`);
+    assert.ok(at90 > 65 && at90 < 85, `0.90 → ${at90}`);
+    assert.ok(at85 > 55 && at85 < 75, `0.85 → ${at85}`);
   });
 
   it('identical sequences give 100 overall', () => {

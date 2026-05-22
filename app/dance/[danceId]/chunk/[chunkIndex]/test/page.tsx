@@ -13,6 +13,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import BackHomeButton from '@/components/BackHomeButton';
 import CorrectionToast from '@/components/CorrectionToast';
+import DualSkeletonOverlay from '@/components/DualSkeletonOverlay';
 import FramingToast from '@/components/FramingToast';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
@@ -26,10 +27,16 @@ import {
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
-import { computeJointAngles } from '@/lib/pose/jointAngles';
+import { compute2DJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
+import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
 import { BeatTracker } from '@/lib/scoring/beatTracker';
+import {
+  buildReferenceSequence,
+  hasRealReferenceFrames,
+  referenceFrameAt,
+} from '@/lib/scoring/referenceFrames';
 import {
   correctionHint,
   frameScoreFromSimilarity,
@@ -40,8 +47,12 @@ import {
   generateReferenceSequence,
   neutralReferenceFrame,
 } from '@/lib/scoring/syntheticReference';
-import type { CorrectionHint } from '@/lib/scoring/types';
+import type { CorrectionHint, SessionScore } from '@/lib/scoring/types';
 import { scoreColor } from '@/lib/scoring/types';
+import {
+  isDualOverlayEnabled,
+  setDualOverlayEnabled,
+} from '@/lib/scoring/uiPrefs';
 
 type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
 // SPECK round-4 §Fix 2: scoring does not auto-start after camera grants.
@@ -71,18 +82,29 @@ export default function TestPage({ params }: PageProps) {
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('waiting_for_camera');
   const [landmarks, setLandmarks] = useState<PoseLandmark[] | null>(null);
+  const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
   const [liveScore, setLiveScore] = useState(0);
   const [progress, setProgress] = useState(0);
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
   const [finalScore, setFinalScore] = useState<number | null>(null);
+  const [sessionScore, setSessionScore] = useState<SessionScore | null>(null);
   const [unlockedNext, setUnlockedNext] = useState(false);
   const [volume, setVolume] = useState(1);
+  const [showDual, setShowDual] = useState<boolean>(() => isDualOverlayEnabled());
 
   const audio = useDanceAudio(dance?.audio_url ?? null, {
     initialVolume: volume,
     loop: false,
   });
+
+  // Real reference pose data (worker-extracted joint frames). When
+  // present, both the dual-skeleton overlay and the scoring math use
+  // these landmarks instead of the synthetic neutral-pose placeholder.
+  // The hook caches per-URL via lib/pose/referencePose.ts so re-mounts
+  // don't re-fetch.
+  const { data: poseData } = useReferencePose(dance?.pose_data_url ?? null);
+  const hasRealReference = hasRealReferenceFrames(poseData);
 
   // spec.md §Mode-B-hang fix: framing gate removed. The standback
   // callout on the dance setup screen already covers user education;
@@ -315,15 +337,31 @@ export default function TestPage({ params }: PageProps) {
           lastDetectAtRef.current = performance.now();
           if (poseStatus !== 'ok') setPoseStatus('ok');
           setLandmarks(res.landmarks);
-          if (res.worldLandmarks.length > 0) {
-            const vec = computeJointAngles(res.worldLandmarks);
+
+          // 2D image-space joint angles, used on both user and reference
+          // sides for consistent unit comparison. See
+          // lib/scoring/referenceFrames.ts + lib/pose/jointAngles.ts.
+          if (res.landmarks.length >= 33) {
+            const vec = compute2DJointAngles(res.landmarks);
+            const absT = chunk.startMs + sessionT;
             // Tag the frame with the absolute routine timestamp so DTW lines
             // up with the chunk-aligned reference.
             userFramesRef.current.push({
-              timestampMs: chunk.startMs + sessionT,
+              timestampMs: absT,
               vector: vec,
             });
-            const ref = neutralReferenceFrame(chunk.startMs + sessionT, dance.bpm);
+            // Reference for the live readout: prefer the real
+            // worker-extracted pose data; fall back to the synthetic
+            // placeholder only when the dance row has no pose JSON.
+            let ref = poseData ? referenceFrameAt(poseData, absT) : null;
+            if (!ref) {
+              ref = neutralReferenceFrame(absT, dance.bpm);
+            }
+            // Reference landmarks for the dual-skeleton overlay (raw
+            // landmarks, mirroring is applied by the overlay itself).
+            if (poseData) {
+              setRefLandmarks(landmarkAt(poseData, absT));
+            }
             const sim = cosineSimilarity(vec, ref);
             const s = frameScoreFromSimilarity(Math.max(0, sim));
             setLiveScore((prev) => prev * 0.7 + s * 0.3);
@@ -361,10 +399,17 @@ export default function TestPage({ params }: PageProps) {
   useEffect(() => {
     if (runState !== 'finished' || !dance || !chunk) return;
     audio.stop();
-    const refSeq = generateReferenceSequence(dance.duration_seconds, dance.bpm)
-      .filter(
-        (f) => f.timestampMs >= chunk.startMs && f.timestampMs < chunk.endMs,
-      );
+    // Prefer the worker's real reference pose data; fall back to the
+    // synthetic neutral-pose sequence only when the dance row has no
+    // pose_data_url (legacy fixtures, early test rows). The synthetic
+    // path is a known-bad scoring source — see docs/scoring-diagnosis.md
+    // — but is kept as a graceful fallback so legacy dances still finish
+    // a run instead of erroring out.
+    const refSeq = poseData
+      ? buildReferenceSequence(poseData, chunk.startMs, chunk.endMs)
+      : generateReferenceSequence(dance.duration_seconds, dance.bpm).filter(
+          (f) => f.timestampMs >= chunk.startMs && f.timestampMs < chunk.endMs,
+        );
     const beatGrid = new BeatTracker(dance.bpm, chunk.startMs).asGrid();
     const result = scoreSession({
       userFrames: userFramesRef.current,
@@ -372,6 +417,7 @@ export default function TestPage({ params }: PageProps) {
       beatGrid,
       skillIds: chunk.skills,
     });
+    setSessionScore(result);
     const overall = Math.round(result.overall);
     setFinalScore(overall);
     const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, overall);
@@ -460,6 +506,22 @@ export default function TestPage({ params }: PageProps) {
           className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
         />
         <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
+
+        {/* Dual-skeleton overlay: reference dancer in white, user in
+            coral, both normalized to a shared hip-midpoint origin. Lets
+            the user see in real time where their move diverges from the
+            reference. Default-on; toggle button below. Only useful
+            while running — and only when we actually have real reference
+            data to draw. */}
+        {showDual && runState === 'running' && hasRealReference && (
+          <div className="pointer-events-none absolute inset-0 z-10">
+            <DualSkeletonOverlay
+              userLandmarks={landmarks}
+              referenceLandmarks={refLandmarks}
+            />
+          </div>
+        )}
+
         {runState === 'running' && <FramingToast landmarks={landmarks} />}
 
         {/* Chunk progress dots — moved below the safe-top inset so the
@@ -495,9 +557,27 @@ export default function TestPage({ params }: PageProps) {
         {/* SPECK polish §Fix 7: score pill lifted off the bottom edge so
             it never sits underneath the user's hands at the bottom of
             the camera frame nor collides with the progress bar below. */}
-        <div className="absolute right-3 bottom-6 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm font-bold tabular-nums text-white ring-1 ring-white/15">
+        <div className="absolute right-3 bottom-6 z-20 rounded-full bg-black/70 px-3 py-1.5 text-sm font-bold tabular-nums text-white ring-1 ring-white/15">
           {Math.round(liveScore)}
         </div>
+
+        {/* Dual-skeleton overlay toggle. Default on for development; the
+            user can flip it via this button and the choice is persisted
+            in localStorage (lib/scoring/uiPrefs.ts). Hidden when there's
+            no real reference data — would be misleading. */}
+        {hasRealReference && runState !== 'finished' && (
+          <button
+            type="button"
+            onClick={() => {
+              const next = !showDual;
+              setShowDual(next);
+              setDualOverlayEnabled(next);
+            }}
+            className="absolute left-3 bottom-6 z-20 rounded-full bg-black/70 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-white/80 ring-1 ring-white/15"
+          >
+            skeletons {showDual ? 'on' : 'off'}
+          </button>
+        )}
 
         {/* Camera blocked / unavailable: surface as the ONLY overlay so
             the user can recover. Other camState transitions
