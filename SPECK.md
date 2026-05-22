@@ -1,192 +1,115 @@
-# spec.md — Polish round: dead test button, mirroring, AI naming, library polish, wordmark restyle, library sort, preview-on-tap, Mode B UI audit
+# Spec: Preview audio, kill framing screen, dance-page UI cleanup
 
-## Read before starting
+Four fixes. Do them in the order listed. After each one, run the app locally and verify the acceptance criteria before moving to the next. Ask me a clarifying question if anything is ambiguous — don't guess.
 
-Read RUNTIME_VERIFICATION.md, DECISIONS.md, and the latest BLOCKERS.md. The previous round shipped the three-layer lead detection (VLM + picker + heuristic) and dual skeleton overlay. Real-phone testing on the latest deploy revealed a set of polish issues and one critical bug. This round handles them. Targeted fixes — no rewrites.
+---
 
-## Issues — implementation order matters
+## Fix 1: Preview video must auto-play with sound on tap
 
-### Fix 1: Dead "start" button on the Mode B test page
+### Problem
+On the library screen, when I tap a dance card to preview it:
+- The video doesn't load / plays for ~2 seconds and dies
+- There is no audio at all
 
-User reports: after tapping "I got it · test" in Mode A, the user lands on the Mode B test page. The page shows "test · chunk 1/3" at the top. There IS a "start" button rendered. Tapping it produces no response — the page appears to hang on a loading state and the scoring loop never begins.
+This is the most important fix in the entire spec. **People recognize TikTok dances by the song, not by the title.** A silent broken preview makes the library unusable.
 
-**Diagnosis steps:**
-1. Open `app/dance/[danceId]/chunk/[chunkIndex]/test/page.tsx` (or wherever the Mode B route lives).
-2. Find the StartOverlay's "start" button. Check its onClick handler.
-3. Most likely causes (in order of probability):
-   - The handler is awaiting an async camera-init or pose-extractor-init promise that never resolves on this route (Mode A may have already initialized them, and Mode B's init code conflicts or hangs).
-   - The countdown state machine starts but the "GO" callback never fires because of a stale closure or missing dependency in a useEffect.
-   - The handler routes through a redirect that's blocked by a guard.
-4. Add a `console.log("[mode-b] start tapped")` at the top of the handler, run the dev server, tap the button, and watch the console + network panel. The log + any errors will narrow it down within minutes.
+### Required behavior
+1. When the user taps a dance card to open the preview, the reference video **starts playing immediately with sound on**.
+2. Video must play all the way through (the full chunk duration), not cut out at 2 seconds.
+3. Audio comes from the reference video's own audio track. Do not mute, do not lower volume, do not use a separate audio file.
+4. The user can pause and replay it. A simple play/pause toggle on tap is fine.
+5. If the user opens a different dance card, the previous video stops cleanly (no audio bleed).
 
-**Fix:** make the button reliably begin the Mode B countdown and scoring. After the 3-2-1-GO countdown completes, the scored test session must start: camera feed live, pose detection running, score accumulating. Add an E2E test that exercises this path.
+### Implementation notes
+- Browser autoplay-with-sound is allowed *because the autoplay is triggered by a user tap gesture*. Do **not** try to autoplay on initial page load or on hover — that will be blocked by Safari. The play call must fire inside the click/tap event handler.
+- Use the HTML5 `<video>` element with `playsInline` (required for iOS Safari to not go full-screen), `controls` (so the user can scrub), and **do NOT set `muted`**.
+- The `<video>` element must have a valid `src` (or a `<source>` child) pointing to the reference video file. The 2-second cutoff suggests either a broken src, a CORS issue on the video host, or a state bug that's unmounting the video element. Diagnose which one. Fix the root cause; do not paper over it with a retry loop.
+- If the video file is hosted somewhere with bad CORS or short-expiry signed URLs, fix the hosting / refresh-URL logic. Tell me what you found.
 
-Acceptance: tapping "start" on the Mode B test page triggers the 3-2-1-GO countdown with audible ticks, then the scoring session begins with the user's pose being matched against the reference. At the end of the chunk, a score appears.
+### Acceptance criteria
+- Tap any dance card. Within 500ms, video starts playing **with audible sound**.
+- Video plays continuously from start to end of chunk without cutting out.
+- Tapping pause stops it. Tapping play resumes it.
+- Opening a second dance card stops the first one's audio.
+- Works on iPhone Safari (the actual demo target).
 
-### Fix 2: Mirror the reference video horizontally (default ON)
+---
 
-User reports: when copying the reference dancer's moves, the directions feel reversed. The dancer's left hand appears on the user's right side of the screen, so when the user copies what they see, they're physically going the wrong direction. This is the "mirror mode" problem — standard issue in every dance learning context.
+## Fix 2: Remove the framing screen entirely
 
-**Fix:**
-- In Mode A (`copy/page.tsx`) and Mode B (`test/page.tsx`), apply `transform: scaleX(-1)` to the REF video element by default.
-- Add a "mirror" toggle button to the controls bar (near the existing 50%/75%/100% speed + skeleton toggle). Icon: a simple ↔ or flip-horizontal symbol.
-- Mirror state should persist in localStorage as `groov_mirror_enabled` (default `true`).
-- When the toggle is ON, the REF video is flipped horizontally so the dancer's left = the user's left.
-- IMPORTANT: when the REF video is mirrored, the pre-extracted skeleton overlay on the REF panel must also be mirrored to stay aligned with the video. Apply the same transform to the skeleton canvas. The YOU panel is unaffected.
-- The scoring layer is NOT affected — pose comparison happens in joint-angle space which is mirroring-invariant by construction. (If joint-angle DTW is somehow mirror-sensitive in our impl, document it in DECISIONS.md and fix at the scorer level instead.)
+### Problem
+The "put your whole body in frame" screen is broken — detection doesn't reliably fire — and conceptually wrong for this app. Most TikTok dances only need upper body + knees, not full body. We were over-engineering this.
 
-Acceptance: in Mode A, the reference dancer's movements feel directionally aligned with the user (mirrored by default). Toggling off flips them back to "real" orientation. Skeleton overlay on REF stays glued to the dancer's joints when mirroring is toggled.
+### Required behavior
+1. **Delete the framing screen entirely.** No body-detection gate, no countdown driven by detection, no "I'm in frame" button.
+2. The user goes directly from the dance card / setup screen into the dance, with whatever existing start trigger we already have (tap "start" or similar — keep the current trigger if there is one, otherwise add a simple "start" button).
+3. On the dance card / setup screen (the screen BEFORE the user enters the chunk), add a clear, visible instructional note:
 
-### Fix 3: AI-generated dance names via Gemini at ingest
+   > **Stand back so your arms, legs, and knees are visible in the camera.**
 
-User reports: current dance names are noisy. TikTok caption fields contain things like "original sound — username" or unrelated junk. These are useless as library titles.
+   Style this prominently — not a tiny grey caption. Think: a small card or callout with an icon, sitting above the "start" button. The user must see it before tapping start.
+4. The camera feed should still preview during the dance (so the user sees themselves) — we're only removing the *gate*, not the camera.
 
-**Fix in the worker ingest pipeline (`worker/ingest.py` or equivalent):**
+### Implementation notes
+- Remove any framing-related state, components, detection callbacks, and countdown logic from the chunk-entry flow. Clean it out — don't leave dead code paths.
+- Keep the framing detection *code* in the repo if it's reusable, but it should not be wired into the user flow.
+- The setup screen note should be styled consistently with the rest of the UI (see Fix 3).
 
-Add a Gemini Flash call after audio + video are downloaded but before the dance row is finalized. Use this priority cascade to produce the display name:
+### Acceptance criteria
+- Tap a dance card → see the preview (Fix 1) and a visible "stand back so your arms, legs, and knees are visible" note on the setup screen.
+- Tap "start" → goes directly into the dance. No framing check, no countdown that waits for detection.
+- No "put your whole body in frame" screen exists anywhere in the flow.
+- Camera preview still works during the dance.
 
-1. **Try the TikTok caption first.** If the caption contains what looks like a song title pattern — e.g. `"<Artist> - <Song>"`, `"<Song> by <Artist>"`, or a recognizable title without "original sound" / "som original" / "nhạc nền" — use it as-is, cleaned up.
+---
 
-2. **Otherwise, send the audio to Gemini.** Use `gemini-2.5-flash` with thinking disabled. Send the first 15 seconds of `audio.wav` as input.
-   Prompt:
-   ```
-   Listen to this audio clip from a TikTok dance video. If you recognize the song, respond with "<Artist> - <Song>". If you don't recognize it but can describe the genre/style in 2-4 words, respond with that (e.g. "Afrobeats groove", "K-pop chorus", "trap dance"). Respond ONLY with the name, no quotes, no explanation.
-   ```
-   Use the response as the display name.
+## Fix 3: Dancing page UI cleanup
 
-3. **Fallback:** if Gemini call fails or returns garbage (empty, error, "I cannot..."), use `@<username>'s dance` as the display name.
+### Problem
+The actual dance page (where the reference video plays and the user dances along) has:
+- Buttons too close together — accidental taps are easy
+- UI shifts around / feels jittery
+- Overall layout feels cramped and unprofessional
 
-Store the generated name in a NEW column `dances.display_name`. Do NOT overwrite the existing `title` column (preserves the raw TikTok caption for debugging). Frontend reads `display_name` if non-null, falls back to `title`.
+### Required behavior
+1. **Spacing.** Every tappable element gets a minimum 12pt margin from any other tappable element. Minimum tap target size of 44x44pt (Apple HIG standard) for every button.
+2. **Static layout.** The page must not shift elements around mid-dance. Lay out the page once on entry and keep the structure fixed. If a button changes (e.g. play → pause), it changes in place — same position, same size, only the icon/label changes.
+3. **Hierarchy.** Clear visual hierarchy:
+   - Reference video: largest element, top of screen.
+   - User camera preview: secondary, smaller, positioned consistently (suggest: lower-left or picture-in-picture style).
+   - Controls (pause, restart, exit): grouped together at the bottom in a single row, evenly spaced, NOT scattered.
+4. **No overlapping elements** unless they're intentionally stacked (camera-on-video PiP is fine; floating control over text is not).
+5. **Visual polish.** Consistent border radius, consistent button styles, consistent typography. Pick one button style and use it everywhere on this page.
 
-**Schema migration (`supabase/migrations/0006_display_name.sql`):**
+### Implementation notes
+- Before changing anything, take a screenshot of the current dance page and put it in `/screenshots/before-dance-page.png` for reference.
+- After the fix, take another screenshot at `/screenshots/after-dance-page.png`.
+- Do NOT introduce new dependencies (no new UI libraries). Use what's already in the project.
+- Test on a 390px-wide viewport (iPhone 14/15 width) — that's the demo target.
 
-```sql
-alter table dances add column if not exists display_name text;
-```
+### Acceptance criteria
+- All buttons are at least 12pt apart and at least 44x44pt.
+- Page layout doesn't shift after initial render (no CLS-style jumps).
+- All controls (pause, restart, exit, anything else) are in a single grouped row at the bottom.
+- The page looks clean and intentional, not cramped.
+- Works at 390px width without horizontal scroll.
 
-**Reprocess implications:** after this fix lands, run `worker/reprocess_all.py` to populate `display_name` for the 8 existing dances. The reprocess script should detect the new column and call the naming function for any dance where `display_name IS NULL`.
+---
 
-Log every Gemini naming call to `worker/logs/vlm_calls.log` with token count.
+## Fix 4: Name change — "Groove" replacement
 
-Acceptance: after reprocess, all 8 dances in the library show clean names instead of "original sound" / "nhạc nền - douyin dance" / "som original". The `@hearts2miraaa` dance should show something like "Fetty Wap - Birthday Bounce" (already partially in caption — Gemini should clean it up).
+I want to replace the app name "Groove." It's too generic. Brainstorming options below — I'll pick one and tell you. **Do not change the name anywhere in the codebase yet.** This is a parallel branding exercise; the rename happens in a separate prompt once I decide.
 
-### Fix 4: Restyle the Groov wordmark to feel energetic, not classy
+(See name brainstorm in my chat reply — not part of this spec file.)
 
-User feedback: current Groov wordmark feels "too classy" — too restrained for a TikTok dance app aimed at teens. Needs to feel kinetic, weird, quirky, energetic.
+---
 
-**Fix in `components/Logo.tsx` (or wherever the wordmark lives — likely the home/library header):**
+## Workflow
 
-- Pick a more expressive web-safe display font. Recommended candidates (in order): **Bricolage Grotesque** (Google Fonts, modern weird-but-readable), **Space Grotesque** (techy, edgy), **Unbounded** (geometric and kinetic), or a free Pangram Sans variant. Avoid serif and avoid corporate sans-serifs like Inter / Helvetica.
-- Apply visual treatment to make it feel alive:
-  - Slight italic skew on the entire word (3-5 degrees)
-  - The "V" at the end gets a custom letterform that kicks up — e.g. rotated 10° to the right, or replaced with an SVG glyph that has an exaggerated right leg
-  - Optional: gradient fill in the existing hot-pink palette, going from the brand pink to a slightly lighter pink, top to bottom
-- Keep the word "Groov" (no Y). The energy comes from typography, not renaming.
-- Use the Direction 3 palette colors that are already defined in `lib/colors.ts` (or wherever).
+1. Start with **Fix 1** (preview audio). This is highest priority.
+2. After Fix 1, ask me to test it on my phone before moving on.
+3. Then **Fix 2** (kill framing). Quick fix — mostly deletion.
+4. Then **Fix 3** (dance page UI). Take the before/after screenshots.
+5. **Skip Fix 4** until I send a separate naming prompt.
 
-Document the chosen font + treatment in `components/Logo.tsx` comments so future tweaks are easy.
-
-Acceptance: opening the app library, the "Groov" wordmark visibly feels different — more kinetic, less restrained. Take a screenshot and compare before/after in the PR description.
-
-### Fix 5: Library sort order — newest first, deterministic
-
-User reports: library felt like it was sorting hearts2miraaa to the top because the user "used it most." Almost certainly NOT what's happening — there's no usage-based sort code unless explicitly built. More likely it's an accidental sort by `updated_at` (which gets bumped on every reprocess) or by some other field.
-
-**Fix:**
-- In the library query (likely `app/page.tsx` or `app/library/page.tsx`), explicitly sort by `created_at DESC` so newest dances appear first.
-- Add an inline code comment explaining the sort choice so this isn't ambiguous later.
-- Document in DECISIONS.md that library sort = `created_at DESC` (not usage-based). Usage-based sort is a future feature; we shouldn't ship a non-deterministic order.
-
-Acceptance: dances appear in a consistent, predictable order across page loads. The most recently ingested dance appears first.
-
-### Fix 6: Tap-to-preview on library cards
-
-User feedback: library cards are static thumbnails. Adding a small preview-on-tap (YouTube-style) would help users decide which dance to try.
-
-**Fix in the library card component:**
-
-- Add a small play icon (▶) in the top-right corner of each thumbnail, ~24px, white on semi-transparent black circle background.
-- On tap, the card plays the dance video muted, looping, for ~3 seconds. After 3 seconds, the preview stops and the thumbnail resumes.
-- Tap the play icon again to stop the preview manually.
-- Tap anywhere else on the card (outside the play icon) continues to behave as before — navigate into the dance.
-- On hover (desktop) or long-press (mobile), the preview also starts. This is a nice-to-have, not required.
-
-Don't autoplay on scroll — too aggressive, bad UX. User must explicitly tap the play icon.
-
-Acceptance: tapping the play icon on a library card plays a 3-second muted preview of the dance video without navigating away from the library.
-
-### Fix 7: Mode B test page UI audit
-
-User reports: the Mode B test page UI is broken in undefined ways. Skeleton overlay sits too close to the controls. Some text/elements are missing or overlapping. (The user has screenshots but they didn't arrive in this round.)
-
-**Fix:**
-
-This is a UI audit, not a single-line patch. Open `app/dance/[danceId]/chunk/[chunkIndex]/test/page.tsx` and inspect it on a real mobile viewport (375px-414px wide). Specifically check:
-
-1. **Skeleton overlay clipping:** the skeleton drawing canvas should be positioned so it never overlaps the bottom controls bar (50%/75%/100% buttons, skeleton toggle, back/test CTA). Add ~80px bottom padding to the camera+skeleton container if needed.
-2. **Header text:** the "test · chunk 1/3" text should be visible, not cut off, and have adequate top margin below the iOS status bar / notch.
-3. **Score display:** if a live score is rendered during Mode B (small number in a corner), make sure it doesn't sit underneath the user's pose or get clipped by safe-area insets.
-4. **Bottom CTA visibility:** any "back" or post-test button must be tappable above the iOS home indicator (44px safe area at bottom).
-5. **Consistency with Mode A:** the test page should structurally mirror the copy page layout (same header position, same control bar position, same panel sizing) so the user doesn't get disoriented moving between them.
-
-Compare the test page side-by-side with the copy page during the audit. Document anything you change in the commit message.
-
-Acceptance: the Mode B test page renders cleanly on a 390px-wide iPhone viewport with no overlapping elements, no cut-off text, no skeleton-on-controls collision.
-
-## Order of implementation
-
-Each fix gets its own commit. Do these in this order:
-
-1. **Fix 1 (dead Mode B start button)** — critical, blocks the practice loop. `fix: mode B start button now triggers countdown and scoring`
-2. **Fix 7 (Mode B UI audit)** — natural to do right after Fix 1 since you're already in that file. `fix: Mode B test page UI cleanup for mobile viewports`
-3. **Fix 2 (mirror toggle)** — frontend only, low risk. `feat: mirror reference video horizontally with toggle, default ON`
-4. **Fix 5 (library sort)** — one-line change. `fix: library sorts by created_at DESC for deterministic order`
-5. **Fix 4 (wordmark restyle)** — frontend visual change. `feat: restyle Groov wordmark with kinetic typography`
-6. **Fix 6 (preview-on-tap)** — frontend feature add. `feat: 3-second tap-to-preview on library cards`
-7. **Fix 3 (AI dance names)** — biggest change, touches worker + schema + frontend. Two commits:
-   - `feat: Gemini-based dance name generation in worker ingest pipeline`
-   - `feat: frontend reads display_name with title fallback`
-
-After Fix 3, run `worker/reprocess_all.py` to populate `display_name` for all 8 existing dances. Document the before/after names in the commit log.
-
-## Acceptance test (run after all fixes ship)
-
-1. Clear localStorage on test browser.
-2. Open library — dances appear in `created_at DESC` order. ✓ Fix 5
-3. The Groov wordmark in the header visually feels kinetic/energetic, not classy. ✓ Fix 4
-4. Each library card has a play icon in the top-right corner. Tapping it shows a 3-second muted preview. ✓ Fix 6
-5. Dance names are clean (e.g. "Fetty Wap - Birthday Bounce") not "original sound". ✓ Fix 3
-6. Tap a dance → framing-check → pick-a-dancer (if 3+) → Mode A.
-7. In Mode A, the REF dancer's movements feel directionally aligned with the user (mirrored by default). Toggle off → flips back. ✓ Fix 2
-8. Tap "I got it · test" → land on Mode B test page.
-9. Mode B page renders cleanly — no overlapping elements, no clipped text. ✓ Fix 7
-10. Tap "start" on Mode B → 3-2-1-GO countdown → scoring begins. ✓ Fix 1
-11. At end of chunk, a score appears.
-
-## What NOT to change
-
-- The three-layer lead detection (VLM + picker + heuristic) from last round — works correctly.
-- The hands-free framing gate at `/onboarding/frame-check` — works correctly.
-- The dual skeleton overlay logic — works correctly.
-- The BoT-SORT tracker — untouched.
-- The DTW scoring math layer — untouched.
-- The pick-a-dancer screen layout — untouched (we just confirmed it works).
-
-## Hard rules
-
-1. One commit per fix as listed above (Fix 3 gets two commits).
-2. `GEMINI_API_KEY` is already in env from last round. No new keys needed.
-3. Run `worker/reprocess_all.py` after Fix 3 lands. Mandatory — otherwise old dances still show old names.
-4. Apply migration 0006 in Supabase before reprocess (Claude Code: remind the user in the final summary that they need to do this manually before reprocessing).
-5. Update RUNTIME_VERIFICATION.md with the new state after all seven fixes.
-
-## Open issues being deferred to a later round (DO NOT IMPLEMENT)
-
-These came up in user feedback but are bigger than this round. Do not touch them:
-- "Chop the dance into coherent steps / show move-by-move learning" — this is the teaching loop / skill graph surfacing work. Deferred to next round.
-- "Gemini takes screenshots during dancing to give feedback" — no. Pose detection + DTW already does this. Don't add a VLM here.
-- "Have Gemini break moves into singles and combos" — this is teaching-loop work, deferred.
-
-Document these in DEFERRED.md if it doesn't exist yet.
-
-Begin.
+If you hit a fork in the road on any of these — especially if the video issue turns out to be a hosting/CORS problem and not a code problem — stop and ask me. Don't guess.
