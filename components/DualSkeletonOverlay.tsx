@@ -3,31 +3,40 @@
 // Dual-skeleton overlay for Mode B.
 //
 // Renders TWO skeletons in the same canonical body frame:
-//   - the reference dancer, mirror-flipped so a follow-along user can see
-//     the move in their own perspective (their right hand on the screen
-//     right, matching their selfie view).
-//   - the user, live from the camera pose extractor.
+//   - the reference dancer, drawn from her raw (un-mirrored) landmarks
+//     so the math is consistent with the scorer.
+//   - the user, drawn from her mirror-flipped landmarks so what the
+//     user sees on screen lines up with what the scorer scores: a
+//     mirror-copy of the reference shows up overlapping the reference.
 //
-// Both are normalized to a shared hip-midpoint origin with shoulder-to-hip
-// distance = 1.0, so they line up regardless of where the user stands or
-// what camera was used to film the reference. When the user is dancing
-// the move correctly, the two skeletons should overlap closely.
+// MIRROR CONVENTION: matches the scoring pipeline. User landmarks are
+// passed in already-mirrored by the caller (the user-entry chokepoint
+// in app/.../test/page.tsx); reference landmarks are passed in raw.
+// This component does NOT apply any mirror — that responsibility lives
+// in one place, at the user-entry chokepoint, per
+// lib/pose/normalize.ts's documented convention.
+//
+// Both skeletons are normalized to a shared hip-midpoint origin with
+// shoulder-to-hip distance = 1.0, so they line up regardless of where
+// the user stands or what camera was used to film the reference. When
+// the user is dancing the move correctly, the two skeletons should
+// overlap closely.
 //
 // Visual layering: rendered ABOVE the camera <video> but BELOW the score
 // pill (caller controls z-index). Defaults to translucent so the user can
 // still see the camera image behind it.
 
 import { useEffect, useRef } from 'react';
-import { mirrorLandmarksHorizontal, normalizeToBody } from '@/lib/pose/normalize';
+import { normalizeToBody } from '@/lib/pose/normalize';
 import { SKELETON_EDGES, type PoseLandmark } from '@/lib/pose/types';
 
 interface DualSkeletonOverlayProps {
+  // Pre-mirrored user landmarks (from the scoring chokepoint). See
+  // the MIRROR CONVENTION block at the top of the file.
   userLandmarks: PoseLandmark[] | null;
+  // Raw (un-mirrored) reference landmarks straight from the worker
+  // pose JSON.
   referenceLandmarks: PoseLandmark[] | null;
-  // If true (default), the reference skeleton is horizontally flipped so
-  // the user — who is mirroring the dancer — sees a partner in their own
-  // perspective. Off for unit tests / debug.
-  mirrorReference?: boolean;
   // Anchor for hip midpoint in normalized canvas coords (0..1). Default
   // (0.5, 0.62) puts the figure roughly center, vertically biased low so
   // the head doesn't clip into the top status pill.
@@ -54,7 +63,6 @@ const USER_JOINT_COLOR = '#ff1f8e';
 export default function DualSkeletonOverlay({
   userLandmarks,
   referenceLandmarks,
-  mirrorReference = true,
   anchorX = 0.5,
   anchorY = 0.62,
   scale = 0.18,
@@ -102,8 +110,9 @@ export default function DualSkeletonOverlay({
 
       const refLm = refRef.current;
       if (refLm) {
-        const src = mirrorReference ? mirrorLandmarksHorizontal(refLm) : refLm;
-        const norm = normalizeToBody(src);
+        // No mirror — reference is consumed raw per the project
+        // mirror convention. The user side is pre-mirrored upstream.
+        const norm = normalizeToBody(refLm);
         if (norm.ok) {
           drawSkeleton(ctx, norm.landmarks, ax, ay, pixelScale, {
             edgeColor: REF_COLOR,
@@ -139,7 +148,7 @@ export default function DualSkeletonOverlay({
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [anchorX, anchorY, scale, minVisibility, mirrorReference]);
+  }, [anchorX, anchorY, scale, minVisibility]);
 
   return (
     <canvas

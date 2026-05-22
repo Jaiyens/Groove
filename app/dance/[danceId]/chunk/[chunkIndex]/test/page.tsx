@@ -25,6 +25,7 @@ import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { compute2DJointAngles } from '@/lib/pose/jointAngles';
+import { mirrorLandmarksHorizontal } from '@/lib/pose/normalize';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { FrameSample, LandmarkFrame, PoseLandmark } from '@/lib/pose/types';
@@ -85,6 +86,10 @@ export default function TestPage({ params }: PageProps) {
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('waiting_for_camera');
   const [landmarks, setLandmarks] = useState<PoseLandmark[] | null>(null);
+  // User landmarks AFTER the chokepoint mirror (lib/pose/normalize.ts
+  // convention). Fed to DualSkeletonOverlay so the visual partner
+  // shows the user's body in the same frame the scorer scores.
+  const [userMirroredLandmarks, setUserMirroredLandmarks] = useState<PoseLandmark[] | null>(null);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
   const [liveScore, setLiveScore] = useState(0);
   const [progress, setProgress] = useState(0);
@@ -340,13 +345,27 @@ export default function TestPage({ params }: PageProps) {
         if (res) {
           lastDetectAtRef.current = performance.now();
           if (poseStatus !== 'ok') setPoseStatus('ok');
+          // setLandmarks: the user's own SkeletonOverlay reads this
+          // and pairs it with CSS scaleX(-1) on its canvas, so it
+          // expects RAW (un-mirrored) landmarks. Don't change that —
+          // SkeletonOverlay is shared with Mode A and the spec says
+          // hands off Mode A.
           setLandmarks(res.landmarks);
 
-          // 2D image-space joint angles, used on both user and reference
-          // sides for consistent unit comparison. See
-          // lib/scoring/referenceFrames.ts + lib/pose/jointAngles.ts.
+          // MIRROR CHOKEPOINT (see lib/pose/normalize.ts convention):
+          // apply mirrorLandmarksHorizontal to user landmarks EXACTLY
+          // ONCE here, right at the entry of every downstream
+          // consumer that does anatomical-side comparison —
+          // DualSkeletonOverlay (visual partner), the scorer's
+          // landmark frames, and the live-readout vec. Reference
+          // landmarks are never mirrored. The single call lives at
+          // this layer so neither the canonical pipeline nor
+          // referenceFrames.ts know about mirror state.
           if (res.landmarks.length >= 33) {
-            const vec = compute2DJointAngles(res.landmarks);
+            const userMirrored = mirrorLandmarksHorizontal(res.landmarks);
+            setUserMirroredLandmarks(userMirrored);
+
+            const vec = compute2DJointAngles(userMirrored);
             const absT = chunk.startMs + sessionT;
             // Tag the frame with the absolute routine timestamp so DTW lines
             // up with the chunk-aligned reference.
@@ -354,12 +373,9 @@ export default function TestPage({ params }: PageProps) {
               timestampMs: absT,
               vector: vec,
             });
-            // Stage 4: stash the raw landmarks too so the final score
-            // can run the canonical-angle pipeline. Cheap: a 33-element
-            // array per frame.
             userLandmarkFramesRef.current.push({
               timestampMs: absT,
-              landmarks: res.landmarks,
+              landmarks: userMirrored,
             });
             // Reference for the live readout: prefer the real
             // worker-extracted pose data; fall back to the synthetic
@@ -368,8 +384,9 @@ export default function TestPage({ params }: PageProps) {
             if (!ref) {
               ref = neutralReferenceFrame(absT, dance.bpm);
             }
-            // Reference landmarks for the dual-skeleton overlay (raw
-            // landmarks, mirroring is applied by the overlay itself).
+            // Reference landmarks for the dual-skeleton overlay —
+            // raw, no mirror. The user side is already pre-mirrored
+            // above and DualSkeletonOverlay consumes both as-is.
             if (poseData) {
               setRefLandmarks(landmarkAt(poseData, absT));
             }
@@ -539,7 +556,7 @@ export default function TestPage({ params }: PageProps) {
         {showDual && runState === 'running' && hasRealReference && (
           <div className="pointer-events-none absolute inset-0 z-10">
             <DualSkeletonOverlay
-              userLandmarks={landmarks}
+              userLandmarks={userMirroredLandmarks}
               referenceLandmarks={refLandmarks}
             />
           </div>
