@@ -84,11 +84,22 @@ export default function TestPage({ params }: PageProps) {
     loop: false,
   });
 
+  // spec.md §Mode-B-hang fix: framing gate removed. The standback
+  // callout on the dance setup screen already covers user education;
+  // no in-app gate is needed in Mode B. We still log what
+  // isFramingCalibrated() WOULD have returned so prod tests can
+  // confirm the state of the localStorage flag on the test device.
   useEffect(() => {
-    if (typeof window === 'undefined' || isFramingCalibrated()) return;
-    const here = `/dance/${params.danceId}/chunk/${chunkIndex}/test`;
-    router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-  }, [params.danceId, chunkIndex, router]);
+    const calibrated =
+      typeof window === 'undefined' ? null : isFramingCalibrated();
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] mount', {
+      danceId: params.danceId,
+      chunkIndex,
+      framingCalibrated: calibrated,
+      ua: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    });
+  }, [params.danceId, chunkIndex]);
 
   useEffect(() => {
     if (!dance || !chunk || chunks.length === 0) return;
@@ -104,13 +115,33 @@ export default function TestPage({ params }: PageProps) {
   }, [dance, chunk, chunks.length, chunkIndex]);
 
   // Mirror volume changes into the audio element.
+  //
+  // spec.md §Mode-B-hang fix: deps intentionally do NOT include
+  // `audio`. The hook returns a fresh outer object literal every
+  // render (since useDanceAudio's internal state changes on
+  // timeupdate / play / pause events) — depending on that reference
+  // caused this effect to fire every render, and since setVolume
+  // calls setState which always produces a new state object, every
+  // call further changed the `audio` reference, creating an
+  // infinite re-render loop that manifested as a Mode B hang.
+  // setVolume is wrapped in useCallback([]) so the closure capture
+  // is stable; we only need to re-fire when `volume` itself
+  // changes. The architectural alternative (memoizing the hook's
+  // return value) requires splitting state from controller — a
+  // larger API change that would touch Mode C. Picking the
+  // single-line consumer fix keeps the blast radius to this file.
   useEffect(() => {
     audio.setVolume(volume);
-  }, [audio, volume]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volume]);
 
   // Camera.
   const startCamera = useCallback(async () => {
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] startCamera() invoked');
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] camera unavailable: no mediaDevices.getUserMedia');
       setCamState('unavailable');
       return;
     }
@@ -120,15 +151,25 @@ export default function TestPage({ params }: PageProps) {
         video: { facingMode: 'user' },
         audio: false,
       });
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] getUserMedia resolved', {
+        tracks: stream.getVideoTracks().map((t) => t.label),
+      });
       streamRef.current = stream;
       const v = videoRef.current;
       if (!v) {
+        // eslint-disable-next-line no-console
+        console.log('[mode-b] videoRef missing at attach, → needs_tap');
         setCamState('needs_tap');
         return;
       }
       const playing = await attachStream(v, stream);
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] attachStream resolved', { playing });
       setCamState(playing ? 'granted' : 'needs_tap');
-    } catch {
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] getUserMedia rejected', err);
       setCamState('denied');
     }
   }, []);
@@ -141,13 +182,29 @@ export default function TestPage({ params }: PageProps) {
       return;
     }
     const playing = await attachStream(v, s);
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] handleTapToStart attachStream', { playing });
     setCamState(playing ? 'granted' : 'needs_tap');
   }, [startCamera]);
 
+  // spec.md §Mode-B-hang fix: framing gate removed from camera
+  // bootstrap so the camera request fires on every entry, not just
+  // for users who happen to have the calibrated-localStorage flag.
   useEffect(() => {
-    if (!isFramingCalibrated()) return;
     if (camState === 'idle') startCamera();
   }, [camState, startCamera]);
+
+  // Log every camState transition.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] camState →', camState);
+  }, [camState]);
+
+  // Log every runState transition.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] runState →', runState);
+  }, [runState]);
 
   // Pose extractor init — runs once per camera-grant. Previously had
   // `runState` in deps which caused the extractor to be closed and
@@ -162,16 +219,23 @@ export default function TestPage({ params }: PageProps) {
     const ex = new PoseExtractor();
     extractorRef.current = ex;
     setPoseStatus('ok');
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] PoseExtractor.init() starting');
     ex.init()
       .then(() => {
         if (cancelled) {
+          // eslint-disable-next-line no-console
+          console.log('[mode-b] PoseExtractor.init() resolved after cleanup');
           ex.close();
           return;
         }
+        // eslint-disable-next-line no-console
+        console.log('[mode-b] PoseExtractor.init() resolved, ex.ready=', ex.ready);
         setRunState((prev) => (prev === 'waiting_for_camera' ? 'ready' : prev));
       })
       .catch((err: unknown) => {
-        console.error('PoseExtractor init failed', err);
+        // eslint-disable-next-line no-console
+        console.error('[mode-b] PoseExtractor.init() failed', err);
         if (!cancelled) setPoseStatus('failed');
       });
     return () => {
@@ -187,11 +251,19 @@ export default function TestPage({ params }: PageProps) {
   // emphasis "GO" tick is fired inside the overlay itself.
   const handleOverlayGo = useCallback(() => {
     if (!chunk || !dance) return;
+    // eslint-disable-next-line no-console
+    console.log('[mode-b] handleOverlayGo (countdown reached GO)', {
+      startMs: chunk.startMs,
+      durationMs: chunk.endMs - chunk.startMs,
+    });
     setRunState('running');
     startMsRef.current = performance.now();
     userFramesRef.current = [];
     audio.seekMs(chunk.startMs);
-    void audio.play();
+    void audio.play().then((ok) => {
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] audio.play() resolved', { ok });
+    });
   }, [audio, chunk, dance]);
 
   // Visibility pause/resume — re-anchor session clock so MediaPipe doesn't
