@@ -16,10 +16,12 @@ export default function SpeedToggle({
   className = '',
 }: SpeedToggleProps) {
   return (
+    // spec.md §Fix 3: 44pt-tall segmented control so each speed
+    // option meets the Apple HIG min tap target.
     <div
       role="radiogroup"
       aria-label="Playback speed"
-      className={`flex items-center gap-0.5 rounded-full bg-black/60 p-0.5 ring-1 ring-white/15 ${className}`}
+      className={`flex h-11 items-center gap-0.5 rounded-full bg-black/60 p-1 ring-1 ring-white/15 ${className}`}
     >
       {options.map((opt) => {
         const active = Math.abs(rate - opt) < 0.001;
@@ -30,7 +32,7 @@ export default function SpeedToggle({
             role="radio"
             aria-checked={active}
             onClick={() => onChange(opt)}
-            className={`min-w-[42px] rounded-full px-2.5 py-1 text-[11px] font-bold tabular-nums transition-colors ${
+            className={`flex h-full min-w-[44px] items-center justify-center rounded-full px-3 text-xs font-bold tabular-nums transition-colors ${
               active
                 ? 'bg-white text-black'
                 : 'text-white/70 hover:text-white'

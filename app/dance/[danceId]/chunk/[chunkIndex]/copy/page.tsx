@@ -363,16 +363,17 @@ export default function CopyAlongPage({ params }: PageProps) {
 
   return (
     <main className="relative flex h-full w-full flex-col bg-black text-white">
-      {/* SPECK round-4 §Fix 3: compact header (~50 px). The skeleton
-          toggle moves to the bottom controls. */}
-      <header className="safe-top relative z-30 flex h-[50px] items-center gap-3 px-4">
+      {/* spec.md §Fix 3 hierarchy: compact static header with a 44×44
+          back affordance (Apple HIG min tap target). Spacer on the
+          right keeps the title visually centred without shifting. */}
+      <header className="safe-top relative z-30 flex h-14 items-center gap-3 px-4">
         <button
           type="button"
-          onClick={() => router.back()}
-          aria-label="Back"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
+          onClick={() => router.push(`/dance/${dance.id}`)}
+          aria-label="Back to lesson"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
         >
-          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
@@ -382,17 +383,20 @@ export default function CopyAlongPage({ params }: PageProps) {
           </div>
           <div className="truncate text-sm font-semibold">{chunk.label}</div>
         </div>
-        <div className="h-10 w-10" aria-hidden />
+        <div className="h-11 w-11" aria-hidden />
       </header>
 
-      {/* Duet area: TikTok-Duet layout. Each side is exactly half the
-          screen width and locked to 9/16, so the two videos sit flush
-          and edge-to-edge, with black bars top + bottom (the header
-          and the controls fill those bars). SPECK round-4 §Fix 3. */}
+      {/* spec.md §Fix 3 hierarchy: the reference video is the largest
+          element and lives at the top. The user's camera is a fixed
+          PiP overlay in the lower-left. The layout is set once on
+          entry — conditional UI (CameraPermissionBanner, refMissing,
+          needsUnmuteTap) swaps INSIDE its container rather than
+          reflowing the parent grid, so nothing jumps mid-dance. */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
-        <div className="relative flex w-full">
-          {/* Left: reference video */}
-          <div className="relative aspect-[9/16] w-1/2 overflow-hidden bg-black">
+        <div className="relative flex h-full w-full items-center justify-center">
+          {/* Reference video — single largest element, 9/16 aspect,
+              centered. */}
+          <div className="relative aspect-[9/16] h-full max-h-full w-auto overflow-hidden bg-black">
             {refSrc ? (
               <video
                 ref={refVideoRef}
@@ -452,18 +456,24 @@ export default function CopyAlongPage({ params }: PageProps) {
               <button
                 type="button"
                 onClick={handleUnmuteTap}
-                className="absolute right-2 bottom-2 z-20 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+                aria-label="tap for sound"
+                className="absolute right-3 top-12 z-20 flex h-11 items-center gap-1.5 rounded-full bg-black/85 px-3.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
               >
-                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   <path d="M3 10v4h4l5 5V5L7 10H3z" />
                 </svg>
                 tap for sound
               </button>
             )}
           </div>
+        </div>
 
-          {/* Right: user camera */}
-          <div className="relative aspect-[9/16] w-1/2 overflow-hidden bg-zinc-950">
+        {/* User camera PiP — fixed slot in the lower-left at ~28%
+            of the viewport width. The CameraPermissionBanner +
+            "you" tag swap INSIDE this frame, so the parent layout
+            never reflows whether the camera is granted or not. */}
+        <div className="pointer-events-none absolute bottom-3 left-3 z-10 w-[28%] max-w-[160px]">
+          <div className="pointer-events-auto relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
             <video
               ref={camVideoRef}
               playsInline
@@ -471,9 +481,6 @@ export default function CopyAlongPage({ params }: PageProps) {
               autoPlay
               className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
             />
-            {/* spec.md round-5 §Fix 3: skeleton on the YOU side too.
-                Live MediaPipe loop fills userLandmarks; same drawing
-                fn + same colour as the REF side for visual parity. */}
             {showSkeleton && camState === 'granted' && (
               <SkeletonOverlay
                 landmarks={userLandmarks}
@@ -493,7 +500,7 @@ export default function CopyAlongPage({ params }: PageProps) {
             )}
             <div
               aria-hidden
-              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white/70 ring-1 ring-white/10"
+              className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
             >
               you
             </div>
@@ -501,74 +508,62 @@ export default function CopyAlongPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* Bottom controls (~120 px). Skeleton + speed toggles on top
-          row, navigation CTAs on the bottom row. SPECK round-4 §Fix 3. */}
-      <div className="safe-bottom relative z-30 flex h-[120px] flex-col justify-between bg-black px-4 pt-2 pb-3">
-        <div className="flex items-center justify-between gap-3">
-          <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
-          <button
-            type="button"
-            onClick={() => setMirrorRef((m) => !m)}
-            aria-pressed={mirrorRef}
-            aria-label={mirrorRef ? 'unmirror reference' : 'mirror reference'}
-            className={`flex h-9 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
-              mirrorRef
-                ? 'bg-white text-black ring-white'
-                : 'bg-white/10 text-white ring-white/15'
-            }`}
-          >
-            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 3v18" />
-              <path d="M8 7L4 12l4 5" />
-              <path d="M16 7l4 5-4 5" />
-            </svg>
-            <span className="text-xs font-semibold">mirror</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowSkeleton((s) => !s)}
-            aria-pressed={showSkeleton}
-            aria-label={showSkeleton ? 'hide skeleton' : 'show skeleton'}
-            className={`flex h-9 items-center gap-1.5 rounded-full px-3 ring-1 active:scale-95 ${
-              showSkeleton
-                ? 'bg-white text-black ring-white'
-                : 'bg-white/10 text-white ring-white/15'
-            }`}
-          >
-            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <circle cx="12" cy="5" r="2" />
-              <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
-            </svg>
-            <span className="text-xs font-semibold">skeleton</span>
-          </button>
-          <div className="text-right text-[10px] leading-tight text-white/50">
-            <div>{chunkDurationSec.toFixed(1)}s</div>
-            <div>{Math.round(rate * 100)}%</div>
-          </div>
-        </div>
-        {/* spec.md round-5 §Fix 1: the round-4 commits wired these as
-            next/link <Link>s. Real-phone testing showed the "I got it ·
-            test" tap did nothing. Switching to <button onClick=router.push>
-            removes any Link-specific quirk (prefetch, intercept, anchor
-            default action) and makes the click handler explicit and
-            traceable in DevTools. */}
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => router.push(`/dance/${dance.id}`)}
-            className="flex-1 rounded-full bg-white/10 py-2.5 text-center text-sm font-semibold text-white ring-1 ring-white/15 active:scale-[0.98]"
-          >
-            back to lesson
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push(`/dance/${dance.id}/chunk/${chunkIndex}/test`)}
-            data-testid="i-got-it-test"
-            className="flex-[2] rounded-full bg-white py-2.5 text-center text-sm font-semibold text-black active:scale-[0.98]"
-          >
-            I got it · test
-          </button>
-        </div>
+      {/* spec.md §Fix 3 controls: SINGLE row at the bottom, gap-3
+          (12 pt) between elements. Every tappable element is h-11
+          (44 pt) — meets the Apple HIG minimum tap target. The test
+          CTA flexes to fill remaining width so it reads as the
+          primary action without breaking the grouping. Exit lives in
+          the header so it doesn't compete with the in-experience
+          controls here. Duration/speed read-out is dropped — the
+          speed pill already shows the active rate. */}
+      <div className="safe-bottom relative z-30 flex h-[88px] items-center gap-3 bg-black px-4">
+        <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
+        <button
+          type="button"
+          onClick={() => setMirrorRef((m) => !m)}
+          aria-pressed={mirrorRef}
+          aria-label={mirrorRef ? 'unmirror reference' : 'mirror reference'}
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 active:scale-95 ${
+            mirrorRef
+              ? 'bg-white text-black ring-white'
+              : 'bg-white/10 text-white ring-white/15'
+          }`}
+        >
+          <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M12 3v18" />
+            <path d="M8 7L4 12l4 5" />
+            <path d="M16 7l4 5-4 5" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowSkeleton((s) => !s)}
+          aria-pressed={showSkeleton}
+          aria-label={showSkeleton ? 'hide skeleton' : 'show skeleton'}
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 active:scale-95 ${
+            showSkeleton
+              ? 'bg-white text-black ring-white'
+              : 'bg-white/10 text-white ring-white/15'
+          }`}
+        >
+          <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="5" r="2" />
+            <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
+          </svg>
+        </button>
+        {/* spec.md round-5 §Fix 1: button (not Link) so the click
+            handler is explicit and traceable. */}
+        <button
+          type="button"
+          onClick={() => router.push(`/dance/${dance.id}/chunk/${chunkIndex}/test`)}
+          data-testid="i-got-it-test"
+          className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
+        >
+          <span>I got it · test</span>
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M5 12h14M13 5l7 7-7 7" />
+          </svg>
+        </button>
       </div>
 
       {/* SPECK round-4 §Fix 2: press-start + 3-2-1-GO gate, mounted on
