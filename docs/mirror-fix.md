@@ -77,6 +77,61 @@ convention strictly.
 - Stage 4: handedness unit tests that would have caught this.
 - Stage 5: manual UI verification.
 
-## Post-fix score check
+## Post-fix UI verification
 
-(Filled in at Stage 5 after the manual UI check.)
+Stage 5 of the SPECK mirror fix is a gating MANUAL check — the agent
+cannot physically raise a hand in front of a camera. The checks below
+need to be performed by a human running the dev server.
+
+### Handedness check
+
+1. `npm run dev`. Open Mode B for the Golden chunk.
+2. Raise your physical RIGHT hand. The reference skeleton in
+   DualSkeletonOverlay should raise the side that visually
+   corresponds to your right hand (which, because the camera video
+   is CSS-mirrored on display, is the same screen-side as your
+   physically raised right hand).
+3. Raise your physical LEFT hand. Same check, opposite side.
+4. Wave one hand. The reference skeleton's matching hand should be
+   moving on the matching screen-side in the overlay.
+
+If any of those checks shows the OPPOSITE side moving on the
+reference skeleton, the chokepoint mirror is wrong-handed and Stage
+3 needs to be debugged before this PR is done.
+
+### Score check
+
+Do three Golden-chunk attempts and record the overall score:
+
+| Attempt                     | Score |
+|---|---|
+| Stand still, hands at sides | (fill in) |
+| Bad attempt — wrong moves   | (fill in) |
+| Real attempt — best you can | (fill in) |
+
+The rank-order should be obvious: good > bad > still, with meaningful
+gaps between them (not 50 / 48 / 46). If the rank-order is right but
+the absolute numbers feel low, that's a tolerance-calibration
+followup, not a mirror-fix regression — note it in `BLOCKERS.md` per
+SPECK §5.4.
+
+If the rank-order is WRONG (e.g. standing still scores higher than
+a real attempt), that's a real regression and should NOT be merged.
+
+### What changed visually
+
+The shipped pipeline had reference landmarks mirrored in three
+places — two on the scoring side, one on the overlay side — and user
+landmarks not mirrored at all. After this fix:
+
+- User landmarks pass through `mirrorLandmarksHorizontal` exactly
+  once, at the entry of the detection loop in
+  `app/dance/[danceId]/chunk/[chunkIndex]/test/page.tsx`.
+- The raw user landmarks are still kept (in `landmarks` state) for
+  `SkeletonOverlay`, which mirrors via CSS `scaleX(-1)` on its
+  canvas. Touching that path would have spilled into Mode A.
+- The mirrored user landmarks are kept in `userMirroredLandmarks`
+  state and fed to `DualSkeletonOverlay` so the visual partner
+  shares its coordinate frame with the scorer.
+- `referenceFrames.ts` and `DualSkeletonOverlay` no longer mirror
+  reference data. Reference flows through raw end-to-end.
