@@ -134,7 +134,43 @@ frame.
 
 ### Stage 5 — Body-relative criterion evaluator
 
-(filled in at Stage 5.)
+`evaluateCriterion(criterionString, userSeries, refSeries, bpm, opts?)`
+in `lib/graph/criteriaEvaluator.ts`. Pattern-matches the criterion
+string against a small set of supported shapes and returns
+`{ passed, evidence }`.
+
+Supported patterns:
+- `elbow angle > N°` — body-invariant; checks max observed elbow angle
+  across the user series against the threshold (radians).
+- `knee angle between A° and B°` — body-invariant; checks the min/max
+  knee angle across the user series stays inside the band.
+- `(left|right)_wrist.x − (left|right)_shoulder.x > N m` — converts
+  the meter threshold to torso-lengths using
+  `referenceTorsoLengthM` (default 0.50 m) and compares against the
+  canonical-space lateral wrist extension (which is already in
+  torso-length units).
+- `ankle … rises N m` / `ankle … above … N m` — converts the meter
+  threshold to torso-lengths and compares against the observed ankle
+  rise (canonical y is +DOWN, so rise = baseline_y − min_y).
+- `DTW score ≥ X%` (whole-routine, "meta") — returns `passed=true`
+  with an explanatory evidence string; the scorer's overall already
+  measures this.
+
+Unsupported criteria — followup:
+- Velocity / timing-window criteria ("velocity > 0.6 m/s within 120
+  ms"). Need per-frame velocity from the canonical landmark stream.
+- Shoulder-roll loop closure ("trace of (shoulder.y, shoulder.z)
+  forms a closed loop with circumference > 0.15 m"). Needs
+  trajectory-based geometry.
+- Body-wave timing chains ("head.z peak at t1, shoulder_mid.z at t2,
+  ..."). Needs phase-detection on the canonical position series.
+- Multi-beat composite criteria (most of the routine-level skill
+  scripts, e.g. `dynasty_combo_a`, `dynasty_combo_b`).
+- Cross-step / two-step ankle.x ordering checks.
+
+Anything in this list returns `{ passed: true, evidence: 'criterion
+not yet supported' }` and logs a console warning, which is the
+graceful-degradation path SPECK Stage 5.4 calls for.
 
 ## Calibration tests
 
