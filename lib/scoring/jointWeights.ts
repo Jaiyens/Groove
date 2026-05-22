@@ -32,11 +32,16 @@ export type JointTolerances = Record<JointName, number>;
 // flexion is a "totally wrong move", 20° on the spine is "you're leaning
 // wrong". hip_rotation_y / chest_forward_z get a large tolerance because
 // they're zeroed in 2D-only mode.
+// Calibrated against Stage 6 scenarios (see tests/scoringCalibration.test.ts).
+// Arm joints are tighter than legs because in most TikTok-style dances the
+// arm work IS the move — a 40° elbow error is "the dance is wrong" whereas
+// 40° on a knee can just be a stylistic squat. torso_lean is tightest of
+// all: spine angle is the cleanest "are you upright vs leaning" signal.
 export const DEFAULT_TOLERANCES: JointTolerances = {
-  left_elbow: 45,
-  right_elbow: 45,
-  left_shoulder: 45,
-  right_shoulder: 45,
+  left_elbow: 40,
+  right_elbow: 40,
+  left_shoulder: 40,
+  right_shoulder: 40,
   left_hip: 45,
   right_hip: 45,
   left_knee: 45,
@@ -52,7 +57,12 @@ export const COMPONENT_JOINTS = {
   body: ['torso_lean'] as JointName[],
 } as const;
 
-const MIN_WEIGHT = 0.15; // floor so a fully static joint isn't ignored
+// Floor weight for static reference joints. Small enough that a chunk
+// with arm-dominant motion is scored primarily on arms (Stage 6 calibration:
+// stand-still on an arm dance must score <25; a too-high floor pulls
+// stand-still up by giving legs and torso credit for not moving). Not 0
+// because completely-static joints in a stylized pose can still matter.
+const MIN_WEIGHT = 0.05;
 
 // Variance-driven per-joint weights for a reference frame sequence.
 // Returns weights that sum to JOINT_NAMES.length so the average weight
@@ -106,8 +116,10 @@ export function deriveJointWeights(referenceFrames: FrameSample[]): JointWeights
 }
 
 // 0-1 per-joint score from an angle delta. 1 at zero delta, 0 at the
-// joint's tolerance (and beyond), linear in between. We could go
-// quadratic for smoother feel — saving for later if calibration says so.
+// joint's tolerance (and beyond). Quadratic in between so that medium
+// errors are punished more than linear would — calibration on Stage 6
+// scenarios pushed stand-still mode B users from "~40" to ~20 with
+// quadratic, while still landing competent dancers at 60-80.
 export function perJointScore(
   userAngle: number,
   refAngle: number,
@@ -117,7 +129,8 @@ export function perJointScore(
   const d = Math.abs(userAngle - refAngle);
   if (d <= 0) return 1;
   if (d >= tolerance) return 0;
-  return 1 - d / tolerance;
+  const t = 1 - d / tolerance;
+  return t * t;
 }
 
 // One-frame comparison: per-joint scores (0..1), weighted overall (0..1).
