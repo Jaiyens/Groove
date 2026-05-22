@@ -197,6 +197,37 @@ export default function DanceOverviewPage({ params }: PageProps) {
           </div>
         </section>
 
+        {/* SPECK §Fix 2: standback callout. The framing-check gate was
+            removed in favor of this static reminder shown above the
+            chunk path (which contains the actual "start" triggers).
+            Sized and styled as a card so it can't be missed — not a
+            tiny grey caption. */}
+        {totalChunks > 0 && (
+          <section
+            className="mt-7 flex items-start gap-3 rounded-2xl bg-coral-soft p-4 text-coral-deep ring-1 ring-coral/30"
+            role="note"
+          >
+            <span
+              aria-hidden
+              className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-coral text-white"
+            >
+              <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="6" width="18" height="13" rx="2" />
+                <circle cx="12" cy="12.5" r="3.2" />
+                <path d="M8 6l1.2-2h5.6L16 6" />
+              </svg>
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold leading-snug">
+                Stand back so your arms, legs, and knees are visible in the camera.
+              </div>
+              <div className="mt-1 text-xs leading-snug text-coral-deep/80">
+                4-5 feet usually does it.
+              </div>
+            </div>
+          </section>
+        )}
+
         <section className="mt-7">
           <h2 className="mb-3 text-lg font-medium tracking-tight text-ink">your path</h2>
           {totalChunks > 0 ? (

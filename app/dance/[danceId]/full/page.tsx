@@ -20,7 +20,6 @@ import { useGraph } from '@/lib/graph/context';
 import { isFullUnlocked } from '@/lib/mastery/chunkProgress';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
-import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -84,15 +83,6 @@ export default function FullAttemptPage({ params }: PageProps) {
   const [hint, setHint] = useState<CorrectionHint | null>(null);
   const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
   const [volume, setVolume] = useState(1);
-
-  // Framing onboarding gate, same as Mode B.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!isFramingCalibrated()) {
-      const here = `/dance/${params.danceId}/full`;
-      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-    }
-  }, [params.danceId, router]);
 
   const audio = useDanceAudio(dance?.audio_url ?? null, { initialVolume: volume });
   useEffect(() => {

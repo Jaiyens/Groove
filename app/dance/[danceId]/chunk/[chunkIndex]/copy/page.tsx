@@ -28,10 +28,6 @@ import CameraPermissionBanner, {
 import { useDance } from '@/lib/dances/useDance';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
-import {
-  consumeFramingGateRecent,
-  isFramingCalibrated,
-} from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { PoseLandmark } from '@/lib/pose/types';
@@ -84,14 +80,10 @@ export default function CopyAlongPage({ params }: PageProps) {
   // SPECK round-4 §Fix 2: the reference video does not play until the
   // user taps "start" and the 3-2-1-GO countdown finishes. Re-entering
   // the chunk (back-arrow + tap-in) resets this because the route
-  // remounts the page.
-  //
-  // spec.md round-5 §Fix 2: if the framing-check gate just fired (the
-  // user is 4-5 ft from the phone after the hands-free 5-4-3-2-1), skip
-  // the redundant start screen entirely — initial `started=true` does
-  // exactly that. consumeFramingGateRecent() also clears the flag so a
-  // browser back/forward to the same chunk doesn't keep auto-starting.
-  const [started, setStarted] = useState(() => consumeFramingGateRecent());
+  // remounts the page. (The framing-check gate that used to seed this
+  // to true was removed in spec.md §Fix 2 — the user is now told to
+  // stand back on the setup screen instead.)
+  const [started, setStarted] = useState(false);
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -112,17 +104,6 @@ export default function CopyAlongPage({ params }: PageProps) {
       currentChunkIndex: chunkIndex,
     });
   }, [dance, chunk, chunks.length, chunkIndex]);
-
-  // SPECK round-4 §Fix 4 onboarding gate: first practice anywhere across
-  // the app routes through /onboarding/frame-check, then back to here.
-  // Pure client gate (no SSR concern — useEffect always runs client-side).
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!isFramingCalibrated()) {
-      const here = `/dance/${params.danceId}/chunk/${chunkIndex}/copy`;
-      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-    }
-  }, [params.danceId, chunkIndex, router]);
 
   // Reference media: prefer the real TikTok video, fall back to the
   // skeleton-only mp4 for legacy rows whose video_url is null.

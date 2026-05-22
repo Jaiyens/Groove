@@ -9,8 +9,7 @@
 // old toast spuriously fired any time the user's feet were off-screen.
 //
 // Tapping the toast overlays a translucent body-silhouette guide for 2s
-// (the same silhouette used in /onboarding/frame-check) so the user has
-// a visual target for where to stand.
+// so the user has a visual target for where to stand.
 
 import { useEffect, useState } from 'react';
 import { REQUIRED_LANDMARKS } from '@/lib/pose/framingCheck';
@@ -151,51 +150,3 @@ export function SilhouetteGuide({
   );
 }
 
-// Knees-up silhouette for the onboarding framing gate (spec.md round-5
-// §1). Same head/torso/arms as the full version; legs truncate just
-// past the knees so the visual matches the new "knees-up is enough"
-// rule. Aspect ratio is wider/shorter than the full body guide on
-// purpose — the user sees more body in less vertical space.
-export function UpperBodySilhouetteGuide({
-  active = false,
-}: {
-  active?: boolean;
-}) {
-  const color = active ? '#FFFFFF' : 'rgba(255,255,255,0.55)';
-  return (
-    <svg
-      className="pointer-events-none absolute inset-0 z-20 m-auto h-[80%] w-auto"
-      viewBox="0 0 100 165"
-      fill="none"
-      stroke={color}
-      strokeWidth={2.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      {/* Head */}
-      <circle cx="50" cy="22" r="11" />
-      {/* Neck + shoulders */}
-      <path d="M50 33 v8" />
-      <path d="M30 50 Q50 41 70 50" />
-      {/* Torso */}
-      <path d="M30 50 L34 110" />
-      <path d="M70 50 L66 110" />
-      {/* Hips */}
-      <path d="M34 110 L38 120" />
-      <path d="M66 110 L62 120" />
-      <path d="M38 120 L62 120" />
-      {/* Arms */}
-      <path d="M30 50 L20 95" />
-      <path d="M20 95 L25 130" />
-      <path d="M70 50 L80 95" />
-      <path d="M80 95 L75 130" />
-      {/* Thighs ending at knees */}
-      <path d="M38 120 L36 148" />
-      <path d="M62 120 L64 148" />
-      {/* Small shin stubs so it's clear the legs continue below frame */}
-      <path d="M36 148 L36.5 160" />
-      <path d="M64 148 L63.5 160" />
-    </svg>
-  );
-}

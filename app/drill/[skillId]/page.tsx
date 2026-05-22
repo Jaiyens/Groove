@@ -10,7 +10,6 @@ import SkeletonOverlay from '@/components/SkeletonOverlay';
 import { useGraph } from '@/lib/graph/context';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
-import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { PoseLandmark } from '@/lib/pose/types';
@@ -58,14 +57,6 @@ export default function DrillPage({ params }: PageProps) {
   useEffect(() => {
     if (graph && !skill) router.replace('/');
   }, [graph, skill, router]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!isFramingCalibrated()) {
-      const here = `/drill/${params.skillId}${fromAttempt ? `?from=${fromAttempt}` : ''}`;
-      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-    }
-  }, [params.skillId, fromAttempt, router]);
 
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {

@@ -1,19 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import CreamBottomNav from '@/components/library/CreamBottomNav';
-import { clearFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { getPracticeStats, type PracticeStats } from '@/lib/practiceStats';
 
 export default function ProfilePage() {
-  const router = useRouter();
   const [stats, setStats] = useState<PracticeStats | null>(null);
-
-  const recalibrate = useCallback(() => {
-    clearFramingCalibrated();
-    router.push('/onboarding/frame-check?return=/profile');
-  }, [router]);
 
   useEffect(() => {
     const refresh = () => setStats(getPracticeStats());
@@ -76,21 +68,6 @@ export default function ProfilePage() {
           )}
         </section>
 
-        <section className="mt-10 w-full max-w-sm rounded-2xl bg-cream-card p-4 text-left shadow-soft ring-1 ring-cream-deep">
-          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted">
-            camera
-          </div>
-          <button
-            type="button"
-            onClick={recalibrate}
-            className="mt-2 flex w-full items-center justify-between rounded-xl bg-cream px-3 py-3 text-sm text-ink ring-1 ring-cream-deep active:bg-cream-deep"
-          >
-            <span>re-calibrate framing</span>
-            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M9 6l6 6-6 6" />
-            </svg>
-          </button>
-        </section>
       </div>
       <CreamBottomNav />
     </main>

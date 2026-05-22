@@ -25,7 +25,6 @@ import {
 } from '@/lib/mastery/chunkProgress';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
-import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -58,17 +57,6 @@ export default function TestPage({ params }: PageProps) {
   const chunkIndex = Number(params.chunkIndex);
   const { loading, notFound, dance, chunks } = useDance(params.danceId);
   const chunk = chunks[chunkIndex];
-
-  // SPECK §4 onboarding: first time the user enters the scored test flow,
-  // route through the framing-check screen and come back here. Pure client
-  // gate (no SSR concern — useEffect always runs in the browser).
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!isFramingCalibrated()) {
-      const here = `/dance/${params.danceId}/chunk/${chunkIndex}/test`;
-      router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-    }
-  }, [params.danceId, chunkIndex, router]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
