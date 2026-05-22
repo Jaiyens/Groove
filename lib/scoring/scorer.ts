@@ -15,13 +15,23 @@
 import type { FrameSample, JointAngleVector, JointName } from '@/lib/pose/types';
 import { JOINT_NAMES } from '@/lib/pose/types';
 import { dtw } from './dtw';
+import {
+  COMPONENT_JOINTS,
+  DEFAULT_TOLERANCES,
+  compareFrame,
+  deriveJointWeights,
+  perJointScore,
+  type JointWeights,
+} from './jointWeights';
 import { cosineSimilarity } from './similarity';
 import type {
   BeatGrid,
   BeatScore,
+  ComponentScores,
   CorrectionHint,
   FrameScore,
   SessionScore,
+  TroubleSpot,
 } from './types';
 
 export interface ScoreSessionInput {
@@ -86,23 +96,70 @@ export function mirrorJointAngleVector(v: JointAngleVector): JointAngleVector {
   };
 }
 
+// Time slack (ms) that DTW is allowed to warp a frame by. Spec stage 3.5:
+// "Allow ~200ms of timing slack but not more. Too much warping rewards
+// lazy timing." The dtw() local function converts this to an index-based
+// band via the streams' median frame interval.
+const DTW_MAX_SLACK_MS = 220;
+
 export function scoreSession(input: ScoreSessionInput): SessionScore {
   const { userFrames, referenceFrames, beatGrid, skillIds } = input;
   if (userFrames.length === 0 || referenceFrames.length === 0) {
-    return { overall: 0, beats: [], frames: [], perSkillScores: {} };
+    return {
+      overall: 0,
+      beats: [],
+      frames: [],
+      perSkillScores: {},
+      components: { arms: 0, legs: 0, body: 0, timing: 0 },
+      troubleSpots: [],
+    };
   }
+  const jointWeights = deriveJointWeights(referenceFrames);
   const userVectors = userFrames.map((f) => f.vector);
   const refVectors = referenceFrames.map((f) => f.vector);
-  const alignment = dtw(userVectors, refVectors);
+  const dtwWindow = computeDtwWindow(userFrames, referenceFrames);
+  const alignment = dtw(userVectors, refVectors, dtwWindow);
 
+  // Per-frame-pair score using the per-joint, weighted similarity. We
+  // ALSO keep the cosine number around so the (legacy) FrameScore type's
+  // `similarity` field stays meaningful.
   const frames: FrameScore[] = [];
+  // Accumulators for the components.
+  const jointTotals: Record<JointName, number> = {} as Record<JointName, number>;
+  const jointCounts: Record<JointName, number> = {} as Record<JointName, number>;
+  for (const k of JOINT_NAMES) {
+    jointTotals[k] = 0;
+    jointCounts[k] = 0;
+  }
+  // Map of routine-time (ms) → list of frame scores for trouble-spot
+  // detection. Bucketing happens in a second pass.
+  const perFrame: Array<{
+    tMs: number;
+    score: number;
+    perJoint: Record<JointName, number>;
+    refVec: JointAngleVector;
+    userVec: JointAngleVector;
+  }> = [];
+
   for (const [u, r] of alignment.path) {
     const userF = userFrames[u]!;
     const refF = referenceFrames[r]!;
     const sim = clampCos(cosineSimilarity(userF.vector, refF.vector));
-    const score = frameScoreFromSimilarity(sim);
+    const cmp = compareFrame(userF.vector, refF.vector, jointWeights);
+    const score = Math.max(0, Math.min(100, cmp.overall * 100));
     const beatIdx = Math.max(0, Math.floor(beatGrid.getBeatAt(userF.timestampMs)));
     frames.push({ userIdx: u, refIdx: r, similarity: sim, score, beatIdx });
+    for (const k of JOINT_NAMES) {
+      jointTotals[k] += cmp.perJoint[k];
+      jointCounts[k] += 1;
+    }
+    perFrame.push({
+      tMs: userF.timestampMs,
+      score,
+      perJoint: cmp.perJoint,
+      refVec: refF.vector,
+      userVec: userF.vector,
+    });
   }
 
   // Aggregate per-beat.
@@ -121,7 +178,195 @@ export function scoreSession(input: ScoreSessionInput): SessionScore {
   const overall = beats.length > 0 ? mean(beats.map((b) => b.score)) : 0;
   const perSkillScores = partitionBeatsToSkills(beats, skillIds);
 
-  return { overall, beats, frames, perSkillScores };
+  // Component scores: mean per-joint score (0-1) within each group →
+  // 0-100. For timing we use DTW path properties — see
+  // computeTimingScore().
+  const components: ComponentScores = {
+    arms: meanGroupScore(jointTotals, jointCounts, COMPONENT_JOINTS.arms) * 100,
+    legs: meanGroupScore(jointTotals, jointCounts, COMPONENT_JOINTS.legs) * 100,
+    body: meanGroupScore(jointTotals, jointCounts, COMPONENT_JOINTS.body) * 100,
+    timing: computeTimingScore(alignment.path),
+  };
+
+  const troubleSpots = findTroubleSpots(perFrame, overall);
+
+  return {
+    overall,
+    beats,
+    frames,
+    perSkillScores,
+    components,
+    troubleSpots,
+    jointWeights,
+  };
+}
+
+// Convert the spec's 220ms timing slack into a DTW index window via the
+// median frame interval of the longer of the two streams. Falls back to
+// the existing 10%-of-max-length heuristic for very short chunks.
+function computeDtwWindow(
+  userFrames: FrameSample[],
+  referenceFrames: FrameSample[],
+): number {
+  const candidate = Math.max(userFrames.length, referenceFrames.length);
+  if (candidate < 4) return Math.max(1, candidate);
+  const interval = medianFrameInterval(
+    userFrames.length >= referenceFrames.length ? userFrames : referenceFrames,
+  );
+  if (interval <= 0) return Math.ceil(candidate * 0.04);
+  return Math.max(
+    Math.abs(userFrames.length - referenceFrames.length),
+    Math.ceil(DTW_MAX_SLACK_MS / interval),
+  );
+}
+
+function medianFrameInterval(frames: FrameSample[]): number {
+  const deltas: number[] = [];
+  for (let i = 1; i < frames.length; i++) {
+    deltas.push(frames[i]!.timestampMs - frames[i - 1]!.timestampMs);
+  }
+  if (deltas.length === 0) return 0;
+  deltas.sort((a, b) => a - b);
+  const mid = Math.floor(deltas.length / 2);
+  return deltas[mid] ?? 0;
+}
+
+function meanGroupScore(
+  totals: Record<JointName, number>,
+  counts: Record<JointName, number>,
+  group: JointName[],
+): number {
+  let s = 0;
+  let n = 0;
+  for (const k of group) {
+    if (counts[k] === 0) continue;
+    s += totals[k] / counts[k];
+    n += 1;
+  }
+  return n > 0 ? s / n : 0;
+}
+
+// Timing score from DTW path warping. A perfect tempo match has every
+// step diagonal — both user and reference advance together. Stalls (move
+// only along one axis) mean the dancer is behind/ahead; we count the
+// fraction of strictly diagonal steps and convert to 0-100. We also
+// bake in a floor so a chunk with no path returns 0 instead of NaN.
+function computeTimingScore(path: ReadonlyArray<readonly [number, number]>): number {
+  if (path.length < 2) return 100;
+  let diag = 0;
+  let total = 0;
+  for (let i = 1; i < path.length; i++) {
+    const [u0, r0] = path[i - 1]!;
+    const [u1, r1] = path[i]!;
+    if (u1 === u0 && r1 === r0) continue; // shouldn't happen but be defensive
+    total += 1;
+    if (u1 > u0 && r1 > r0) diag += 1;
+  }
+  if (total === 0) return 100;
+  const ratio = diag / total;
+  // Calibrated so a ratio of 0.9 (typical real performance with some
+  // micro-warping) lands around 88 — same band as the frame-score
+  // calibration. Linear above 0.6, floored at 0 below.
+  if (ratio <= 0.5) return 0;
+  if (ratio >= 1.0) return 100;
+  return Math.round(((ratio - 0.5) / 0.5) * 100);
+}
+
+// 1.5-second non-overlapping windows, ranked by mean overall frame score
+// ascending. Returns the 3 worst whose mean is at least 10 points below
+// the chunk's overall score (filter out "the whole chunk was bad
+// uniformly" cases that wouldn't yield a useful drill target). For each
+// window, also identify the joint that diverged the most.
+function findTroubleSpots(
+  perFrame: Array<{
+    tMs: number;
+    score: number;
+    perJoint: Record<JointName, number>;
+    refVec: JointAngleVector;
+    userVec: JointAngleVector;
+  }>,
+  overallScore: number,
+): TroubleSpot[] {
+  if (perFrame.length === 0) return [];
+  const WINDOW_MS = 1500;
+  const STEP_MS = 1500; // non-overlapping windows
+  const t0 = perFrame[0]!.tMs;
+  const tN = perFrame[perFrame.length - 1]!.tMs;
+  const buckets: Array<{ startMs: number; endMs: number; items: typeof perFrame }> = [];
+  for (let start = t0; start < tN; start += STEP_MS) {
+    const end = Math.min(tN, start + WINDOW_MS);
+    const items: typeof perFrame = [];
+    for (const f of perFrame) {
+      if (f.tMs >= start && f.tMs < end) items.push(f);
+    }
+    if (items.length > 0) buckets.push({ startMs: start, endMs: end, items });
+  }
+  const ranked = buckets
+    .map((b) => ({
+      startMs: b.startMs,
+      endMs: b.endMs,
+      score: mean(b.items.map((i) => i.score)),
+      items: b.items,
+    }))
+    .sort((a, b) => a.score - b.score);
+
+  const out: TroubleSpot[] = [];
+  for (const b of ranked) {
+    if (out.length >= 3) break;
+    // Require the bucket to be meaningfully worse than the overall —
+    // otherwise we'd just be listing arbitrary chunks of a uniformly
+    // mediocre performance.
+    if (b.score >= overallScore - 8) continue;
+    const { worstJoint, worstJointDelta, message } = worstJointInBucket(b.items);
+    out.push({
+      startMs: b.startMs,
+      endMs: b.endMs,
+      score: Math.round(b.score),
+      worstJoint,
+      worstJointDelta,
+      message,
+    });
+  }
+  return out;
+}
+
+function worstJointInBucket(
+  items: Array<{
+    perJoint: Record<JointName, number>;
+    refVec: JointAngleVector;
+    userVec: JointAngleVector;
+  }>,
+): { worstJoint: JointName | null; worstJointDelta: number; message: string } {
+  // The "worst joint" in a window is the one with the lowest mean per-joint
+  // score AND the largest mean absolute angle delta. Both signals point at
+  // the same joint normally; we use score-rank as the tie-breaker so we
+  // don't pick a static joint that happens to be slightly off the
+  // tolerance threshold.
+  let worst: { joint: JointName; meanScore: number; meanDelta: number } | null = null;
+  for (const k of JOINT_NAMES) {
+    if (k === 'hip_rotation_y' || k === 'chest_forward_z') continue;
+    let sumScore = 0;
+    let sumDelta = 0;
+    for (const it of items) {
+      sumScore += it.perJoint[k] ?? 0;
+      sumDelta += Math.abs((it.userVec[k] ?? 0) - (it.refVec[k] ?? 0));
+    }
+    const meanScore = sumScore / Math.max(1, items.length);
+    const meanDelta = sumDelta / Math.max(1, items.length);
+    if (!worst || meanScore < worst.meanScore) {
+      worst = { joint: k, meanScore, meanDelta };
+    }
+  }
+  if (!worst || worst.meanDelta < 10) {
+    return { worstJoint: null, worstJointDelta: 0, message: 'rhythm slipped' };
+  }
+  const noun = HINT_PRETTY[worst.joint] ?? worst.joint;
+  const deg = Math.round(worst.meanDelta);
+  return {
+    worstJoint: worst.joint,
+    worstJointDelta: worst.meanDelta,
+    message: `${noun} ${deg}° off`,
+  };
 }
 
 // Partition beats uniformly across skillIds. Skill k gets beats in

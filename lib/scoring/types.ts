@@ -21,11 +21,48 @@ export interface BeatScore {
   frameCount: number;
 }
 
+// Per-frame, per-joint score (0..100) so the results UI can show the
+// user where the deviation happened. Sparse — empty in legacy callers.
+export interface FrameJointScores {
+  // Same axis order as JOINT_NAMES.
+  values: number[];
+}
+
+export interface ComponentScores {
+  arms: number; // 0..100, weighted mean of arm joint scores
+  legs: number; // 0..100
+  body: number; // 0..100
+  timing: number; // 0..100, derived from DTW path warping
+}
+
+export interface TroubleSpot {
+  // Absolute routine time (ms) — same coordinate as the chunk's
+  // startMs/endMs so the drill-mode URL is a one-liner.
+  startMs: number;
+  endMs: number;
+  // Mean overall score in this window, 0..100.
+  score: number;
+  // Name of the joint that diverged the most in this window.
+  worstJoint: JointName | null;
+  // Magnitude of that worst-joint divergence, in the joint's native unit.
+  worstJointDelta: number;
+  // Human-readable phrase, e.g. "right arm 30° off".
+  message: string;
+}
+
 export interface SessionScore {
   overall: number; // 0..100
   beats: BeatScore[];
   frames: FrameScore[];
   perSkillScores: Record<string, number>; // skill_id -> 0..100
+  // Filled in by the rebuilt scorer (Stage 3+). Older callers that
+  // ignore these can still read .overall as before.
+  components?: ComponentScores;
+  troubleSpots?: TroubleSpot[];
+  // Variance-derived weights actually used in the score, exposed so UI
+  // and debug overlays can explain "we weighted arms heavily this
+  // chunk because that's where the move lives".
+  jointWeights?: Record<JointName, number>;
 }
 
 export interface CorrectionHint {

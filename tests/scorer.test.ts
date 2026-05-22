@@ -117,8 +117,38 @@ describe('scorer', () => {
   });
 
   it('diverged user gets a low score', () => {
-    const ref = makeFrames(makeVec({ left_elbow: 90, left_knee: 180 }), 30);
-    const user = makeFrames(makeVec({ left_elbow: -90, left_knee: -180 }), 30);
+    // To produce a low score now that the scorer uses per-joint deltas
+    // and variance-weighted means, we have to diverge ACROSS joints —
+    // not just on two of them. The old test diverged 2 joints by 180°
+    // each and relied on cosine going to -1; the new per-joint scorer
+    // correctly treats that as "7 of 9 joints are perfect, 2 are
+    // catastrophically wrong" which is ~78. Diverge all joints instead.
+    const ref = makeFrames(
+      makeVec({
+        left_elbow: 90,
+        right_elbow: 90,
+        left_shoulder: 60,
+        right_shoulder: 60,
+        left_hip: 170,
+        right_hip: 170,
+        left_knee: 170,
+        right_knee: 170,
+      }),
+      30,
+    );
+    const user = makeFrames(
+      makeVec({
+        left_elbow: 180,
+        right_elbow: 180,
+        left_shoulder: 150,
+        right_shoulder: 150,
+        left_hip: 90,
+        right_hip: 90,
+        left_knee: 90,
+        right_knee: 90,
+      }),
+      30,
+    );
     const r = scoreSession({
       userFrames: user,
       referenceFrames: ref,
@@ -126,6 +156,42 @@ describe('scorer', () => {
       skillIds: ['a'],
     });
     assert.ok(r.overall < 30, `expected low overall, got ${r.overall}`);
+  });
+
+  it('exposes component scores and trouble spots', () => {
+    // Build a mildly-varying reference so the variance-based weights
+    // give every active joint nontrivial weight, then have the user
+    // match exactly. Components should land near 100; troubleSpots
+    // should be empty (no window is meaningfully worse than overall).
+    const ref: FrameSample[] = [];
+    for (let i = 0; i < 60; i++) {
+      const phase = i / 60;
+      ref.push({
+        timestampMs: i * 33,
+        vector: makeVec({
+          left_elbow: 90 + 20 * Math.sin(phase * 6.28),
+          right_elbow: 90 + 20 * Math.sin(phase * 6.28),
+          left_knee: 170,
+          right_knee: 170,
+        }),
+      });
+    }
+    const r = scoreSession({
+      userFrames: ref,
+      referenceFrames: ref,
+      beatGrid: fakeBeatGrid(120),
+      skillIds: ['a'],
+    });
+    assert.ok(r.components !== undefined, 'components should be present');
+    assert.ok(
+      r.components!.arms > 95,
+      `arms expected ~100 got ${r.components!.arms}`,
+    );
+    assert.ok(
+      r.components!.timing > 95,
+      `timing expected ~100 got ${r.components!.timing}`,
+    );
+    assert.deepEqual(r.troubleSpots, []);
   });
 });
 
