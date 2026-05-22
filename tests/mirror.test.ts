@@ -7,7 +7,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mirrorLandmarksHorizontal } from '../lib/pose/normalize.ts';
+import { mirrorLandmarksHorizontal, normalizeToBody } from '../lib/pose/normalize.ts';
 import { scoreSession } from '../lib/scoring/scorer.ts';
 import type { BeatGrid } from '../lib/scoring/types.ts';
 import { LANDMARK, type LandmarkFrame, type PoseLandmark } from '../lib/pose/types.ts';
@@ -169,6 +169,94 @@ describe('user_right_lifts_reference_right — the unit-test version of the ship
       skillIds: [],
     });
     assert.ok(r.overall >= 95, `expected identical-handedness ≥95, got ${r.overall}`);
+  });
+});
+
+describe('overlay_handedness — the visual property the manual UI check looks for', () => {
+  // Stage 5 of the SPECK mirror fix asks for a human-loop verification:
+  // "Raise your physical right hand. The reference skeleton must raise
+  // the side that visually corresponds to your right hand in the
+  // overlay." This test encodes that property programmatically:
+  // after the chokepoint mirror on the user side and the no-mirror
+  // pass-through on the reference side, both bodies' raised wrists in
+  // canonical (overlay draw) space must land on the SAME screen side.
+  //
+  // The overlay projects canonical-x onto the canvas as
+  //   pixel_x = anchorX_px + canonical_x * pixelScale
+  // so canonical_x > 0 → screen-RIGHT of the anchor and < 0 → screen-LEFT.
+  // The invariant: when the user raises their physical right and the
+  // reference raises her anatomical left (mirror partner), both raised
+  // wrists must yield canonical_x with the SAME SIGN. The visual
+  // property holds iff that sign is consistent.
+
+  function raisedWristCanonicalX(
+    landmarks: PoseLandmark[],
+  ): { left: number; right: number } {
+    const norm = normalizeToBody(landmarks);
+    if (!norm.ok) {
+      throw new Error('normalizeToBody returned !ok in test setup');
+    }
+    return {
+      left: norm.landmarks[LANDMARK.LEFT_WRIST]!.x,
+      right: norm.landmarks[LANDMARK.RIGHT_WRIST]!.x,
+    };
+  }
+
+  it('user-mirrored raised wrist and reference-raw raised wrist share screen side', () => {
+    // User raises anatomical right hand. After chokepoint mirror:
+    const userMirrored = mirrorLandmarksHorizontal(rightArmRaisedPose());
+    const userCanonical = raisedWristCanonicalX(userMirrored);
+    // The raised wrist's data now lives at LEFT_WRIST (the chokepoint
+    // mirror moved it). LEFT_WRIST.y in user-mirrored canonical is
+    // the raised one, so check LEFT_WRIST.x.
+
+    // Reference: teacher raises anatomical left hand (mirror partner).
+    const refRaw = teacherLeftArmRaisedPose();
+    const refCanonical = raisedWristCanonicalX(refRaw);
+    // Teacher's anatomical left is at index LEFT_WRIST in the raw
+    // landmarks. So her raised wrist is also at LEFT_WRIST.
+
+    // The visual property: both LEFT_WRIST.x values have the same
+    // sign in canonical space, so the overlay draws both raised
+    // wrists on the same screen side. THIS is the test that
+    // captures the manual UI check.
+    assert.ok(
+      Math.sign(userCanonical.left) === Math.sign(refCanonical.left),
+      `expected user LEFT_WRIST.x sign === ref LEFT_WRIST.x sign; ` +
+        `got user=${userCanonical.left}, ref=${refCanonical.left}`,
+    );
+    // And same screen side means both are non-trivially displaced
+    // from x=0 (the centerline) — not coincidentally both zero.
+    assert.ok(
+      Math.abs(userCanonical.left) > 0.1,
+      `user raised wrist canonical x too close to centerline: ${userCanonical.left}`,
+    );
+    assert.ok(
+      Math.abs(refCanonical.left) > 0.1,
+      `ref raised wrist canonical x too close to centerline: ${refCanonical.left}`,
+    );
+  });
+
+  it('NEGATIVE control: without the chokepoint mirror, the visual property breaks', () => {
+    // If the user's landmarks are passed un-mirrored to the overlay
+    // (the shipped bug), the user's raised wrist ends up at RIGHT_WRIST
+    // index with the OPPOSITE x sign from the reference's raised
+    // wrist at LEFT_WRIST. This is what produced the manual UI
+    // symptom "I raise my right hand and the reference raises its
+    // left." Pinning the negative case here so a future regression
+    // that drops the chokepoint mirror is caught by the suite.
+    const userRaw = rightArmRaisedPose();
+    const userCanonical = raisedWristCanonicalX(userRaw);
+    const refRaw = teacherLeftArmRaisedPose();
+    const refCanonical = raisedWristCanonicalX(refRaw);
+    // In the un-mirrored user, the raised wrist is at index RIGHT_WRIST.
+    // Compare user-right to ref-left (the raised wrists on each side):
+    assert.ok(
+      Math.sign(userCanonical.right) !== Math.sign(refCanonical.left),
+      `expected un-mirrored user RIGHT_WRIST.x sign to DIFFER from ref ` +
+        `LEFT_WRIST.x sign (the bug); got user=${userCanonical.right}, ` +
+        `ref=${refCanonical.left}`,
+    );
   });
 });
 

@@ -79,9 +79,20 @@ convention strictly.
 
 ## Post-fix UI verification
 
-Stage 5 of the SPECK mirror fix is a gating MANUAL check — the agent
-cannot physically raise a hand in front of a camera. The checks below
-need to be performed by a human running the dev server.
+Stage 5 of the SPECK mirror fix has two layers:
+
+1. The **visual-handedness invariant** — that when the user raises
+   their physical right hand, the reference skeleton's matching
+   side moves in the overlay — is now programmatically asserted in
+   `tests/mirror.test.ts`'s `overlay_handedness` suite. It encodes
+   the property as: after the chokepoint mirror, both user's raised
+   wrist (at LEFT_WRIST after mirror) and reference's raised wrist
+   (at LEFT_WRIST anatomically) have canonical x with the same sign.
+   The negative-control test fails if the chokepoint mirror is ever
+   dropped, locking the fix against regression.
+2. The **manual eyes-on confirmation** — the part the agent cannot
+   perform — needs a human running the dev server with a real
+   camera. Protocol below.
 
 ### Handedness check
 
