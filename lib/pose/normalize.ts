@@ -66,21 +66,50 @@ export function normalizeToBody(
   return { landmarks: out, ok: true };
 }
 
-// Horizontally flip a normalized landmark set AND swap left/right
-// labels. Used to convert a reference dancer (filmed normally) into the
-// frame the user — who is mirroring the dancer — actually lives in.
+// MIRROR CONVENTION
+// =================
+// Front-camera user video is naturally horizontally mirrored — when
+// the user raises their physical right hand, they see it on the right
+// side of the screen (matches how humans look in actual mirrors). The
+// reference dance video is NOT mirrored. For a dance student copying
+// a teacher, the correct comparison is mirror-semantics:
 //
-// Mechanically:
-//   - negate x for every landmark
-//   - swap landmark indices for LEFT_* ↔ RIGHT_* pairs so a downstream
-//     consumer that asks for LEFT_SHOULDER on the mirrored landmark set
-//     gets the dancer's anatomical right shoulder (the one on the user's
-//     "left" when they look at the dancer).
+//   user's anatomical LEFT  ↔  reference's anatomical RIGHT
+//   user's anatomical RIGHT ↔  reference's anatomical LEFT
+//
+// Therefore, in the scoring pipeline, USER landmarks pass through
+// mirrorLandmarksHorizontal() EXACTLY ONCE before canonicalization.
+// REFERENCE landmarks are NEVER mirrored. The overlay must use the
+// same convention so what the user sees matches what the scorer
+// scores.
+//
+// A passing test of this convention: the user raises their physical
+// right hand. The reference skeleton in the overlay raises the side
+// that visually aligns with the user's right hand — which, because
+// the user's camera video is CSS-mirrored on display, is the same
+// screen-side as the user's hand.
+//
+// Mechanics of mirrorLandmarksHorizontal:
+//   - negate x for every landmark (so the mirrored body lives in
+//     mirror-image coordinates)
+//   - swap landmark indices for every LEFT_* ↔ RIGHT_* pair so a
+//     downstream consumer that reads `mirrored[RIGHT_WRIST]` gets the
+//     original body's anatomical LEFT wrist data, with x negated.
+// Both halves are necessary: without the index swap, the labels lie;
+// without the x negation, the geometry lies. Stage 4 of the SPECK
+// mirror fix has unit tests that pin this invariant.
 export function mirrorLandmarksHorizontal(
   landmarks: readonly PoseLandmark[] | null | undefined,
 ): PoseLandmark[] {
   if (!landmarks || landmarks.length === 0) return [];
-  // Start by copying every landmark with x negated.
+  // Negate x (mirror around the coordinate-frame origin). This is
+  // geometrically the right flip whether the input is canonical coords
+  // (mirror around the pelvis-origin x=0) or normalized image coords
+  // (mirror produces x ∈ [-1, 0] which is just the image mirror
+  // translated by -1 along x). Every downstream consumer in this
+  // codebase translates by pelvis (normalizeToBody, canonicalize)
+  // before using x, so the absolute x value doesn't matter — only the
+  // relative geometry, which is correctly mirrored either way.
   const out: PoseLandmark[] = landmarks.map((lm) => ({
     x: -lm.x,
     y: lm.y,
