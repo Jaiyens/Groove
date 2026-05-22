@@ -17,7 +17,7 @@
 // rest of the UI looks the same.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import SpeedToggle from '@/components/SpeedToggle';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
@@ -41,9 +41,30 @@ const SPEED_OPTIONS = [0.5, 0.75, 1] as const;
 
 export default function CopyAlongPage({ params }: PageProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const chunkIndex = Number(params.chunkIndex);
   const { loading, notFound, dance, chunks } = useDance(params.danceId);
   const chunk = chunks[chunkIndex];
+
+  // Drill mode: Mode B's results screen routes the user here with
+  // ?from=ms&to=ms&speed=0.5 to focus practice on a 1-2 second window
+  // of the chunk the scorer flagged as a trouble spot. We loop that
+  // sub-range three times at the requested speed, then auto-advance
+  // 0.5 → 0.75 → 1.0, then send the user back to Mode B to re-score
+  // just that window. See docs/scoring-rebuild-summary.md.
+  const drillFromMs = parseMsParam(searchParams?.get('from'));
+  const drillToMs = parseMsParam(searchParams?.get('to'));
+  const drillSpeed = parseSpeedParam(searchParams?.get('speed'));
+  const isDrillMode = drillFromMs !== null && drillToMs !== null;
+  const drillStartMs = isDrillMode && chunk ? Math.max(chunk.startMs, drillFromMs) : null;
+  const drillEndMs = isDrillMode && chunk ? Math.min(chunk.endMs, drillToMs) : null;
+  const effectiveStartMs = drillStartMs ?? (chunk?.startMs ?? 0);
+  const effectiveEndMs = drillEndMs ?? (chunk?.endMs ?? 0);
+  // Drill mode loops a tight window 3× per speed tier; track which
+  // tier we're on so the auto-advance effect can step through.
+  const [drillTier, setDrillTier] = useState(0); // 0 = 0.5x, 1 = 0.75x, 2 = 1.0x
+  const drillLoopCountRef = useRef(0);
+  const DRILL_TIERS = [0.5, 0.75, 1.0] as const;
 
   const refVideoRef = useRef<HTMLVideoElement | null>(null);
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -55,7 +76,7 @@ export default function CopyAlongPage({ params }: PageProps) {
   const userExtractorRef = useRef<PoseExtractor | null>(null);
   const userExtractorRafRef = useRef<number | null>(null);
 
-  const [rate, setRate] = useState(0.6);
+  const [rate, setRate] = useState(() => drillSpeed ?? 0.6);
   const [camState, setCamState] = useState<CamState>('idle');
   const [refMissing, setRefMissing] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -84,7 +105,10 @@ export default function CopyAlongPage({ params }: PageProps) {
   // remounts the page. (The framing-check gate that used to seed this
   // to true was removed in spec.md §Fix 2 — the user is now told to
   // stand back on the setup screen instead.)
-  const [started, setStarted] = useState(false);
+  // Drill mode: the user came from a tap on the Mode B results screen,
+  // which counts as the "ready" gesture. Skip the start-overlay
+  // countdown and roll straight into the looped clip.
+  const [started, setStarted] = useState(isDrillMode);
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -95,9 +119,14 @@ export default function CopyAlongPage({ params }: PageProps) {
 
   useEffect(() => {
     if (typeof window === 'undefined' || isFramingCalibrated()) return;
+    // Drill mode arrives from the Mode B results screen with the user
+    // already on-camera; redirecting them through the onboarding
+    // framing-check would derail the practice loop. The setup screen's
+    // standback callout has already done that job.
+    if (isDrillMode) return;
     const here = `/dance/${params.danceId}/chunk/${chunkIndex}/copy`;
     router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-  }, [params.danceId, chunkIndex, router]);
+  }, [params.danceId, chunkIndex, router, isDrillMode]);
 
   useEffect(() => {
     if (!dance || !chunk || chunks.length === 0) return;
@@ -196,13 +225,16 @@ export default function CopyAlongPage({ params }: PageProps) {
     const onTimeUpdate = () => {
       if (!started) return;
       const tMs = v.currentTime * 1000;
-      if (tMs >= chunk.endMs || tMs < chunk.startMs - 50) {
-        v.currentTime = chunk.startMs / 1000;
+      if (tMs >= effectiveEndMs || tMs < effectiveStartMs - 50) {
+        v.currentTime = effectiveStartMs / 1000;
+        if (isDrillMode) {
+          drillLoopCountRef.current += 1;
+        }
       }
     };
     const seekToStart = () => {
       try {
-        v.currentTime = chunk.startMs / 1000;
+        v.currentTime = effectiveStartMs / 1000;
         v.playbackRate = rate;
       } catch {
         /* ignore — happens if the seek runs before metadata is ready */
@@ -240,7 +272,43 @@ export default function CopyAlongPage({ params }: PageProps) {
       v.removeEventListener('loadedmetadata', onLoadedMeta);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunk, rate, muted, started]);
+  }, [chunk, rate, muted, started, effectiveStartMs, effectiveEndMs, isDrillMode]);
+
+  // Drill-mode tier advance. Polls the loop counter every ~500ms and
+  // when 3 loops at the current tier have completed, steps up — 0.5x
+  // → 0.75x → 1.0x → route to /test page to re-score just this
+  // window. Polling instead of event-driven because the underlying
+  // loop trigger lives in the video onTimeUpdate callback above.
+  useEffect(() => {
+    if (!isDrillMode || !chunk || !dance) return;
+    const id = window.setInterval(() => {
+      if (drillLoopCountRef.current < 3) return;
+      drillLoopCountRef.current = 0;
+      if (drillTier < DRILL_TIERS.length - 1) {
+        const nextTier = drillTier + 1;
+        setDrillTier(nextTier);
+        setRate(DRILL_TIERS[nextTier]!);
+      } else {
+        // Done with all 3 tiers — back to Mode B for a re-score on this
+        // exact window. We append the drill range so the test page
+        // could later scope its scoring to it; today the test page
+        // doesn't read those params yet, but the route lands the user
+        // in the right place.
+        const url = `/dance/${dance.id}/chunk/${chunkIndex}/test?from=${effectiveStartMs}&to=${effectiveEndMs}`;
+        router.push(url);
+      }
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [
+    isDrillMode,
+    chunk,
+    dance,
+    drillTier,
+    chunkIndex,
+    router,
+    effectiveStartMs,
+    effectiveEndMs,
+  ]);
 
   // spec.md round-5 §Fix 3: live MediaPipe loop for the YOU panel's
   // skeleton overlay. Only runs while the skeleton toggle is on AND
@@ -446,6 +514,18 @@ export default function CopyAlongPage({ params }: PageProps) {
               ref
             </div>
 
+            {/* Drill-mode badge — the user got here from a trouble spot
+                on the results screen. Make it visible so they know
+                they're in a focused loop, not the normal copy-along. */}
+            {isDrillMode && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute right-2 bottom-2 rounded-full bg-coral/85 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-black ring-1 ring-white/30"
+              >
+                drill · {drillTier + 1}/3 · {Math.round(DRILL_TIERS[drillTier]! * 100)}%
+              </div>
+            )}
+
             {isFallbackToSkeleton && (
               <div className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white/80 ring-1 ring-white/10">
                 skeleton-only
@@ -567,8 +647,11 @@ export default function CopyAlongPage({ params }: PageProps) {
       </div>
 
       {/* SPECK round-4 §Fix 2: press-start + 3-2-1-GO gate, mounted on
-          top of the duet so the user sees the layout behind it. */}
-      {!started && (
+          top of the duet so the user sees the layout behind it.
+          Drill mode: skip the gate — the user just came from the Mode B
+          results screen and tapping a trouble spot is its own
+          "I'm ready" gesture. */}
+      {!started && !isDrillMode && (
         <StartOverlay
           chunkNumber={chunkIndex + 1}
           totalChunks={chunks.length}
@@ -580,4 +663,22 @@ export default function CopyAlongPage({ params }: PageProps) {
       )}
     </main>
   );
+}
+
+// Drill-mode URL helpers. Kept inside this file because they're tightly
+// coupled to the page's drill state machine and have no other callers.
+
+function parseMsParam(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function parseSpeedParam(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  if (n < 0.25 || n > 1.5) return null;
+  return n;
 }

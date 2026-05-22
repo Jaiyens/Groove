@@ -46,8 +46,10 @@ interface DualSkeletonOverlayProps {
 
 const REF_COLOR = '#ffffff';
 const REF_JOINT_COLOR = '#ffffff';
-const USER_COLOR = '#ff7a59'; // brand coral
-const USER_JOINT_COLOR = '#ff7a59';
+// Brand pink-coral, matches tailwind.config.ts `coral.DEFAULT` and
+// the existing `text-coral` UI accents.
+const USER_COLOR = '#ff1f8e';
+const USER_JOINT_COLOR = '#ff1f8e';
 
 export default function DualSkeletonOverlay({
   userLandmarks,
