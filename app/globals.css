@@ -108,3 +108,223 @@ button {
     stroke-linejoin: round;
   }
 }
+
+.intro-splash {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #F8F8F6;
+  color: #FF1F8E;
+  animation: intro-fade-away 3400ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.intro-logo-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(82vw, 360px);
+  height: 240px;
+  isolation: isolate;
+}
+
+.intro-logo {
+  position: relative;
+  z-index: 3;
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-bricolage), 'Inter', system-ui, sans-serif;
+  font-size: clamp(64px, 19vw, 104px);
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  line-height: 0.9;
+  transform: skewX(-4deg);
+  filter: drop-shadow(0 14px 34px rgba(255, 31, 142, 0.18));
+}
+
+.intro-groov {
+  display: inline-block;
+  background: linear-gradient(180deg, #FF1F8E 0%, #FF7FBD 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  opacity: 0;
+  transform: translateY(28px) scale(0.96);
+  animation: intro-groov-in 760ms cubic-bezier(0.22, 1, 0.36, 1) 180ms forwards;
+}
+
+.intro-y {
+  width: 0.82em;
+  height: 1.24em;
+  margin-left: -0.05em;
+  overflow: visible;
+  vertical-align: -0.38em;
+  transform: rotate(-7deg) skewX(4deg) translateY(10px);
+  transform-origin: 35% 28%;
+}
+
+.intro-y-path {
+  fill: none;
+  stroke: #FF1F8E;
+  stroke-width: 15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.intro-y-path-top {
+  animation: intro-draw-y 560ms cubic-bezier(0.22, 1, 0.36, 1) 900ms forwards;
+}
+
+.intro-y-path-loop {
+  animation: intro-draw-y 720ms cubic-bezier(0.22, 1, 0.36, 1) 1180ms forwards;
+}
+
+.intro-swoosh {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  z-index: 2;
+  width: min(94vw, 390px);
+  transform: translateX(-50%);
+  opacity: 0.95;
+}
+
+.intro-swoosh path {
+  stroke: #FF1F8E;
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  filter: drop-shadow(0 10px 22px rgba(255, 31, 142, 0.26));
+  animation: intro-draw-swoosh 900ms cubic-bezier(0.22, 1, 0.36, 1) 1500ms forwards;
+}
+
+.intro-orbit {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  width: 170px;
+  height: 170px;
+  border: 2px solid rgba(255, 31, 142, 0.24);
+  border-radius: 999px;
+  transform: translate(-50%, 0) scale(0.2);
+  opacity: 0;
+}
+
+.intro-orbit-one {
+  animation: intro-orbit-one 1200ms cubic-bezier(0.16, 1, 0.3, 1) 1320ms forwards;
+}
+
+.intro-orbit-two {
+  width: 230px;
+  height: 230px;
+  border-color: rgba(255, 127, 189, 0.22);
+  animation: intro-orbit-two 1250ms cubic-bezier(0.16, 1, 0.3, 1) 1460ms forwards;
+}
+
+.intro-pink-wash {
+  position: absolute;
+  left: 50%;
+  bottom: -42%;
+  z-index: 1;
+  width: 150vw;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, #FF1F8E 0%, #FF58A9 46%, rgba(255, 31, 142, 0) 70%);
+  transform: translateX(-50%) scale(0);
+  opacity: 0;
+  animation: intro-pink-wash 1100ms cubic-bezier(0.16, 1, 0.3, 1) 2100ms forwards;
+}
+
+@keyframes intro-groov-in {
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes intro-draw-y {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes intro-draw-swoosh {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+@keyframes intro-orbit-one {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.2) rotate(0deg);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -18px) scale(1.7) rotate(320deg);
+  }
+}
+
+@keyframes intro-orbit-two {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.15) rotate(0deg);
+  }
+  28% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -34px) scale(1.55) rotate(-280deg);
+  }
+}
+
+@keyframes intro-pink-wash {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) scale(0);
+  }
+  28% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) scale(1.45);
+  }
+}
+
+@keyframes intro-fade-away {
+  0%,
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-splash {
+    display: none;
+  }
+}

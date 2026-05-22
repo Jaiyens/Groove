@@ -11,6 +11,7 @@ import CreamBottomNav from '@/components/library/CreamBottomNav';
 import SubmitFab from '@/components/library/SubmitFab';
 import SubmitModal from '@/components/submit/SubmitModal';
 import Logo from '@/components/Logo';
+import IntroSplash from '@/components/IntroSplash';
 import type { DanceListItem } from '@/lib/dances/types';
 import {
   CONTINUE_LEARNING_EVENT,
@@ -168,6 +169,7 @@ export default function HomePage() {
       <CreamBottomNav />
 
       <SubmitModal open={submitOpen} onClose={() => setSubmitOpen(false)} />
+      <IntroSplash />
     </main>
   );
 }
