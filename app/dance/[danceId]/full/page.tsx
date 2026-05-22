@@ -20,6 +20,7 @@ import { useGraph } from '@/lib/graph/context';
 import { isFullUnlocked } from '@/lib/mastery/chunkProgress';
 import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -53,6 +54,12 @@ export default function FullAttemptPage({ params }: PageProps) {
   useEffect(() => {
     if (!loading && notFound) router.replace('/');
   }, [loading, notFound, router]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || isFramingCalibrated()) return;
+    const here = `/dance/${params.danceId}/full`;
+    router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+  }, [params.danceId, router]);
 
   // Gate: Mode C requires every chunk to have been passed.
   const [gateChecked, setGateChecked] = useState(false);
@@ -125,6 +132,7 @@ export default function FullAttemptPage({ params }: PageProps) {
   }, [startCamera]);
 
   useEffect(() => {
+    if (!isFramingCalibrated()) return;
     if (camState === 'idle' && gateChecked) startCamera();
   }, [camState, gateChecked, startCamera]);
 

@@ -25,6 +25,7 @@ import {
 } from '@/lib/mastery/chunkProgress';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
@@ -84,6 +85,12 @@ export default function TestPage({ params }: PageProps) {
   });
 
   useEffect(() => {
+    if (typeof window === 'undefined' || isFramingCalibrated()) return;
+    const here = `/dance/${params.danceId}/chunk/${chunkIndex}/test`;
+    router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+  }, [params.danceId, chunkIndex, router]);
+
+  useEffect(() => {
     if (!dance || !chunk || chunks.length === 0) return;
     recordContinueLearning({
       danceId: dance.id,
@@ -138,6 +145,7 @@ export default function TestPage({ params }: PageProps) {
   }, [startCamera]);
 
   useEffect(() => {
+    if (!isFramingCalibrated()) return;
     if (camState === 'idle') startCamera();
   }, [camState, startCamera]);
 

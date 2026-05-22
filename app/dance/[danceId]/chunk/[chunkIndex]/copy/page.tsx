@@ -28,6 +28,7 @@ import CameraPermissionBanner, {
 import { useDance } from '@/lib/dances/useDance';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { PoseLandmark } from '@/lib/pose/types';
@@ -91,6 +92,12 @@ export default function CopyAlongPage({ params }: PageProps) {
       router.replace(`/dance/${params.danceId}`);
     }
   }, [loading, notFound, dance, chunk, router, params.danceId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || isFramingCalibrated()) return;
+    const here = `/dance/${params.danceId}/chunk/${chunkIndex}/copy`;
+    router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
+  }, [params.danceId, chunkIndex, router]);
 
   useEffect(() => {
     if (!dance || !chunk || chunks.length === 0) return;
