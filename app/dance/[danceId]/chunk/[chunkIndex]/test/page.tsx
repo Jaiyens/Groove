@@ -249,6 +249,15 @@ export default function TestPage({ params }: PageProps) {
   // countdown lands on zero. This is the exact instant audio + scoring
   // start, so the user's first dance step lines up with the beat. The
   // emphasis "GO" tick is fired inside the overlay itself.
+  // spec.md §Mode-B-countdown-loop fix: deps intentionally omit
+  // `audio`. useDanceAudio returns a fresh outer object every render,
+  // so including it here made `handleOverlayGo` a new reference each
+  // render → flickered the `onGo` prop passed to StartOverlay →
+  // re-fired StartOverlay's countdown effect → cleared the 1-second
+  // setCount timeout before it elapsed → countdown stuck at 3.
+  // The audio methods are stable useCallback([]) refs that operate on
+  // audioRef.current, so the closure-captured `audio` calls the right
+  // element regardless of which render the closure was created in.
   const handleOverlayGo = useCallback(() => {
     if (!chunk || !dance) return;
     // eslint-disable-next-line no-console
@@ -264,7 +273,8 @@ export default function TestPage({ params }: PageProps) {
       // eslint-disable-next-line no-console
       console.log('[mode-b] audio.play() resolved', { ok });
     });
-  }, [audio, chunk, dance]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunk, dance]);
 
   // Visibility pause/resume — re-anchor session clock so MediaPipe doesn't
   // see a giant timestamp jump.
@@ -377,15 +387,33 @@ export default function TestPage({ params }: PageProps) {
         : chunkIndex,
     });
     setUnlockedNext(unlockedNext);
-  }, [runState, dance, chunk, chunkIndex, chunks.length, audio]);
+    // spec.md §Mode-B-countdown-loop fix: `audio` omitted from deps.
+    // audio.stop() inside fires a 'pause' event → setState in the
+    // hook → new audio ref → effect would re-fire → audio.stop()
+    // again → infinite loop. audio.stop is a stable useCallback([])
+    // operating on audioRef.current, so the closure call is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runState, dance, chunk, chunkIndex, chunks.length]);
 
+  // spec.md §Mode-B-countdown-loop fix: ACTIVE loop driver before this
+  // patch. `[audio]` made this cleanup re-fire every audio ref change.
+  // The cleanup calls audio.stop() → el.pause() → 'pause' event →
+  // setState in useDanceAudio → new state → new audio ref → cleanup
+  // re-fires → infinite render storm. Symptom on screen: StartOverlay's
+  // countdown stuck at 3 because handleOverlayGo flickers every render
+  // and StartOverlay's countdown effect (which has onGo in deps) keeps
+  // clearing the 1s setCount timer before it elapses. Empty deps make
+  // this a true unmount-only cleanup; audio.stop is a stable useCallback
+  // operating on audioRef.current, so the closure-captured call still
+  // hits the live audio element.
   useEffect(
     () => () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       audio.stop();
     },
-    [audio],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
 
   useEffect(() => {
