@@ -15,6 +15,8 @@ import {
   getDanceProgress,
   isFullUnlocked,
 } from '@/lib/mastery/chunkProgress';
+import { recordContinueLearning } from '@/lib/mastery/continueLearning';
+import { markDanceStarted } from '@/lib/practiceStats';
 
 interface PageProps {
   params: { danceId: string };
@@ -26,6 +28,22 @@ export default function DanceOverviewPage({ params }: PageProps) {
 
   useEffect(() => {
     if (record?.status === 'ready') bumpView(record.id);
+  }, [record]);
+
+  useEffect(() => {
+    if (!record || record.status !== 'ready' || !dance || chunks.length === 0) return;
+    recordContinueLearning({
+      danceId: dance.id,
+      title: record.title,
+      displayName: record.display_name ?? dance.name,
+      creatorHandle: record.creator_handle ?? dance.artist,
+      thumbnailUrl: dance.thumbnail_url,
+      totalChunks: chunks.length,
+    });
+  }, [record, dance, chunks.length]);
+
+  useEffect(() => {
+    if (record?.status === 'ready') markDanceStarted(record.id);
   }, [record]);
 
   // Re-read progress on mount + when window regains focus
@@ -120,7 +138,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
         {record?.dancer_count && record.dancer_count > 1 ? (
           <Link
             href={`/dance/${record.id}/pick-dancer?change=1`}
-            className="text-xs font-medium text-coral underline-offset-4 hover:underline"
+            className="text-xs font-medium text-ink-muted underline-offset-4 hover:text-ink hover:underline"
           >
             change dancer
           </Link>

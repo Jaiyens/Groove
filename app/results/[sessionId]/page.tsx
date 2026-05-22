@@ -62,11 +62,9 @@ export default function ResultsPage({ params }: PageProps) {
   }
 
   const score = Math.round(attempt.overall_score);
-  // The score number itself is the only place on the results screen where
-  // hot pink lives — per SPECK §Phase 2 "the big celebration moment".
   const tier =
     score >= 80
-      ? { ring: 'ring-coral', text: 'text-coral' }
+      ? { ring: 'ring-ink/15', text: 'text-ink' }
       : score >= 60
         ? { ring: 'ring-ink/15', text: 'text-ink' }
         : { ring: 'ring-ink/10', text: 'text-ink-muted' };

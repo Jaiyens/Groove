@@ -39,7 +39,7 @@ export default function RecentList({ dances }: RecentListProps) {
                   @{dance.creator_handle.replace(/^@/, '')}
                 </div>
               )}
-              <div className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-coral">
+              <div className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-ink">
                 practice
               </div>
             </div>

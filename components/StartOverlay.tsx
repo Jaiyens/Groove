@@ -87,7 +87,7 @@ export default function StartOverlay({
             onStart?.();
             setPhase('counting');
           }}
-          className="mt-10 rounded-full bg-coral px-12 py-4 text-base font-bold text-white shadow-lg shadow-coral/30 active:scale-95"
+          className="mt-10 rounded-full bg-white px-12 py-4 text-base font-bold text-black shadow-lg active:scale-95"
         >
           {ctaLabel}
         </button>
@@ -100,7 +100,7 @@ export default function StartOverlay({
       )}
 
       {phase === 'go' && (
-        <div className="mt-8 text-[160px] font-medium leading-none tabular-nums text-coral drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
+        <div className="mt-8 text-[160px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
           GO
         </div>
       )}

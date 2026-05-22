@@ -64,7 +64,7 @@ export default function ProcessingState({ initial }: ProcessingStateProps) {
       <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
         <div className="relative h-24 w-24">
           <div className="absolute inset-0 rounded-full border-4 border-cream-deep" />
-          <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-coral" />
+          <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-ink" />
         </div>
         <h1 className="mt-7 text-2xl font-medium tracking-tight text-ink">getting your dance ready</h1>
         <p className="mt-2 text-xs uppercase tracking-[0.2em] text-ink-dim">

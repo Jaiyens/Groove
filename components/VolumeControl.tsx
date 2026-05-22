@@ -55,7 +55,7 @@ export default function VolumeControl({
           onChange={(e) => onChange(Number(e.target.value) / 100)}
           onBlur={() => setShowSlider(false)}
           aria-label="Volume"
-          className="h-1 w-full appearance-none rounded-full bg-white/15 accent-accent"
+          className="h-1 w-full appearance-none rounded-full bg-white/15 accent-white"
         />
       </div>
     </div>

@@ -73,25 +73,38 @@ button {
     font-weight: 500;
     letter-spacing: -0.02em;
   }
-  /* SPECK polish §Fix 4: Groov wordmark.
+  /* SPECK polish §Fix 4: Groovy wordmark.
      - Bricolage Grotesque 800 (squared, off-axis, "weird-but-readable")
      - -4° skew so the whole word leans forward
      - hot-pink gradient (--coral → lighter pink) via background-clip
-     - kicker on the final letter rotates 12° + nudges up so the V kicks. */
+     - inline SVG Y with a custom looping descender. */
   .wordmark-groov {
     font-family: var(--font-bricolage), 'Inter', system-ui, sans-serif;
     font-weight: 800;
     letter-spacing: -0.045em;
     transform: skewX(-4deg);
     transform-origin: 0% 100%;
-    background: linear-gradient(180deg, #FF3E7F 0%, #FF7AA2 100%);
+    background: linear-gradient(180deg, #FF1F8E 0%, #FF7FBD 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
     -webkit-text-fill-color: transparent;
   }
-  .wordmark-groov-kicker {
-    transform: rotate(12deg) translateY(-0.08em);
-    transform-origin: 0% 100%;
+  .wordmark-groov-y {
+    display: inline-block;
+    width: 0.82em;
+    height: 1.24em;
+    margin-left: -0.05em;
+    overflow: visible;
+    vertical-align: -0.38em;
+    transform: rotate(-7deg) skewX(4deg);
+    transform-origin: 35% 28%;
+  }
+  .wordmark-groov-y path {
+    fill: none;
+    stroke: #FF1F8E;
+    stroke-width: 15;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 }

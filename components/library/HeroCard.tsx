@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
+import DanceMetaRow from './DanceMetaRow';
 import PreviewablePoster from './PreviewablePoster';
 
 interface HeroCardProps {
@@ -19,8 +20,8 @@ export default function HeroCard({ dance }: HeroCardProps) {
         rounded="lg"
         className="aspect-[4/3] w-full rounded-none"
       />
-      <div className="px-5 pt-4 pb-5">
-        <div className="text-xs font-medium uppercase tracking-[0.18em] text-ink-muted">
+      <div className="px-5 pt-3 pb-4">
+        <div className="text-[11px] font-normal uppercase tracking-[0.18em] text-gray-500">
           featured
         </div>
         <h3 className="mt-1 text-[26px] font-medium leading-tight text-ink">
@@ -31,9 +32,10 @@ export default function HeroCard({ dance }: HeroCardProps) {
             @{dance.creator_handle.replace(/^@/, '')}
           </p>
         )}
+        <DanceMetaRow dance={dance} className="mt-4 justify-start" />
         <Link
           href={`/dance/${dance.id}`}
-          className="mt-4 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream-card active:scale-[0.98]"
+          className="mt-3 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-cream-card active:scale-[0.98]"
         >
           <span>practice</span>
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>

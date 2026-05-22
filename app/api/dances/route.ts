@@ -13,9 +13,23 @@
 
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/supabase/server';
-import type { DanceListItem } from '@/lib/dances/types';
+import { inferCardMetadata, type ChunkBoundary, type DanceListItem } from '@/lib/dances/types';
 
 export const dynamic = 'force-dynamic';
+
+interface DanceListRow {
+  id: string;
+  title: string | null;
+  display_name: string | null;
+  creator_handle: string | null;
+  thumbnail_url: string | null;
+  video_url: string | null;
+  duration_seconds: number | null;
+  chunks_json: ChunkBoundary[] | null;
+  view_count: number;
+  ready_at: string | null;
+  created_at: string;
+}
 
 export async function GET(request: Request) {
   const supabase = getServerSupabase();
@@ -31,7 +45,7 @@ export async function GET(request: Request) {
   let query = supabase
     .from('dances')
     .select(
-      'id, title, display_name, creator_handle, thumbnail_url, video_url, duration_seconds, view_count, ready_at, created_at',
+      'id, title, display_name, creator_handle, thumbnail_url, video_url, duration_seconds, chunks_json, view_count, ready_at, created_at',
     )
     .eq('status', 'ready')
     // SPECK polish §Fix 5: newest first, deterministic. `id` tiebreaks
@@ -48,5 +62,18 @@ export async function GET(request: Request) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ dances: (data ?? []) as DanceListItem[] });
+  const dances = ((data ?? []) as DanceListRow[]).map((row): DanceListItem => ({
+    id: row.id,
+    title: row.title,
+    display_name: row.display_name,
+    creator_handle: row.creator_handle,
+    thumbnail_url: row.thumbnail_url,
+    video_url: row.video_url,
+    duration_seconds: row.duration_seconds,
+    ...inferCardMetadata(row),
+    view_count: row.view_count,
+    ready_at: row.ready_at,
+    created_at: row.created_at,
+  }));
+  return NextResponse.json({ dances });
 }

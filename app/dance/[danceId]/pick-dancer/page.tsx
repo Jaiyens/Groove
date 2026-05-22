@@ -131,7 +131,7 @@ export default function PickDancerPage({ params }: PageProps) {
                   disabled={submitting !== null}
                   onClick={() => choose(id)}
                   className={`group relative block w-full overflow-hidden rounded-2xl bg-cream-card text-left shadow-soft ring-1 transition-transform active:scale-[0.99] ${
-                    isCurrent ? 'ring-coral' : 'ring-cream-deep'
+                    isCurrent ? 'ring-ink' : 'ring-cream-deep'
                   }`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -145,7 +145,7 @@ export default function PickDancerPage({ params }: PageProps) {
                       pick — show it loudly so the user knows which
                       thumbnail we'd default to. */}
                   {isCurrent && (
-                    <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1 rounded-full bg-coral/95 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white shadow-soft">
+                    <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-cream-card shadow-soft">
                       <span aria-hidden>✨</span>
                       <span>our guess</span>
                     </div>

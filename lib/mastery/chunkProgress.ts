@@ -51,6 +51,10 @@ export function getDanceProgress(danceId: string): DanceProgress {
   return all[danceId] ?? { highestPassed: -1, lastScores: {} };
 }
 
+export function getAllDanceProgress(): Record<string, DanceProgress> {
+  return readAll();
+}
+
 // A chunk is unlocked if it's the first chunk OR the previous chunk has
 // been passed at least once.
 export function isChunkUnlocked(danceId: string, chunkIndex: number): boolean {

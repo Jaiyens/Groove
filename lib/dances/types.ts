@@ -8,6 +8,7 @@
 //   skill_weights).
 
 export type DanceStatus = 'queued' | 'processing' | 'ready' | 'failed';
+export type DanceDifficulty = 'easy' | 'medium' | 'hard';
 
 export interface ChunkBoundary {
   index: number;
@@ -72,10 +73,73 @@ export interface DanceListItem {
   // SPECK polish §Fix 6: surfaced to the library so cards can show a
   // 3-second muted preview when the play icon is tapped.
   video_url: string | null;
+  // Card metadata: normalized from backend snake_case fields so UI cards don't
+  // need to know which values are inferred for legacy rows.
+  difficulty: DanceDifficulty;
+  durationSeconds: number;
+  chunkCount: number;
+  // Legacy snake_case field kept while older call sites/API responses settle.
   duration_seconds: number | null;
   view_count: number;
   ready_at: string | null;
   created_at: string;
+}
+
+export function formatDanceDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+export function inferCardMetadata(input: {
+  id?: string | null;
+  duration_seconds?: number | null;
+  durationSeconds?: number | null;
+  chunks_json?: ChunkBoundary[] | null;
+  chunkCount?: number | null;
+}): Pick<DanceListItem, 'difficulty' | 'durationSeconds' | 'chunkCount'> {
+  const durationSeconds = Math.round(
+    input.durationSeconds ??
+      input.duration_seconds ??
+      seededDurationSeconds(input.id),
+  );
+  const chunkCount =
+    input.chunkCount ??
+    (input.chunks_json && input.chunks_json.length > 0
+      ? input.chunks_json.length
+      : seededChunkCount(input.id, durationSeconds));
+
+  return {
+    difficulty: inferDifficulty(durationSeconds, chunkCount),
+    durationSeconds,
+    chunkCount,
+  };
+}
+
+function inferDifficulty(durationSeconds: number, chunkCount: number): DanceDifficulty {
+  if (durationSeconds >= 45 || chunkCount >= 8) return 'hard';
+  if (durationSeconds <= 20 && chunkCount <= 4) return 'easy';
+  return 'medium';
+}
+
+function seededDurationSeconds(id?: string | null): number {
+  const choices = [18, 22, 28, 34, 42];
+  return choices[seedIndex(id, choices.length)] ?? 28;
+}
+
+function seededChunkCount(id: string | null | undefined, durationSeconds: number): number {
+  const base = Math.max(3, Math.round(durationSeconds / 6));
+  return Math.min(9, base + (seedIndex(id, 3) - 1));
+}
+
+function seedIndex(id: string | null | undefined, modulo: number): number {
+  if (!id || modulo <= 0) return 0;
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  return hash % modulo;
 }
 
 // SPECK polish §Fix 3: single source of truth for "what name do we

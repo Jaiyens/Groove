@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { Inter, Bricolage_Grotesque } from 'next/font/google';
 import PhoneFrame from '@/components/PhoneFrame';
+import PracticeTracker from '@/components/PracticeTracker';
 import { GraphProvider } from '@/lib/graph/context';
 import './globals.css';
 
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" className={`${inter.variable} ${bricolage.variable}`}>
       <body className="bg-cream text-ink">
         <GraphProvider>
+          <PracticeTracker />
           <PhoneFrame>{children}</PhoneFrame>
         </GraphProvider>
       </body>

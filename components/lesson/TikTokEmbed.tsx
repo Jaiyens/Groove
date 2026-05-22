@@ -20,7 +20,7 @@ export default function TikTokEmbed({ tiktokUrl }: TikTokEmbedProps) {
         href={tiktokUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="block rounded-2xl bg-cream-card px-4 py-3 text-center text-sm font-semibold text-coral shadow-soft"
+        className="block rounded-2xl bg-cream-card px-4 py-3 text-center text-sm font-semibold text-ink shadow-soft"
       >
         watch the original on TikTok ↗
       </a>

@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import HeroCard from '@/components/library/HeroCard';
 import TrendingScroll from '@/components/library/TrendingScroll';
+import ContinueLearningRail from '@/components/library/ContinueLearningRail';
 import RecentList from '@/components/library/RecentList';
 import SectionHeader from '@/components/library/SectionHeader';
 import EmptyState from '@/components/library/EmptyState';
@@ -11,6 +12,13 @@ import SubmitFab from '@/components/library/SubmitFab';
 import SubmitModal from '@/components/submit/SubmitModal';
 import Logo from '@/components/Logo';
 import type { DanceListItem } from '@/lib/dances/types';
+import {
+  CONTINUE_LEARNING_EVENT,
+  getContinueLearningEntries,
+  mergeContinueLearningEntry,
+  type ContinueLearningEntry,
+} from '@/lib/mastery/continueLearning';
+import { getDanceProgress } from '@/lib/mastery/chunkProgress';
 
 interface LibraryState {
   loading: boolean;
@@ -27,6 +35,7 @@ export default function HomePage() {
     unconfigured: false,
   });
   const [submitOpen, setSubmitOpen] = useState(false);
+  const [continueEntries, setContinueEntries] = useState<ContinueLearningEntry[]>([]);
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }));
@@ -56,6 +65,22 @@ export default function HomePage() {
     load();
   }, [load]);
 
+  const refreshContinueEntries = useCallback(() => {
+    setContinueEntries(getContinueLearningEntries());
+  }, []);
+
+  useEffect(() => {
+    refreshContinueEntries();
+    window.addEventListener('focus', refreshContinueEntries);
+    window.addEventListener('storage', refreshContinueEntries);
+    window.addEventListener(CONTINUE_LEARNING_EVENT, refreshContinueEntries);
+    return () => {
+      window.removeEventListener('focus', refreshContinueEntries);
+      window.removeEventListener('storage', refreshContinueEntries);
+      window.removeEventListener(CONTINUE_LEARNING_EVENT, refreshContinueEntries);
+    };
+  }, [refreshContinueEntries]);
+
   // Reload after the submit modal closes — a fresh dance may have just landed.
   useEffect(() => {
     if (!submitOpen) load();
@@ -65,15 +90,22 @@ export default function HomePage() {
   const [featured, ...rest] = dances;
   const trending = rest.slice(0, 8);
   const recent = rest.slice(8, 24);
+  const continueLearning = useMemo(() => {
+    const dancesById = new Map(dances.map((dance) => [dance.id, dance]));
+    return continueEntries
+      .map((entry) => mergeContinueLearningEntry(entry, dancesById.get(entry.danceId)))
+      .filter((entry) => getDanceProgress(entry.danceId).highestPassed < entry.totalChunks - 1)
+      .slice(0, 8);
+  }, [continueEntries, dances]);
 
   return (
-    <main className="theme-cream flex h-full w-full flex-col bg-cream">
-      <div className="flex-1 overflow-y-auto no-scrollbar safe-top px-5 pt-6 pb-32">
+    <main className="theme-cream relative flex h-full w-full flex-col bg-cream">
+      <div className="flex-1 overflow-y-auto no-scrollbar safe-top px-5 pt-6 pb-[calc(56px+64px+16px+env(safe-area-inset-bottom))]">
         <header className="mb-7">
           <h1 className="leading-[1.05]">
-            <Logo className="text-[52px]">groov</Logo>
+            <Logo className="text-[52px]">groovy</Logo>
           </h1>
-          <p className="mt-2 text-sm text-ink-muted">
+          <p className="mt-3 text-sm text-ink-muted">
             learn any tiktok dance, one chunk at a time
           </p>
         </header>
@@ -86,7 +118,7 @@ export default function HomePage() {
         )}
 
         {!loading && error && (
-          <div className="rounded-2xl border border-coral/40 bg-coral-soft/60 px-4 py-3 text-sm text-coral-deep">
+          <div className="rounded-2xl border border-accent-red/30 bg-accent-red/10 px-4 py-3 text-sm text-accent-red">
             {error}
           </div>
         )}
@@ -102,8 +134,18 @@ export default function HomePage() {
           <>
             <HeroCard dance={featured} />
 
+            {continueLearning.length > 0 && (
+              <section className="mt-6">
+                <SectionHeader
+                  title="continue where you left off"
+                  subtitle="pick up your practice"
+                />
+                <ContinueLearningRail entries={continueLearning} />
+              </section>
+            )}
+
             {trending.length > 0 && (
-              <section className="mt-9">
+              <section className="mt-6">
                 <SectionHeader title="trending" subtitle="what other dancers are picking up" />
                 <TrendingScroll dances={trending} />
               </section>

@@ -53,7 +53,7 @@ function Icon({ kind, active }: { kind: NavItem['icon']; active: boolean }) {
 export default function CreamBottomNav() {
   const pathname = usePathname() || '/';
   return (
-    <nav className="safe-bottom flex items-center justify-around border-t border-ink/8 bg-cream/95 px-2 pt-2 pb-2 backdrop-blur">
+    <nav className="flex h-[calc(64px+env(safe-area-inset-bottom))] shrink-0 items-center justify-around border-t border-ink/8 bg-cream/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur">
       {ITEMS.map((item) => {
         const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
         return (

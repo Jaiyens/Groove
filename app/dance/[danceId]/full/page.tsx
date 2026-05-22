@@ -320,7 +320,7 @@ export default function FullAttemptPage({ params }: PageProps) {
         )}
 
         <div className="absolute left-1/2 -translate-x-1/2 bottom-3 z-10 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 ring-1 ring-white/10">
-          <span className="block h-2 w-2 rounded-full bg-accent animate-pulse" />
+          <span className="block h-2 w-2 rounded-full bg-white animate-pulse" />
           <span className="text-[10px] font-bold uppercase tracking-widest">
             full attempt
           </span>

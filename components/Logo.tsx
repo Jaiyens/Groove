@@ -1,6 +1,6 @@
 'use client';
 
-// SPECK polish §Fix 4: the Groov wordmark.
+// SPECK polish §Fix 4: the Groovy wordmark.
 //
 // Why this looks the way it does:
 //
@@ -13,17 +13,14 @@
 //
 //   Italic skew
 //     -4° skew on every letter so the word leans forward. Combined with
-//     the final V kicking up, the wordmark looks like it's mid-move.
+//     the looping Y descender, the wordmark looks like it's mid-move.
 //     We use `transform: skewX` rather than the font's italic axis so
 //     we get a clean geometric lean without the soft strokes that
 //     Bricolage's true italic introduces.
 //
-//   Kicked-up V
-//     The final letter is rotated 12° to the right and bumped up a few
-//     pixels so the right leg of the V juts above the baseline. This
-//     is the visual "kick" the spec asks for. The rotation pivots on
-//     the lower-left of the glyph so the kick lands above the baseline
-//     instead of dropping below it.
+//   Playful Y
+//     The final letter is an inline SVG path so only the Y gets a custom,
+//     looping descender. The rest of the word stays clean and chunky.
 //
 //   Gradient fill
 //     The top-to-bottom gradient runs from --coral (the brand pink) to
@@ -31,38 +28,53 @@
 //     wordmark first, then on a second look you notice the fade.
 //
 // Tweaks should happen in this file. The container handles size + skew,
-// each <span> letter inherits the font + gradient, and the final V gets
-// the kick on top.
+// each <span> letter inherits the font + gradient, and the final Y gets
+// the custom path on top.
 
 interface LogoProps {
   // Sets the font-size on the container; everything else scales off em.
   className?: string;
-  // The text content. Defaults to "groov" (lowercase, no Y — see spec).
+  // The text content. Defaults to "groovy" (lowercase).
   // Override only if a marketing surface needs a different casing.
   children?: string;
 }
 
-export default function Logo({ className = '', children = 'groov' }: LogoProps) {
-  const letters = children.split('');
-  const lastIdx = letters.length - 1;
+function PlayfulY() {
+  return (
+    <svg
+      className="wordmark-groov-y"
+      aria-hidden
+      viewBox="0 0 78 118"
+      focusable="false"
+    >
+      <path
+        d="M8 18 C20 38 29 50 39 52 C48 43 55 30 64 10"
+        pathLength="1"
+      />
+      <path
+        d="M39 52 C35 74 24 90 18 99 C8 114 44 118 57 97"
+        pathLength="1"
+      />
+    </svg>
+  );
+}
+
+export default function Logo({ className = '', children = 'groovy' }: LogoProps) {
+  const label = children;
+  const hasPlayfulY = label.toLowerCase().endsWith('y');
+  const letters = hasPlayfulY ? label.slice(0, -1).split('') : label.split('');
+
   return (
     <span
       className={`wordmark-groov inline-block align-baseline leading-none ${className}`}
-      aria-label={children}
+      aria-label={label}
     >
       {letters.map((ch, i) => (
-        <span
-          key={i}
-          aria-hidden
-          className={
-            i === lastIdx
-              ? 'wordmark-groov-kicker inline-block'
-              : 'inline-block'
-          }
-        >
+        <span key={i} aria-hidden className="inline-block">
           {ch}
         </span>
       ))}
+      {hasPlayfulY && <PlayfulY />}
     </span>
   );
 }

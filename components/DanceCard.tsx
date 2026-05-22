@@ -23,7 +23,7 @@ export default function DanceCard({ dance, readinessPercent, featured }: DanceCa
     return (
       <Link
         href={`/dance/${dance.id}`}
-        className="relative block overflow-hidden rounded-3xl bg-gradient-to-br from-accent to-accent-cyan/70 p-5 active:scale-[0.98] transition-transform"
+        className="relative block overflow-hidden rounded-3xl bg-bg-card p-5 ring-1 ring-white/10 active:scale-[0.98] transition-transform"
       >
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
         <div className="relative flex items-end justify-between min-h-[160px]">
@@ -51,7 +51,7 @@ export default function DanceCard({ dance, readinessPercent, featured }: DanceCa
       href={`/dance/${dance.id}`}
       className="flex items-center gap-4 rounded-2xl bg-bg-card p-3.5 active:bg-bg-elevated transition-colors"
     >
-      <div className="h-14 w-14 shrink-0 rounded-xl bg-gradient-to-br from-accent/80 to-accent-cyan/60 flex items-center justify-center text-lg font-bold">
+      <div className="h-14 w-14 shrink-0 rounded-xl bg-bg-elevated flex items-center justify-center text-lg font-bold">
         {dance.name[0]}
       </div>
       <div className="min-w-0 flex-1">

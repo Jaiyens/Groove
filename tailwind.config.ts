@@ -45,9 +45,9 @@ const config: Config = {
           dim:     '#A8A8A6', // --text-tertiary
         },
         coral: {
-          DEFAULT: '#FF3E7F', // --accent: hot pink — used sparingly
-          deep:    '#D1305F', // --accent-hover
-          soft:    '#FFE0EB', // a very faint pink for badge backgrounds
+          DEFAULT: '#FF1F8E', // --accent: brand pink — used sparingly
+          deep:    '#D60073', // --accent-hover
+          soft:    '#FFE3F2', // a very faint pink for brand accents
         },
         // Kept for any leftover secondary references; mapped to neutral gray
         // so it visually disappears unless something needs deliberate
@@ -59,7 +59,7 @@ const config: Config = {
 
         // Score / status colors — match SPECK Phase 2 success/warning/danger.
         accent: {
-          DEFAULT: '#FF3E7F', // hot pink, same as `coral` above
+          DEFAULT: '#FF1F8E', // brand pink, same as `coral` above
           cyan:    '#25f4ee', // unchanged — used only for the dark-mode skeleton overlay
           green:   '#00C26B', // --success
           amber:   '#FFB800', // --warning

@@ -101,7 +101,7 @@ export default function SubmitModal({ open, onClose }: SubmitModalProps) {
             onClose();
           }}
           aria-label="Close"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-cream-card text-ink shadow-soft"
+          className="flex h-10 w-10 items-center justify-center text-ink"
         >
           <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M6 6l12 12M18 6L6 18" />
@@ -178,7 +178,7 @@ function InputStage({
           <path d="M5 12h14M13 5l7 7-7 7" />
         </svg>
       </button>
-      <p className="mt-4 text-center text-xs text-ink-muted">
+      <p className="mt-4 text-left text-xs text-ink-muted">
         Works with public TikTok links. Processing takes about 30–60 seconds.
       </p>
     </form>
@@ -196,7 +196,7 @@ function LoadingStage({
     <div className="flex flex-1 flex-col items-center justify-center text-center">
       <div className="relative h-24 w-24">
         <div className="absolute inset-0 rounded-full border-4 border-cream-deep" />
-        <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-coral" />
+        <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-ink" />
       </div>
       <p className="mt-8 text-2xl font-medium tracking-tight text-ink">{message}</p>
       <p className="mt-2 text-xs uppercase tracking-[0.2em] text-ink-dim">

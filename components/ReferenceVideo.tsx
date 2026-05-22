@@ -40,7 +40,7 @@ export default function ReferenceVideo({
       />
       {(missing || !src) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-bg-card to-black p-2 text-center">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-accent">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-white">
             no video
           </div>
           <div className="text-[10px] text-text-muted leading-tight mt-1">

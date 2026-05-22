@@ -26,6 +26,7 @@ import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
 import { useDance } from '@/lib/dances/useDance';
+import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import {
   consumeFramingGateRecent,
@@ -98,6 +99,19 @@ export default function CopyAlongPage({ params }: PageProps) {
       router.replace(`/dance/${params.danceId}`);
     }
   }, [loading, notFound, dance, chunk, router, params.danceId]);
+
+  useEffect(() => {
+    if (!dance || !chunk || chunks.length === 0) return;
+    recordContinueLearning({
+      danceId: dance.id,
+      title: dance.name,
+      displayName: dance.name,
+      creatorHandle: dance.artist,
+      thumbnailUrl: dance.thumbnail_url,
+      totalChunks: chunks.length,
+      currentChunkIndex: chunkIndex,
+    });
+  }, [dance, chunk, chunks.length, chunkIndex]);
 
   // SPECK round-4 §Fix 4 onboarding gate: first practice anywhere across
   // the app routes through /onboarding/frame-check, then back to here.
@@ -491,7 +505,7 @@ export default function CopyAlongPage({ params }: PageProps) {
             )}
             <div
               aria-hidden
-              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white/70 ring-1 ring-white/10"
             >
               you
             </div>
@@ -562,7 +576,7 @@ export default function CopyAlongPage({ params }: PageProps) {
             type="button"
             onClick={() => router.push(`/dance/${dance.id}/chunk/${chunkIndex}/test`)}
             data-testid="i-got-it-test"
-            className="flex-[2] rounded-full bg-coral py-2.5 text-center text-sm font-semibold text-white active:scale-[0.98]"
+            className="flex-[2] rounded-full bg-white py-2.5 text-center text-sm font-semibold text-black active:scale-[0.98]"
           >
             I got it · test
           </button>

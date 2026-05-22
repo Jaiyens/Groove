@@ -174,9 +174,9 @@ export default function PreviewablePoster({
       {dance.video_url && phase === 'idle' && (
         <span
           aria-hidden
-          className="pointer-events-none absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/15 backdrop-blur-sm"
+          className="pointer-events-none absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/15 backdrop-blur-sm"
         >
-          <svg width={11} height={11} viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+          <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor" aria-hidden>
             <path d="M3 1.5v9l8-4.5z" />
           </svg>
         </span>

@@ -47,7 +47,7 @@ export default function ChunkProgression({
         }}
         className={`mt-2 flex items-center justify-between rounded-2xl p-4 ring-1 transition-colors ${
           fullUnlocked
-            ? 'bg-gradient-to-br from-accent/30 to-accent-cyan/20 ring-white/15 active:scale-[0.99]'
+            ? 'bg-bg-card ring-white/15 active:scale-[0.99]'
             : 'bg-bg-card/60 ring-white/5 opacity-60 cursor-not-allowed'
         }`}
       >

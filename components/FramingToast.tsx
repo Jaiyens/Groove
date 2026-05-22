@@ -110,11 +110,10 @@ export default function FramingToast({
 export function SilhouetteGuide({
   active = false,
 }: {
-  // When true, the outline is hot pink (Direction 3 accent — SPECK
-  // round-4 §Fix 4 onboarding flow). Default white-ish translucent.
+  // When true, the outline becomes fully opaque. Default is translucent.
   active?: boolean;
 }) {
-  const color = active ? '#FF3E7F' : 'rgba(255,255,255,0.55)';
+  const color = active ? '#FFFFFF' : 'rgba(255,255,255,0.55)';
   return (
     <svg
       className="pointer-events-none absolute inset-0 z-20 m-auto h-3/4 w-auto"
@@ -162,7 +161,7 @@ export function UpperBodySilhouetteGuide({
 }: {
   active?: boolean;
 }) {
-  const color = active ? '#FF3E7F' : 'rgba(255,255,255,0.55)';
+  const color = active ? '#FFFFFF' : 'rgba(255,255,255,0.55)';
   return (
     <svg
       className="pointer-events-none absolute inset-0 z-20 m-auto h-[80%] w-auto"

@@ -1,8 +1,7 @@
 'use client';
 
-// Per-skill score list shown on the results screen. Per SPECK §Phase 2 the
-// only place hot pink is allowed in this list is the TOP score (the highest
-// single skill score). Everything else uses near-black text + cream surface.
+// Per-skill score list shown on the results screen. Pink is reserved for
+// brand, navigation, and progress accents; score hierarchy stays neutral.
 
 export interface SkillScoreRow {
   skill_id: string;
@@ -16,18 +15,12 @@ interface ScoreBreakdownProps {
 
 export default function ScoreBreakdown({ rows }: ScoreBreakdownProps) {
   if (rows.length === 0) return null;
-  // Top score gets hot pink. If multiple skills share the max, only the
-  // first wins so we don't repeat the accent.
-  const maxScore = rows.reduce((m, r) => Math.max(m, r.score), -Infinity);
-  let topAccented = false;
   return (
     <div className="space-y-3">
       {rows.map((row) => {
         const score = Math.round(row.score);
-        const isTop = !topAccented && row.score === maxScore;
-        if (isTop) topAccented = true;
-        const scoreColor = isTop ? 'text-coral' : 'text-ink';
-        const barColor = isTop ? 'bg-coral' : 'bg-ink';
+        const scoreColor = 'text-ink';
+        const barColor = 'bg-ink';
         return (
           <div
             key={row.skill_id}

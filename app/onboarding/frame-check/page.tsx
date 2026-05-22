@@ -188,7 +188,7 @@ function FrameCheckInner() {
             aria-atomic="true"
           >
             <div
-              className="text-[28vh] font-medium leading-none tabular-nums text-coral drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]"
+              className="text-[28vh] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]"
               data-testid="framing-countdown"
             >
               {phase === 'fired' ? 'GO' : count}

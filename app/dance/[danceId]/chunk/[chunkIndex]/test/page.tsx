@@ -23,6 +23,7 @@ import {
   PASS_THRESHOLD,
   recordChunkScore,
 } from '@/lib/mastery/chunkProgress';
+import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { computeJointAngles } from '@/lib/pose/jointAngles';
@@ -93,6 +94,20 @@ export default function TestPage({ params }: PageProps) {
     initialVolume: volume,
     loop: false,
   });
+
+  useEffect(() => {
+    if (!dance || !chunk || chunks.length === 0) return;
+    recordContinueLearning({
+      danceId: dance.id,
+      title: dance.name,
+      displayName: dance.name,
+      creatorHandle: dance.artist,
+      thumbnailUrl: dance.thumbnail_url,
+      totalChunks: chunks.length,
+      currentChunkIndex: chunkIndex,
+    });
+  }, [dance, chunk, chunks.length, chunkIndex]);
+
   // Mirror volume changes into the audio element.
   useEffect(() => {
     audio.setVolume(volume);
@@ -282,8 +297,19 @@ export default function TestPage({ params }: PageProps) {
     const overall = Math.round(result.overall);
     setFinalScore(overall);
     const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, overall);
+    recordContinueLearning({
+      danceId: dance.id,
+      title: dance.name,
+      displayName: dance.name,
+      creatorHandle: dance.artist,
+      thumbnailUrl: dance.thumbnail_url,
+      totalChunks: chunks.length,
+      currentChunkIndex: unlockedNext
+        ? Math.min(chunkIndex + 1, chunks.length - 1)
+        : chunkIndex,
+    });
     setUnlockedNext(unlockedNext);
-  }, [runState, dance, chunk, chunkIndex, audio]);
+  }, [runState, dance, chunk, chunkIndex, chunks.length, audio]);
 
   useEffect(
     () => () => {
