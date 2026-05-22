@@ -29,7 +29,12 @@ import { compute2DJointAngles } from '@/lib/pose/jointAngles';
 import { mirrorLandmarksHorizontal } from '@/lib/pose/normalize';
 import type { ReferencePoseData } from '@/lib/pose/referencePose';
 import { landmarkAt } from '@/lib/pose/referencePose';
-import type { FrameSample, JointAngleVector, PoseLandmark } from '@/lib/pose/types';
+import type {
+  FrameSample,
+  JointAngleVector,
+  LandmarkFrame,
+  PoseLandmark,
+} from '@/lib/pose/types';
 
 export function hasRealReferenceFrames(
   data: ReferencePoseData | null | undefined,
@@ -73,6 +78,28 @@ export function referenceFrameAt(
   const lm = landmarkAt(data, tMs);
   if (!lm) return null;
   return vectorFromMirroredLandmarks(lm);
+}
+
+// Same as `buildReferenceSequence` but returns LANDMARK frames for the
+// Stage 4 canonical-angle pipeline instead of pre-computed angle
+// vectors. Reference landmarks are mirror-flipped horizontally so the
+// dancer's anatomical left maps to whichever side the user — looking
+// at a CSS-mirrored selfie — calls left.
+export function buildReferenceLandmarkSequence(
+  data: ReferencePoseData,
+  chunkStartMs: number,
+  chunkEndMs: number,
+): LandmarkFrame[] {
+  const out: LandmarkFrame[] = [];
+  for (const f of data.frames) {
+    if (f.tMs < chunkStartMs || f.tMs >= chunkEndMs) continue;
+    if (!f.landmarks || f.landmarks.length < 33) continue;
+    out.push({
+      timestampMs: f.tMs,
+      landmarks: mirrorLandmarksHorizontal(f.landmarks),
+    });
+  }
+  return out;
 }
 
 function vectorFromMirroredLandmarks(

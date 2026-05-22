@@ -27,9 +27,10 @@ import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { compute2DJointAngles } from '@/lib/pose/jointAngles';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
-import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
+import type { FrameSample, LandmarkFrame, PoseLandmark } from '@/lib/pose/types';
 import { BeatTracker } from '@/lib/scoring/beatTracker';
 import {
+  buildReferenceLandmarkSequence,
   buildReferenceSequence,
   hasRealReferenceFrames,
   referenceFrameAt,
@@ -71,6 +72,12 @@ export default function TestPage({ params }: PageProps) {
   const extractorRef = useRef<PoseExtractor | null>(null);
   const rafRef = useRef<number | null>(null);
   const userFramesRef = useRef<FrameSample[]>([]);
+  // Stage 4: parallel landmark-frame collection so the scorer can run
+  // the canonical-angle pipeline. The legacy vector-frame collection
+  // above is kept so the live readout's cosineSimilarity (which still
+  // wants a single-frame angle vector) keeps working without an
+  // architectural change.
+  const userLandmarkFramesRef = useRef<LandmarkFrame[]>([]);
   const startMsRef = useRef<number | null>(null);
   const lastHintAtRef = useRef<number>(0);
   const lastDetectAtRef = useRef<number>(0);
@@ -286,6 +293,7 @@ export default function TestPage({ params }: PageProps) {
     setRunState('running');
     startMsRef.current = performance.now();
     userFramesRef.current = [];
+    userLandmarkFramesRef.current = [];
     audio.seekMs(chunk.startMs);
     void audio.play().then((ok) => {
       // eslint-disable-next-line no-console
@@ -345,6 +353,13 @@ export default function TestPage({ params }: PageProps) {
             userFramesRef.current.push({
               timestampMs: absT,
               vector: vec,
+            });
+            // Stage 4: stash the raw landmarks too so the final score
+            // can run the canonical-angle pipeline. Cheap: a 33-element
+            // array per frame.
+            userLandmarkFramesRef.current.push({
+              timestampMs: absT,
+              landmarks: res.landmarks,
             });
             // Reference for the live readout: prefer the real
             // worker-extracted pose data; fall back to the synthetic
@@ -406,13 +421,28 @@ export default function TestPage({ params }: PageProps) {
       : generateReferenceSequence(dance.duration_seconds, dance.bpm).filter(
           (f) => f.timestampMs >= chunk.startMs && f.timestampMs < chunk.endMs,
         );
+    // Stage 4 canonical-angle path: when we have real reference pose
+    // data we score on landmark frames (canonicalize → joint angles →
+    // body-invariant score). Falls back to the legacy vector path for
+    // dance rows that have no pose_data_url (synthetic reference is the
+    // only option in that case, and the legacy path tolerates it).
+    const refLandmarkSeq = poseData
+      ? buildReferenceLandmarkSequence(poseData, chunk.startMs, chunk.endMs)
+      : null;
     const beatGrid = new BeatTracker(dance.bpm, chunk.startMs).asGrid();
-    const result = scoreSession({
-      userFrames: userFramesRef.current,
-      referenceFrames: refSeq,
-      beatGrid,
-      skillIds: chunk.skills,
-    });
+    const result = refLandmarkSeq && refLandmarkSeq.length > 0
+      ? scoreSession({
+          userLandmarkFrames: userLandmarkFramesRef.current,
+          referenceLandmarkFrames: refLandmarkSeq,
+          beatGrid,
+          skillIds: chunk.skills,
+        })
+      : scoreSession({
+          userFrames: userFramesRef.current,
+          referenceFrames: refSeq,
+          beatGrid,
+          skillIds: chunk.skills,
+        });
     setSessionScore(result);
     const overall = Math.round(result.overall);
     setFinalScore(overall);

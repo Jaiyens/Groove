@@ -126,11 +126,74 @@ frame.
 
 ### Stage 3 — Joint-angle vector from canonical skeleton
 
-(filled in at Stage 3.)
+`jointAnglesFromCanonical(c)` in `lib/pose/jointAngles.ts` (added as a
+parallel exporter — the legacy `JointAngleVector` is unchanged).
+Returns an 11-dim radian vector + per-joint confidence:
+
+- `leftElbow`, `rightElbow` — angle at the elbow vertex
+- `leftShoulder`, `rightShoulder` — angle at the shoulder, between
+  shoulder→hip and shoulder→elbow
+- `leftHip`, `rightHip` — angle at the hip, between hip→shoulder and
+  hip→knee
+- `leftKnee`, `rightKnee` — angle at the knee vertex
+- `torsoLean` — angle between world-up (0, -1) and the
+  pelvis→shoulderMid vector
+- `shoulderTilt` — angle between horizontal (1, 0) and the
+  left→right shoulder line
+- `hipTilt` — angle between horizontal (1, 0) and the left→right
+  hip line
+
+All angles in [0, π]. Per-joint confidence = min(visibility of the
+landmarks used in that joint's computation), in [0, 1]. The scorer
+treats per-joint confidence below 0.30 as "this frame's signal on
+that joint is too noisy to score" and drops the contribution.
+
+Why these specific angles: they cover the four major limb
+articulations (elbows, shoulders, hips, knees), the spine alignment
+(torsoLean), and the two body-frame tilts (shoulderTilt for body roll
+/ chest iso, hipTilt for hip iso). Maps directly onto the skill
+graph's success-criterion vocabulary.
 
 ### Stage 4 — Scorer rewire
 
-(filled in at Stage 4.)
+`scoreSession` in `lib/scoring/scorer.ts` now dispatches on which set
+of input frames was provided:
+
+- **`userLandmarkFrames` + `referenceLandmarkFrames`** (new path,
+  what production uses): canonicalize → joint angles → compare. Per
+  SPECK §4.2:
+  - `per_joint_score[j] = max(0, 1 − (|a_u[j] − a_r[j]| / TOL[j])²)`
+  - `frame_score = Σ(w[j] · per_joint_score[j]) / Σ w[j]`
+  - tolerances (radians): 0.35 for limb joints, 0.20 for torsoLean,
+    0.25 for shoulderTilt / hipTilt
+  - weights variance-driven from the reference angle sequence
+    (`deriveCanonicalJointWeights`)
+- **`userFrames` + `referenceFrames`** (legacy vector path): the
+  pre-existing per-joint comparison runs unchanged. Kept so the
+  legacy unit tests, the synthetic-reference fallback (for dance
+  rows without pose JSON), and the scorer.test.ts suite all keep
+  passing.
+
+Components (Arms / Legs / Body / Timing) and trouble-spots are
+re-implemented for the canonical path:
+
+- Arms = mean per-joint score of leftElbow + rightElbow +
+  leftShoulder + rightShoulder
+- Legs = mean per-joint score of leftHip + rightHip + leftKnee +
+  rightKnee
+- Body = mean per-joint score of torsoLean + shoulderTilt + hipTilt
+- Timing = `1 − mean(|u_i / (N-1) − r_i / (M-1)|) / TIMING_TOLERANCE`
+  along the DTW warp path. `TIMING_TOLERANCE = 0.10` (10% off-diagonal
+  collapses timing to 0).
+
+Trouble spots: same 1.5s non-overlapping window algorithm. Worst-joint
+attribution maps canonical joints back to the legacy `JointName`
+vocabulary so the existing trouble-spot UI dictionary lookup keeps
+working (shoulderTilt / hipTilt fall back to the `torso` pretty-name).
+
+All tolerances + the timing-tolerance live at module scope as named
+constants (SPECK Hard Rule #7) so the next calibration pass against
+real recordings can tune them without spelunking.
 
 ### Stage 5 — Body-relative criterion evaluator
 
@@ -174,11 +237,81 @@ graceful-degradation path SPECK Stage 5.4 calls for.
 
 ## Calibration tests
 
-(Filled in at Stage 6 — including which test catches which bug class.)
+The Stage 6 calibration suite (`tests/scoringCalibration.test.ts`) is
+split into two groups:
+
+**Legacy suite (`mode-b calibration`)** — built before this PR. Uses
+synthetic pre-canonicalized angle vectors of identical body size on
+both user and reference sides. Catches: the synthetic-reference
+regression, the variance-weighting regression, the trouble-spot
+regression. Kept as-is so the previous rebuild's invariants don't
+silently drift.
+
+**Body-size invariance (`mode-b calibration — body-size invariance
+(Stage 6)`)** — added in this PR. Feeds raw LANDMARK frames into
+`scoreSession` so the canonical-angle pipeline actually runs. Each
+test catches a specific bug class:
+
+- `half_scale_perfect` — user landmarks = reference scaled by 0.5x.
+  Expected ≥ 95. **Catches the "user skeleton renders 2x reference
+  size" bug.** If canonicalization isn't translating + scaling
+  consistently, the scores diverge because the angle inputs come
+  from inconsistent coordinate systems. With the chokepoint working,
+  scaled inputs canonicalize to the same body frame and the score is
+  100.
+- `double_scale_perfect` — same idea, 2.0x scale. Expected ≥ 95.
+- `translated_perfect` — user landmarks = reference + (Δx, Δy) image
+  offset. Expected ≥ 95. **Catches the "user dances at a different
+  position in the frame than the reference" bug.** A pre-Stage-2
+  scorer would treat translation as joint deviation; the canonical
+  chokepoint removes it.
+- `rotated_5deg_perfect` — shoulder line rotated 5° vs reference.
+  Expected ≥ 90 (small penalty acceptable — the 5° propagates into
+  shoulderTilt + hipTilt, which is the system's correct response).
+- `half_scale_wrong` — 0.5x scale BUT arms in wrong position.
+  Expected ≤ 40. Validates that body-size invariance does NOT also
+  smuggle in any "everything looks correct because we normalized"
+  false positive.
+- `half_scale_8deg_noise` — 0.5x scale + Gaussian joint noise.
+  Expected 55–85. Mid-band "real-life competent attempt with sensor
+  jitter on a short user" — passes the calibration but isn't perfect.
+
+The first two — `half_scale_perfect` and `translated_perfect` — are
+the spec's named acceptance tests. They prove the shipped bug class
+is fixed.
 
 ## Known limitations
 
-(Filled in at Stage 7.)
+- **Rotation invariance is partial.** `canonicalizeSkeleton` accepts
+  a `rotateToUpright` flag but defaults to off. The angle-space
+  comparison is invariant to most rotation by construction (angles
+  don't care about absolute orientation) except for `torsoLean`,
+  `shoulderTilt`, and `hipTilt` which are measured against world
+  axes. A 5° body rotation deducts up to ~10 points from the body
+  component; a larger rotation deducts more. If real-world testing
+  shows this is the dominant error mode, flip `rotateToUpright` on
+  in the production scorer path.
+- **Criterion-parser coverage is intentionally narrow.** See the
+  "Unsupported criteria — followup" list above. Anything outside the
+  supported set returns "passed: true, evidence: not yet supported"
+  rather than throwing.
+- **Reference torso length is a constant (0.50 m).** The
+  meter→torso-length conversion in `evaluateCriterion` assumes the
+  reference dancer has a typical-adult torso. Routine metadata
+  could carry per-routine torso length and override the constant;
+  not in scope for this PR.
+- **Mode C (full-routine) page is on the legacy vector path.** It
+  doesn't load real reference pose data — its reference is the
+  synthetic neutral-pose generator, which doesn't benefit from
+  canonicalization. Migrating Mode C to real reference + canonical
+  pipeline is a separate scope item.
+- **Manual UI verification was not performed.** The test
+  harness is headless; running the dev server and confirming the
+  DualSkeletonOverlay rendering in a real browser is left to the
+  human-loop step at the end of this PR. `DualSkeletonOverlay`
+  itself already uses `normalizeToBody` (translate + scale) for
+  drawing, so the canonical sizing property holds at the render
+  layer regardless of which scoring pipeline is wired up.
 
 ## Why we did NOT swap pose models in this PR
 
