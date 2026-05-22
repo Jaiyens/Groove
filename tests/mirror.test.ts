@@ -260,6 +260,207 @@ describe('overlay_handedness — the visual property the manual UI check looks f
   });
 });
 
+describe('score_rank_order — the programmatic version of Stage 5.3', () => {
+  // SPECK Stage 5.3 asks the human to record three scores:
+  //   - stand still, hands at sides
+  //   - bad attempt, wrong moves
+  //   - real attempt, best you can
+  // and verify the rank order is good > bad > still with meaningful
+  // gaps. We can't drive a real camera, but we CAN synthesize the
+  // three landmark streams and assert the rank order programmatically.
+  // If this fails, the manual Stage 5.3 attempt would also fail —
+  // there's no way for live video to score correctly when synthetic
+  // streams of the same shape don't.
+
+  function restPose(): PoseLandmark[] {
+    const pts: Record<number, { x: number; y: number }> = {
+      [LANDMARK.LEFT_SHOULDER]: { x: 0.6, y: 0.30 },
+      [LANDMARK.RIGHT_SHOULDER]: { x: 0.4, y: 0.30 },
+      [LANDMARK.LEFT_ELBOW]: { x: 0.65, y: 0.45 },
+      [LANDMARK.RIGHT_ELBOW]: { x: 0.35, y: 0.45 },
+      [LANDMARK.LEFT_WRIST]: { x: 0.70, y: 0.55 },
+      [LANDMARK.RIGHT_WRIST]: { x: 0.30, y: 0.55 },
+      [LANDMARK.LEFT_HIP]: { x: 0.55, y: 0.55 },
+      [LANDMARK.RIGHT_HIP]: { x: 0.45, y: 0.55 },
+      [LANDMARK.LEFT_KNEE]: { x: 0.55, y: 0.75 },
+      [LANDMARK.RIGHT_KNEE]: { x: 0.45, y: 0.75 },
+      [LANDMARK.LEFT_ANKLE]: { x: 0.55, y: 0.95 },
+      [LANDMARK.RIGHT_ANKLE]: { x: 0.45, y: 0.95 },
+    };
+    const overrides: Record<number, Partial<PoseLandmark>> = {};
+    for (let i = 0; i < 33; i++) {
+      const p = pts[i] ?? { x: 0.5, y: 0.5 };
+      overrides[i] = { x: p.x, y: p.y, z: 0, visibility: 1 };
+    }
+    return makeLandmarks(overrides);
+  }
+
+  // A 5-second arm-swinging reference like the calibration suite uses.
+  function armSwingingRefSeq(): LandmarkFrame[] {
+    const dur = 5000;
+    const fps = 30;
+    const dt = 1000 / fps;
+    const out: LandmarkFrame[] = [];
+    for (let i = 0; i < dur / dt; i++) {
+      const t = i * dt;
+      const phase = (t / 1000) * 2 * Math.PI;
+      const elbowDx = 0.20 * Math.cos(phase);
+      const elbowDy = -0.15 * Math.sin(phase);
+      const pts: Record<number, { x: number; y: number }> = {
+        [LANDMARK.LEFT_SHOULDER]: { x: 0.6, y: 0.30 },
+        [LANDMARK.RIGHT_SHOULDER]: { x: 0.4, y: 0.30 },
+        [LANDMARK.LEFT_ELBOW]: { x: 0.60 + elbowDx, y: 0.30 + elbowDy },
+        [LANDMARK.RIGHT_ELBOW]: { x: 0.40 - elbowDx, y: 0.30 + elbowDy },
+        [LANDMARK.LEFT_WRIST]: { x: 0.60 + 2 * elbowDx, y: 0.30 + 2 * elbowDy },
+        [LANDMARK.RIGHT_WRIST]: { x: 0.40 - 2 * elbowDx, y: 0.30 + 2 * elbowDy },
+        [LANDMARK.LEFT_HIP]: { x: 0.55, y: 0.55 },
+        [LANDMARK.RIGHT_HIP]: { x: 0.45, y: 0.55 },
+        [LANDMARK.LEFT_KNEE]: { x: 0.55, y: 0.75 },
+        [LANDMARK.RIGHT_KNEE]: { x: 0.45, y: 0.75 },
+        [LANDMARK.LEFT_ANKLE]: { x: 0.55, y: 0.95 },
+        [LANDMARK.RIGHT_ANKLE]: { x: 0.45, y: 0.95 },
+      };
+      const overrides: Record<number, Partial<PoseLandmark>> = {};
+      for (let j = 0; j < 33; j++) {
+        const p = pts[j] ?? { x: 0.5, y: 0.5 };
+        overrides[j] = { x: p.x, y: p.y, z: 0, visibility: 1 };
+      }
+      out.push({ timestampMs: t, landmarks: makeLandmarks(overrides) });
+    }
+    return out;
+  }
+
+  function score(
+    userFrames: LandmarkFrame[],
+    refFrames: LandmarkFrame[],
+  ): number {
+    const r = scoreSession({
+      userLandmarkFrames: userFrames,
+      referenceLandmarkFrames: refFrames,
+      beatGrid: beats(120),
+      skillIds: [],
+    });
+    return r.overall;
+  }
+
+  it('good > bad > still with meaningful gaps', () => {
+    const ref = armSwingingRefSeq();
+
+    // "Stand still" — user holds rest pose throughout. Mirror-flipped
+    // at the chokepoint so the comparison is in the same coordinate
+    // frame as the running production pipeline.
+    const stillRaw = restPose();
+    const still: LandmarkFrame[] = ref.map((f) => ({
+      timestampMs: f.timestampMs,
+      landmarks: mirrorLandmarksHorizontal(stillRaw),
+    }));
+
+    // "Bad attempt — wrong moves" — user flails arms in random
+    // positions, uncorrelated with the reference's oscillation.
+    // Modeled on the legacy `random-arm-flailing` calibration test:
+    // arms are moving (engaging the high-weighted joints) but in the
+    // wrong shapes. Should score above stand-still (which has zero
+    // arm motion at all) but well below a real attempt.
+    let badSeed = 13;
+    const badRand = () => {
+      badSeed = (badSeed * 9301 + 49297) % 233280;
+      return badSeed / 233280;
+    };
+    const bad: LandmarkFrame[] = ref.map((f) => {
+      const lm = restPose();
+      // Place wrists somewhere random within a wide envelope around
+      // the shoulders, simulating "trying but flailing".
+      const lWristDx = 0.20 * (badRand() - 0.5);
+      const lWristDy = 0.30 * (badRand() - 0.5);
+      const rWristDx = 0.20 * (badRand() - 0.5);
+      const rWristDy = 0.30 * (badRand() - 0.5);
+      lm[LANDMARK.LEFT_ELBOW] = {
+        x: 0.60 + lWristDx * 0.5,
+        y: 0.30 + lWristDy * 0.5,
+        z: 0,
+        visibility: 1,
+      };
+      lm[LANDMARK.RIGHT_ELBOW] = {
+        x: 0.40 + rWristDx * 0.5,
+        y: 0.30 + rWristDy * 0.5,
+        z: 0,
+        visibility: 1,
+      };
+      lm[LANDMARK.LEFT_WRIST] = {
+        x: 0.60 + lWristDx,
+        y: 0.30 + lWristDy,
+        z: 0,
+        visibility: 1,
+      };
+      lm[LANDMARK.RIGHT_WRIST] = {
+        x: 0.40 + rWristDx,
+        y: 0.30 + rWristDy,
+        z: 0,
+        visibility: 1,
+      };
+      return {
+        timestampMs: f.timestampMs,
+        landmarks: mirrorLandmarksHorizontal(lm),
+      };
+    });
+
+    // "Real attempt" — user mirrors the reference with small noise.
+    // The user's input would be RAW from MediaPipe (anatomical-correct
+    // labels for the user's body). The reference is anatomically-correct
+    // too. For a mirror-COPY, the user's anatomical-right traces the
+    // same motion as the reference's anatomical-LEFT, i.e. the user's
+    // raw landmarks look like a mirror-flipped reference. Simulate
+    // that and apply the chokepoint mirror to make the comparison.
+    let seed = 7;
+    const rand = () => {
+      seed = (seed * 9301 + 49297) % 233280;
+      return seed / 233280;
+    };
+    const real: LandmarkFrame[] = ref.map((f) => {
+      // User's raw input is the mirror of the reference (because
+      // they're physically mirroring the move).
+      const mirroredRef = mirrorLandmarksHorizontal(f.landmarks);
+      const noisy = mirroredRef.map((p) => ({
+        x: p.x + 0.012 * (rand() - 0.5),
+        y: p.y + 0.012 * (rand() - 0.5),
+        z: p.z,
+        visibility: p.visibility,
+      }));
+      // Chokepoint applies mirror to user landmarks. The user's
+      // "raw camera" input was the mirrored-reference (because they
+      // physically mirror); the chokepoint mirrors AGAIN, getting us
+      // back to reference-shaped data for comparison.
+      return {
+        timestampMs: f.timestampMs,
+        landmarks: mirrorLandmarksHorizontal(noisy),
+      };
+    });
+
+    const stillScore = score(still, ref);
+    const badScore = score(bad, ref);
+    const realScore = score(real, ref);
+
+    // Rank order check.
+    assert.ok(
+      realScore > badScore,
+      `expected real (${realScore}) > bad (${badScore})`,
+    );
+    assert.ok(
+      badScore > stillScore,
+      `expected bad (${badScore}) > still (${stillScore})`,
+    );
+    // Meaningful gaps (not 50/48/46).
+    assert.ok(
+      realScore - badScore >= 15,
+      `expected real-bad gap ≥15, got ${realScore - badScore} (real=${realScore}, bad=${badScore})`,
+    );
+    assert.ok(
+      badScore - stillScore >= 7,
+      `expected bad-still gap ≥7, got ${badScore - stillScore} (bad=${badScore}, still=${stillScore})`,
+    );
+  });
+});
+
 describe('full_pipeline_handedness — chokepoint-aware mirror copy', () => {
   it('user raises anatomical right; reference raises anatomical left (mirror partner) → ≥ 95', () => {
     // The complete UX scenario: user raises their physical right

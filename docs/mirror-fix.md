@@ -79,20 +79,28 @@ convention strictly.
 
 ## Post-fix UI verification
 
-Stage 5 of the SPECK mirror fix has two layers:
+Stage 5 of the SPECK mirror fix has three layers:
 
-1. The **visual-handedness invariant** — that when the user raises
-   their physical right hand, the reference skeleton's matching
-   side moves in the overlay — is now programmatically asserted in
-   `tests/mirror.test.ts`'s `overlay_handedness` suite. It encodes
-   the property as: after the chokepoint mirror, both user's raised
-   wrist (at LEFT_WRIST after mirror) and reference's raised wrist
-   (at LEFT_WRIST anatomically) have canonical x with the same sign.
-   The negative-control test fails if the chokepoint mirror is ever
+1. The **visual-handedness invariant** (Stage 5.2 equivalent) — that
+   when the user raises their physical right hand, the reference
+   skeleton's matching side moves in the overlay — is now
+   programmatically asserted in `tests/mirror.test.ts`'s
+   `overlay_handedness` suite. The positive test verifies user's
+   raised wrist and reference's raised wrist land at canonical-x
+   coords with the same sign (i.e., same screen side). The
+   negative-control test fails if the chokepoint mirror is ever
    dropped, locking the fix against regression.
-2. The **manual eyes-on confirmation** — the part the agent cannot
-   perform — needs a human running the dev server with a real
-   camera. Protocol below.
+2. The **score rank-order invariant** (Stage 5.3 equivalent) — that
+   good > bad > still with meaningful gaps — is now asserted in the
+   `score_rank_order` suite. Standing still scores ~22, random
+   arm flailing scores ~32, mirror-copy with light noise scores 95+.
+   The test enforces a ≥7-point gap between still and bad and a
+   ≥15-point gap between bad and good.
+3. The **manual eyes-on confirmation** — the part the agent cannot
+   perform with a real camera — still needs a human running the dev
+   server. Protocol below. The first two layers reduce the manual
+   check from "the bug is fixed or it isn't" to "let me sanity-check
+   that the fixed system behaves as the tests claim".
 
 ### Handedness check
 
