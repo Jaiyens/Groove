@@ -499,55 +499,63 @@ export default function TestPage({ params }: PageProps) {
           {Math.round(liveScore)}
         </div>
 
-        {/* SPECK round-4 §Fix 2: press-start gate + 3-2-1 countdown.
-            The overlay handles its own audible ticks via lib/audio/tick. */}
-        {runState === 'ready' && (
-          <StartOverlay
-            chunkNumber={chunkIndex + 1}
-            totalChunks={chunks.length}
-            chunkLabel={chunk.label ?? `section ${chunkIndex + 1}`}
-            subtitle="ready to dance?"
-            onGo={handleOverlayGo}
-          />
-        )}
+        {/* Camera blocked / unavailable: surface as the ONLY overlay so
+            the user can recover. Other camState transitions
+            (idle/requesting/granted/needs_tap) are hidden behind the
+            StartOverlay below — the user's tap on StartOverlay's
+            "start" carries the iOS user-gesture that attachStream
+            needs, so we no longer need a separate camera-tap fallback
+            button. */}
+        {(camState === 'denied' || camState === 'unavailable') &&
+          runState !== 'running' &&
+          runState !== 'finished' && (
+            <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black p-8 text-center">
+              {camState === 'denied' ? (
+                <>
+                  <div className="text-2xl font-bold">Camera blocked</div>
+                  <p className="mt-2 text-sm text-text-muted">
+                    Enable camera in browser settings and reload.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    className="mt-6 rounded-full bg-white px-6 py-2.5 text-sm font-bold text-black"
+                  >
+                    Try again
+                  </button>
+                </>
+              ) : (
+                <div className="text-sm text-text-muted">camera unavailable</div>
+              )}
+            </div>
+          )}
 
-        {runState === 'waiting_for_camera' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black p-8 text-center">
-            {camState === 'requesting' && (
-              <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-            )}
-            {camState === 'denied' && (
-              <>
-                <div className="text-2xl font-bold">Camera blocked</div>
-                <p className="mt-2 text-sm text-text-muted">
-                  Enable camera in browser settings and reload.
-                </p>
-                <button
-                  type="button"
-                  onClick={startCamera}
-                  className="mt-6 rounded-full bg-white px-6 py-2.5 text-sm font-bold text-black"
-                >
-                  Try again
-                </button>
-              </>
-            )}
-            {camState === 'unavailable' && (
-              <div className="text-sm text-text-muted">camera unavailable</div>
-            )}
-            {camState === 'needs_tap' && (
-              <button
-                type="button"
-                onClick={handleTapToStart}
-                className="rounded-full bg-white px-6 py-3 text-sm font-bold text-black"
-              >
-                Start
-              </button>
-            )}
-            {camState === 'granted' && (
-              <div className="text-sm text-text-muted">loading pose tracker…</div>
-            )}
-          </div>
-        )}
+        {/* spec.md §Mode-B-one-start-button fix: StartOverlay now shows
+            during BOTH waiting_for_camera AND ready states. The single
+            "start" button serves as the iOS camera-tap gesture (via
+            onStart → handleTapToStart) AND the countdown trigger. If
+            the camera + extractor aren't ready by the time the 3-2-1
+            countdown reaches GO, the detection loop tolerates it —
+            ex.ready guards each frame, so scoring just picks up once
+            the extractor finishes initializing. */}
+        {(runState === 'waiting_for_camera' || runState === 'ready') &&
+          camState !== 'denied' &&
+          camState !== 'unavailable' && (
+            <StartOverlay
+              chunkNumber={chunkIndex + 1}
+              totalChunks={chunks.length}
+              chunkLabel={chunk.label ?? `section ${chunkIndex + 1}`}
+              subtitle="ready to dance?"
+              onStart={() => {
+                // eslint-disable-next-line no-console
+                console.log('[mode-b] StartOverlay onStart (camState=', camState, ')');
+                // Always safe to call: routes through attachStream
+                // with the live user gesture from this tap.
+                void handleTapToStart();
+              }}
+              onGo={handleOverlayGo}
+            />
+          )}
 
         {/* Final score popup */}
         {runState === 'finished' && finalScore !== null && (
