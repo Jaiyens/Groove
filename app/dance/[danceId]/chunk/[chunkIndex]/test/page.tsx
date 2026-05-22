@@ -9,21 +9,18 @@
 // next-chunk CTA; else offer try-again / back-to-copy.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import BackHomeButton from '@/components/BackHomeButton';
 import CorrectionToast from '@/components/CorrectionToast';
 import DualSkeletonOverlay from '@/components/DualSkeletonOverlay';
 import FramingToast from '@/components/FramingToast';
+import ResultsCard from '@/components/ResultsCard';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
 import { useDance } from '@/lib/dances/useDance';
-import {
-  PASS_THRESHOLD,
-  recordChunkScore,
-} from '@/lib/mastery/chunkProgress';
+import { recordChunkScore } from '@/lib/mastery/chunkProgress';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
@@ -48,7 +45,6 @@ import {
   neutralReferenceFrame,
 } from '@/lib/scoring/syntheticReference';
 import type { CorrectionHint, SessionScore } from '@/lib/scoring/types';
-import { scoreColor } from '@/lib/scoring/types';
 import {
   isDualOverlayEnabled,
   setDualOverlayEnabled,
@@ -476,9 +472,6 @@ export default function TestPage({ params }: PageProps) {
     );
   }
 
-  const passed = finalScore !== null && finalScore >= PASS_THRESHOLD;
-  const hasNextChunk = chunkIndex + 1 < chunks.length;
-  const scoreUI = scoreColor(finalScore ?? 0);
 
   return (
     <main className="relative flex h-full w-full flex-col bg-black">
@@ -637,75 +630,25 @@ export default function TestPage({ params }: PageProps) {
             />
           )}
 
-        {/* Final score popup */}
+        {/* Final score card. Replaces the old "Almost there / 18 /
+            threshold 70" popup with a component-aware results screen.
+            See components/ResultsCard.tsx and SPECK Stage 5. */}
         {runState === 'finished' && finalScore !== null && (
-          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/90 px-8 text-center">
-            <div className="text-xs uppercase tracking-widest text-text-muted">
-              {passed ? 'Chunk passed' : 'Almost there'}
-            </div>
-            <div className={`mt-1 text-[108px] font-extrabold leading-none tabular-nums ${scoreUI.color}`}>
-              {finalScore}
-            </div>
-            <div className="text-xs text-text-muted">
-              threshold {PASS_THRESHOLD}
-            </div>
-
-            {passed && unlockedNext && hasNextChunk && (
-              <div className="mt-3 text-sm font-bold text-accent-green">
-                Chunk {chunkIndex + 2} unlocked
-              </div>
-            )}
-            {passed && !hasNextChunk && (
-              <div className="mt-3 text-sm font-bold text-accent-green">
-                All chunks complete — try the full attempt
-              </div>
-            )}
-
-            <div className="mt-6 flex w-full max-w-xs flex-col gap-2">
-              {passed ? (
-                hasNextChunk ? (
-                  <Link
-                    href={`/dance/${dance.id}/chunk/${chunkIndex + 1}/copy`}
-                    className="rounded-full bg-white py-3 text-center text-sm font-bold text-black"
-                  >
-                    Next chunk
-                  </Link>
-                ) : (
-                  <Link
-                    href={`/dance/${dance.id}/full`}
-                    className="rounded-full bg-white py-3 text-center text-sm font-bold text-black"
-                  >
-                    Full attempt
-                  </Link>
-                )
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRunState('ready');
-                    setFinalScore(null);
-                    setLiveScore(0);
-                    setProgress(0);
-                  }}
-                  className="rounded-full bg-white py-3 text-sm font-bold text-black"
-                >
-                  Try again
-                </button>
-              )}
-              <Link
-                href={`/dance/${dance.id}/chunk/${chunkIndex}/copy`}
-                className="rounded-full bg-bg-card py-3 text-center text-sm font-bold text-white ring-1 ring-white/10"
-              >
-                Back to copy-along
-              </Link>
-              <Link
-                href={`/dance/${dance.id}`}
-                className="py-2 text-center text-xs text-text-muted"
-              >
-                Back to lesson
-              </Link>
-            </div>
-          </div>
+          <ResultsCard
+            danceId={dance.id}
+            chunkIndex={chunkIndex}
+            totalChunks={chunks.length}
+            finalScore={finalScore}
+            sessionScore={sessionScore}
+            unlockedNext={unlockedNext}
+            onRetry={() => {
+              setRunState('ready');
+              setFinalScore(null);
+              setSessionScore(null);
+              setLiveScore(0);
+              setProgress(0);
+            }}
+          />
         )}
       </div>
 
