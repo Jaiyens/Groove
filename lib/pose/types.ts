@@ -114,3 +114,13 @@ export interface FrameSample {
   timestampMs: number;
   vector: JointAngleVector;
 }
+
+// Stage 4 of the SPECK rebuild introduced a parallel input to the
+// scorer that carries raw landmarks rather than a pre-computed angle
+// vector — so the canonicalization step (`lib/pose/canonicalize.ts`)
+// can act as the single chokepoint where every skeleton enters the
+// scoring pipeline. Same timestamp semantics as FrameSample.
+export interface LandmarkFrame {
+  timestampMs: number;
+  landmarks: PoseLandmark[];
+}

@@ -12,7 +12,14 @@
 //      timestamp ranges; the partition strategy is isolated to a single
 //      function so swapping is trivial.
 
-import type { FrameSample, JointAngleVector, JointName } from '@/lib/pose/types';
+import { canonicalizeSkeleton, type CanonicalSkeleton } from '@/lib/pose/canonicalize';
+import {
+  CANONICAL_JOINT_NAMES,
+  jointAnglesFromCanonical,
+  type CanonicalJointAngles,
+  type CanonicalJointName,
+} from '@/lib/pose/jointAngles';
+import type { FrameSample, JointAngleVector, JointName, LandmarkFrame } from '@/lib/pose/types';
 import { JOINT_NAMES } from '@/lib/pose/types';
 import { dtw } from './dtw';
 import {
@@ -35,8 +42,20 @@ import type {
 } from './types';
 
 export interface ScoreSessionInput {
-  userFrames: FrameSample[];
-  referenceFrames: FrameSample[];
+  // Legacy vector-frame inputs. Kept for the existing scorer tests
+  // that build synthetic angle vectors directly (without a
+  // corresponding landmark configuration). Production callers should
+  // use the landmark-frame inputs instead.
+  userFrames?: FrameSample[];
+  referenceFrames?: FrameSample[];
+  // Stage 4 canonical-angle pipeline inputs. When both are provided,
+  // scoreSession canonicalizes each frame and runs the rebuilt scoring
+  // path on the resulting joint-angle vectors. This is the path that
+  // production code (Mode B test/full pages) uses; the Stage 6
+  // calibration suite exercises this path with body-size-invariant
+  // tests.
+  userLandmarkFrames?: LandmarkFrame[];
+  referenceLandmarkFrames?: LandmarkFrame[];
   beatGrid: BeatGrid;
   skillIds: string[];
   totalBeats?: number; // optional override, derived from frames if absent
@@ -103,7 +122,25 @@ export function mirrorJointAngleVector(v: JointAngleVector): JointAngleVector {
 const DTW_MAX_SLACK_MS = 220;
 
 export function scoreSession(input: ScoreSessionInput): SessionScore {
-  const { userFrames, referenceFrames, beatGrid, skillIds } = input;
+  // Stage 4 canonical-angle pipeline: when landmark frames are
+  // provided we canonicalize → joint-angle vector → score on the
+  // body-relative angle space. This is the path Mode B production +
+  // the Stage 6 calibration suite use.
+  if (
+    input.userLandmarkFrames &&
+    input.referenceLandmarkFrames &&
+    (input.userLandmarkFrames.length > 0 || input.referenceLandmarkFrames.length > 0)
+  ) {
+    return scoreSessionFromLandmarks({
+      userLandmarkFrames: input.userLandmarkFrames,
+      referenceLandmarkFrames: input.referenceLandmarkFrames,
+      beatGrid: input.beatGrid,
+      skillIds: input.skillIds,
+    });
+  }
+  const userFrames = input.userFrames ?? [];
+  const referenceFrames = input.referenceFrames ?? [];
+  const { beatGrid, skillIds } = input;
   if (userFrames.length === 0 || referenceFrames.length === 0) {
     return {
       overall: 0,
@@ -478,4 +515,583 @@ function phraseFor(joint: JointName, signed: number): string {
     case 'chest_forward_z':
       return signed > 0 ? `pull your ${noun} back` : `push your ${noun} forward`;
   }
+}
+
+// =======================================================================
+// Stage 4 — canonical-angle scoring pipeline
+//
+// Inputs: raw landmark frames (user + reference). Pipeline per SPECK.md:
+//
+//   for each (user frame F_u, ref frame F_r) aligned by DTW:
+//     c_u = canonicalizeSkeleton(F_u)        // pelvis-origin, torso=1
+//     c_r = canonicalizeSkeleton(F_r)
+//     if either is null → dropped frame
+//     a_u = jointAnglesFromCanonical(c_u)    // 11-dim radians vector
+//     a_r = jointAnglesFromCanonical(c_r)
+//     per_joint_diff[j] = |a_u[j] − a_r[j]|
+//     per_joint_score[j] = max(0, 1 − (diff[j]/TOL[j])^2)
+//     frame_score = sum(w[j] · per_joint_score[j]) / sum(w[j])
+//
+//   weights derived from per-joint variance of the reference angle
+//   sequence (joints that move more get more weight — same idea as the
+//   legacy variance-driven weighting, applied in radian-angle space).
+//
+// All thresholds live at module scope so the next calibration pass can
+// tune them against real recordings without spelunking.
+// =======================================================================
+
+// Per-joint angular tolerance (radians). A user frame whose joint
+// differs from the reference by this much scores 0 on that joint;
+// closer in scores higher, quadratically.
+//
+//   0.35 rad ≈ 20° for limb joints (elbows / shoulders / hips / knees)
+//   0.20 rad ≈ 11° for torsoLean (spine alignment is a tighter signal)
+//   0.25 rad ≈ 14° for shoulderTilt / hipTilt (body-roll axis)
+//
+// Calibration targets:
+//   - half_scale_perfect / translated_perfect → ≥ 95 (perfect canonical
+//     match, only tolerance differences come from floating-point
+//     residue ≈ 1e-15 rad — far below threshold).
+//   - rotated_5deg_perfect → ≥ 90 (5° = 0.087 rad on shoulderTilt
+//     against 0.25 tolerance → 1 − (0.087/0.25)^2 ≈ 0.88 → ~88 per
+//     tilt joint; weighted overall stays near 95 because only the
+//     tilt fields move).
+export const CANONICAL_TOLERANCES: Record<CanonicalJointName, number> = {
+  leftElbow: 0.35,
+  rightElbow: 0.35,
+  leftShoulder: 0.35,
+  rightShoulder: 0.35,
+  leftHip: 0.35,
+  rightHip: 0.35,
+  leftKnee: 0.35,
+  rightKnee: 0.35,
+  torsoLean: 0.20,
+  shoulderTilt: 0.25,
+  hipTilt: 0.25,
+};
+
+// Components grouping for the rebuilt scorer.
+const CANONICAL_COMPONENT_JOINTS: Record<'arms' | 'legs' | 'body', CanonicalJointName[]> = {
+  arms: ['leftElbow', 'rightElbow', 'leftShoulder', 'rightShoulder'],
+  legs: ['leftHip', 'rightHip', 'leftKnee', 'rightKnee'],
+  body: ['torsoLean', 'shoulderTilt', 'hipTilt'],
+};
+
+// Stage 4.4 timing tolerance: the fraction of total path length that
+// each (user, reference) path point is allowed to drift off the
+// diagonal before timing drops to 0. 0.10 ≈ 10% off-diagonal is the
+// "10% of the dance" rule of thumb from the legacy DTW band.
+const TIMING_TOLERANCE = 0.10;
+
+// Floor and shape constants for variance-driven joint weighting on
+// the canonical-angle vector. Mirrors the legacy `MIN_WEIGHT` from
+// `lib/scoring/jointWeights.ts` but scoped to the new joint set.
+const CANONICAL_MIN_WEIGHT = 0.05;
+
+// Below this confidence, a per-joint contribution is treated as
+// dropped — the joint's score and weight both go to 0 for that frame.
+const PER_JOINT_CONFIDENCE_FLOOR = 0.3;
+
+export interface CanonicalScoreSessionInput {
+  userLandmarkFrames: LandmarkFrame[];
+  referenceLandmarkFrames: LandmarkFrame[];
+  beatGrid: BeatGrid;
+  skillIds: string[];
+}
+
+// Per-joint score from an angular delta (radians), with quadratic
+// falloff between 0 and the joint's tolerance.
+export function canonicalPerJointScore(
+  userAngle: number,
+  refAngle: number,
+  tolerance: number,
+): number {
+  if (tolerance <= 0) return 0;
+  const d = Math.abs(userAngle - refAngle);
+  if (!Number.isFinite(d)) return 0;
+  if (d <= 0) return 1;
+  if (d >= tolerance) return 0;
+  const t = 1 - d / tolerance;
+  return t * t;
+}
+
+export type CanonicalJointWeights = Record<CanonicalJointName, number>;
+
+// Derive per-joint weights from the reference's angle-vector variance.
+// Joints that don't move in the reference get the floor weight; joints
+// that move a lot dominate. Output weights sum to N_joints so the
+// average weight is 1 and the weighted mean stays comparable across
+// chunks.
+export function deriveCanonicalJointWeights(
+  referenceAngles: CanonicalJointAngles[],
+): CanonicalJointWeights {
+  const w: CanonicalJointWeights = {} as CanonicalJointWeights;
+  if (referenceAngles.length === 0) {
+    for (const k of CANONICAL_JOINT_NAMES) w[k] = 1;
+    return w;
+  }
+  const N = referenceAngles.length;
+  const raw: Partial<Record<CanonicalJointName, number>> = {};
+  for (const k of CANONICAL_JOINT_NAMES) {
+    let sum = 0;
+    for (let i = 0; i < N; i++) sum += referenceAngles[i]![k] ?? 0;
+    const mean = sum / N;
+    let sq = 0;
+    for (let i = 0; i < N; i++) {
+      const d = (referenceAngles[i]![k] ?? 0) - mean;
+      sq += d * d;
+    }
+    raw[k] = Math.sqrt(sq / N);
+  }
+  let totalRaw = 0;
+  for (const k of CANONICAL_JOINT_NAMES) totalRaw += (raw[k] ?? 0) + CANONICAL_MIN_WEIGHT;
+  const N_JOINTS = CANONICAL_JOINT_NAMES.length;
+  const scale = N_JOINTS / Math.max(1e-9, totalRaw);
+  for (const k of CANONICAL_JOINT_NAMES) {
+    w[k] = ((raw[k] ?? 0) + CANONICAL_MIN_WEIGHT) * scale;
+  }
+  return w;
+}
+
+interface CanonicalCompareResult {
+  perJoint: Record<CanonicalJointName, number>;
+  overall: number; // 0..1
+}
+
+function compareCanonicalFrame(
+  user: CanonicalJointAngles,
+  reference: CanonicalJointAngles,
+  weights: CanonicalJointWeights,
+): CanonicalCompareResult {
+  const perJoint: Record<CanonicalJointName, number> = {} as Record<CanonicalJointName, number>;
+  let total = 0;
+  let sumW = 0;
+  for (const k of CANONICAL_JOINT_NAMES) {
+    const conf = Math.min(user.confidence[k] ?? 1, reference.confidence[k] ?? 1);
+    if (conf < PER_JOINT_CONFIDENCE_FLOOR) {
+      perJoint[k] = 0;
+      continue;
+    }
+    const s = canonicalPerJointScore(user[k], reference[k], CANONICAL_TOLERANCES[k]);
+    perJoint[k] = s;
+    const w = weights[k] ?? 0;
+    total += s * w;
+    sumW += w;
+  }
+  const overall = sumW > 0 ? total / sumW : 0;
+  return { perJoint, overall };
+}
+
+// Local cost for the new DTW: weighted Euclidean over the angle
+// vector. Returns a positive scalar; smaller = closer match.
+function canonicalAngleDistance(
+  a: CanonicalJointAngles,
+  b: CanonicalJointAngles,
+): number {
+  let s = 0;
+  for (const k of CANONICAL_JOINT_NAMES) {
+    const d = a[k] - b[k];
+    s += d * d;
+  }
+  return Math.sqrt(s);
+}
+
+// DTW for the canonical-angle path. Sakoe-Chiba band sized from the
+// 220ms timing slack same as the legacy DTW window heuristic.
+function canonicalDtw(
+  userAngles: CanonicalJointAngles[],
+  refAngles: CanonicalJointAngles[],
+  windowSize: number,
+): Array<[number, number]> {
+  const N = userAngles.length;
+  const M = refAngles.length;
+  if (N === 0 || M === 0) return [];
+  const w = Math.max(windowSize, Math.abs(N - M));
+  const scaleNM = N / M;
+  const D = new Float64Array(N * M);
+  D.fill(Number.POSITIVE_INFINITY);
+  const idx = (i: number, j: number) => i * M + j;
+  for (let i = 0; i < N; i++) {
+    const jLo = Math.max(0, Math.floor(i / scaleNM) - w);
+    const jHi = Math.min(M - 1, Math.ceil(i / scaleNM) + w);
+    for (let j = jLo; j <= jHi; j++) {
+      if (Math.abs(i - j * scaleNM) > w) continue;
+      const local = canonicalAngleDistance(userAngles[i]!, refAngles[j]!);
+      if (i === 0 && j === 0) {
+        D[idx(i, j)] = local;
+        continue;
+      }
+      const a = i > 0 && j > 0 ? D[idx(i - 1, j - 1)]! : Number.POSITIVE_INFINITY;
+      const b = i > 0 ? D[idx(i - 1, j)]! : Number.POSITIVE_INFINITY;
+      const c = j > 0 ? D[idx(i, j - 1)]! : Number.POSITIVE_INFINITY;
+      const minPrev = Math.min(a, b, c);
+      D[idx(i, j)] = local + (Number.isFinite(minPrev) ? minPrev : Number.POSITIVE_INFINITY);
+    }
+  }
+  const path: Array<[number, number]> = [];
+  let i = N - 1;
+  let j = M - 1;
+  path.push([i, j]);
+  while (i > 0 || j > 0) {
+    if (i === 0) {
+      j--;
+    } else if (j === 0) {
+      i--;
+    } else {
+      const a = D[idx(i - 1, j - 1)] ?? Number.POSITIVE_INFINITY;
+      const b = D[idx(i - 1, j)] ?? Number.POSITIVE_INFINITY;
+      const c = D[idx(i, j - 1)] ?? Number.POSITIVE_INFINITY;
+      const min = Math.min(a, b, c);
+      if (min === a) {
+        i--;
+        j--;
+      } else if (min === b) {
+        i--;
+      } else {
+        j--;
+      }
+    }
+    path.push([i, j]);
+  }
+  path.reverse();
+  return path;
+}
+
+// Timing score from DTW path (SPECK 4.4 formula):
+//   1 - mean(|path[i].user/N − path[i].ref/M|) / timing_tolerance
+function canonicalTimingScore(
+  path: ReadonlyArray<readonly [number, number]>,
+  N: number,
+  M: number,
+): number {
+  if (path.length === 0 || N === 0 || M === 0) return 100;
+  let total = 0;
+  for (const [u, r] of path) {
+    const off = Math.abs(u / Math.max(1, N - 1) - r / Math.max(1, M - 1));
+    total += off;
+  }
+  const meanOff = total / path.length;
+  const ratio = Math.min(1, meanOff / TIMING_TOLERANCE);
+  return Math.round((1 - ratio) * 100);
+}
+
+function emptyCanonicalSessionScore(): SessionScore {
+  return {
+    overall: 0,
+    beats: [],
+    frames: [],
+    perSkillScores: {},
+    components: { arms: 0, legs: 0, body: 0, timing: 0 },
+    troubleSpots: [],
+  };
+}
+
+interface PerFrameRecord {
+  tMs: number;
+  score: number;
+  perJoint: Record<CanonicalJointName, number>;
+  refAngles: CanonicalJointAngles;
+  userAngles: CanonicalJointAngles;
+}
+
+export function scoreSessionFromLandmarks(
+  input: CanonicalScoreSessionInput,
+): SessionScore {
+  const { userLandmarkFrames, referenceLandmarkFrames, beatGrid, skillIds } = input;
+  if (userLandmarkFrames.length === 0 || referenceLandmarkFrames.length === 0) {
+    return emptyCanonicalSessionScore();
+  }
+
+  // 1. Canonicalize every input frame. Dropped (null) frames are
+  // skipped — the SPECK contract says "skip frame, count as dropped".
+  const userAngles: CanonicalJointAngles[] = [];
+  const userTimes: number[] = [];
+  for (const f of userLandmarkFrames) {
+    const c = canonicalizeSkeleton({ landmarks: f.landmarks });
+    if (!c) continue;
+    userAngles.push(jointAnglesFromCanonical(c));
+    userTimes.push(f.timestampMs);
+  }
+  const refAngles: CanonicalJointAngles[] = [];
+  const refTimes: number[] = [];
+  for (const f of referenceLandmarkFrames) {
+    const c = canonicalizeSkeleton({ landmarks: f.landmarks });
+    if (!c) continue;
+    refAngles.push(jointAnglesFromCanonical(c));
+    refTimes.push(f.timestampMs);
+  }
+  if (userAngles.length === 0 || refAngles.length === 0) {
+    return emptyCanonicalSessionScore();
+  }
+
+  const weights = deriveCanonicalJointWeights(refAngles);
+
+  // 2. DTW window: same 220ms slack as the legacy scorer, expressed
+  // in path-index units.
+  const dtwWindow = computeCanonicalDtwWindow(userTimes, refTimes);
+  const path = canonicalDtw(userAngles, refAngles, dtwWindow);
+
+  // 3. Per-(user, ref) pair scoring on the warp path.
+  const frames: FrameScore[] = [];
+  const jointTotals: Record<CanonicalJointName, number> = {} as Record<
+    CanonicalJointName,
+    number
+  >;
+  const jointCounts: Record<CanonicalJointName, number> = {} as Record<
+    CanonicalJointName,
+    number
+  >;
+  for (const k of CANONICAL_JOINT_NAMES) {
+    jointTotals[k] = 0;
+    jointCounts[k] = 0;
+  }
+  const perFrame: PerFrameRecord[] = [];
+
+  for (const [u, r] of path) {
+    const userA = userAngles[u]!;
+    const refA = refAngles[r]!;
+    const cmp = compareCanonicalFrame(userA, refA, weights);
+    const score = Math.max(0, Math.min(100, cmp.overall * 100));
+    const userT = userTimes[u]!;
+    const beatIdx = Math.max(0, Math.floor(beatGrid.getBeatAt(userT)));
+    // similarity in FrameScore is legacy — keep it as the same value as
+    // the per-joint weighted overall (cmp.overall in [0,1]) so consumers
+    // that read `similarity` see a comparable number.
+    frames.push({ userIdx: u, refIdx: r, similarity: cmp.overall, score, beatIdx });
+    for (const k of CANONICAL_JOINT_NAMES) {
+      jointTotals[k] += cmp.perJoint[k];
+      jointCounts[k] += 1;
+    }
+    perFrame.push({
+      tMs: userT,
+      score,
+      perJoint: cmp.perJoint,
+      refAngles: refA,
+      userAngles: userA,
+    });
+  }
+
+  // 4. Aggregate by beat.
+  const byBeat = new Map<number, number[]>();
+  for (const f of frames) {
+    const arr = byBeat.get(f.beatIdx);
+    if (arr) arr.push(f.score);
+    else byBeat.set(f.beatIdx, [f.score]);
+  }
+  const beatIdxs = Array.from(byBeat.keys()).sort((a, b) => a - b);
+  const beats: BeatScore[] = beatIdxs.map((idx) => {
+    const xs = byBeat.get(idx)!;
+    return { beatIdx: idx, score: meanArr(xs), frameCount: xs.length };
+  });
+  const overall = beats.length > 0 ? meanArr(beats.map((b) => b.score)) : 0;
+
+  // 5. Components.
+  const components: ComponentScores = {
+    arms: meanCanonicalGroup(jointTotals, jointCounts, CANONICAL_COMPONENT_JOINTS.arms) * 100,
+    legs: meanCanonicalGroup(jointTotals, jointCounts, CANONICAL_COMPONENT_JOINTS.legs) * 100,
+    body: meanCanonicalGroup(jointTotals, jointCounts, CANONICAL_COMPONENT_JOINTS.body) * 100,
+    timing: canonicalTimingScore(path, userAngles.length, refAngles.length),
+  };
+
+  // 6. Trouble spots: 1.5s non-overlapping windows ranked by mean
+  // frame score, filtering to windows that are meaningfully worse
+  // than overall.
+  const troubleSpots = findCanonicalTroubleSpots(perFrame, overall);
+
+  // 7. Per-skill: same uniform partition strategy as the legacy path.
+  const perSkillScores = partitionBeatsToSkillsCanonical(beats, skillIds);
+
+  // Map the canonical joint weights back to the legacy JointName for
+  // SessionScore.jointWeights, which the UI reads. Use approximate
+  // analogues for joints that exist in both vocabularies; map the
+  // tilt joints onto torso_lean since there's no exact match.
+  const legacyWeights: Record<JointName, number> = {
+    left_elbow: weights.leftElbow,
+    right_elbow: weights.rightElbow,
+    left_shoulder: weights.leftShoulder,
+    right_shoulder: weights.rightShoulder,
+    left_hip: weights.leftHip,
+    right_hip: weights.rightHip,
+    left_knee: weights.leftKnee,
+    right_knee: weights.rightKnee,
+    torso_lean: weights.torsoLean,
+    hip_rotation_y: 0,
+    chest_forward_z: 0,
+  };
+
+  return {
+    overall,
+    beats,
+    frames,
+    perSkillScores,
+    components,
+    troubleSpots,
+    jointWeights: legacyWeights,
+  };
+}
+
+function meanArr(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  let s = 0;
+  for (const x of xs) s += x;
+  return s / xs.length;
+}
+
+function meanCanonicalGroup(
+  totals: Record<CanonicalJointName, number>,
+  counts: Record<CanonicalJointName, number>,
+  group: CanonicalJointName[],
+): number {
+  let s = 0;
+  let n = 0;
+  for (const k of group) {
+    if (counts[k] === 0) continue;
+    s += totals[k] / counts[k];
+    n += 1;
+  }
+  return n > 0 ? s / n : 0;
+}
+
+function computeCanonicalDtwWindow(userTimes: number[], refTimes: number[]): number {
+  const candidate = Math.max(userTimes.length, refTimes.length);
+  if (candidate < 4) return Math.max(1, candidate);
+  const longest = userTimes.length >= refTimes.length ? userTimes : refTimes;
+  const deltas: number[] = [];
+  for (let i = 1; i < longest.length; i++) {
+    deltas.push(longest[i]! - longest[i - 1]!);
+  }
+  if (deltas.length === 0) return Math.ceil(candidate * 0.1);
+  deltas.sort((a, b) => a - b);
+  const median = deltas[Math.floor(deltas.length / 2)] ?? 0;
+  if (median <= 0) return Math.ceil(candidate * 0.04);
+  return Math.max(Math.abs(userTimes.length - refTimes.length), Math.ceil(220 / median));
+}
+
+function findCanonicalTroubleSpots(
+  perFrame: PerFrameRecord[],
+  overallScore: number,
+): TroubleSpot[] {
+  if (perFrame.length === 0) return [];
+  const WINDOW_MS = 1500;
+  const STEP_MS = 1500;
+  const t0 = perFrame[0]!.tMs;
+  const tN = perFrame[perFrame.length - 1]!.tMs;
+  const buckets: Array<{ startMs: number; endMs: number; items: PerFrameRecord[] }> = [];
+  for (let start = t0; start < tN; start += STEP_MS) {
+    const end = Math.min(tN, start + WINDOW_MS);
+    const items: PerFrameRecord[] = [];
+    for (const f of perFrame) {
+      if (f.tMs >= start && f.tMs < end) items.push(f);
+    }
+    if (items.length > 0) buckets.push({ startMs: start, endMs: end, items });
+  }
+  const ranked = buckets
+    .map((b) => ({
+      startMs: b.startMs,
+      endMs: b.endMs,
+      score: meanArr(b.items.map((i) => i.score)),
+      items: b.items,
+    }))
+    .sort((a, b) => a.score - b.score);
+  const out: TroubleSpot[] = [];
+  for (const b of ranked) {
+    if (out.length >= 3) break;
+    if (b.score >= overallScore - 8) continue;
+    const worst = worstCanonicalJointInBucket(b.items);
+    out.push({
+      startMs: b.startMs,
+      endMs: b.endMs,
+      score: Math.round(b.score),
+      worstJoint: worst.legacyJoint,
+      worstJointDelta: worst.meanDelta,
+      message: worst.message,
+    });
+  }
+  return out;
+}
+
+const CANONICAL_TO_LEGACY_JOINT: Partial<Record<CanonicalJointName, JointName>> = {
+  leftElbow: 'left_elbow',
+  rightElbow: 'right_elbow',
+  leftShoulder: 'left_shoulder',
+  rightShoulder: 'right_shoulder',
+  leftHip: 'left_hip',
+  rightHip: 'right_hip',
+  leftKnee: 'left_knee',
+  rightKnee: 'right_knee',
+  torsoLean: 'torso_lean',
+  // shoulderTilt + hipTilt have no exact legacy analogue. We map them
+  // onto torso_lean for the trouble-spot label so the UI's pretty-name
+  // dictionary still hits.
+  shoulderTilt: 'torso_lean',
+  hipTilt: 'torso_lean',
+};
+
+const CANONICAL_HINT_PRETTY: Record<CanonicalJointName, string> = {
+  leftElbow: 'left elbow',
+  rightElbow: 'right elbow',
+  leftShoulder: 'left shoulder',
+  rightShoulder: 'right shoulder',
+  leftHip: 'left hip',
+  rightHip: 'right hip',
+  leftKnee: 'left knee',
+  rightKnee: 'right knee',
+  torsoLean: 'torso',
+  shoulderTilt: 'shoulders',
+  hipTilt: 'hips',
+};
+
+function worstCanonicalJointInBucket(items: PerFrameRecord[]): {
+  legacyJoint: JointName | null;
+  meanDelta: number;
+  message: string;
+} {
+  let worst: { joint: CanonicalJointName; meanScore: number; meanDelta: number } | null = null;
+  for (const k of CANONICAL_JOINT_NAMES) {
+    let sumScore = 0;
+    let sumDelta = 0;
+    for (const it of items) {
+      sumScore += it.perJoint[k] ?? 0;
+      sumDelta += Math.abs((it.userAngles[k] ?? 0) - (it.refAngles[k] ?? 0));
+    }
+    const meanScore = sumScore / Math.max(1, items.length);
+    const meanDelta = sumDelta / Math.max(1, items.length);
+    if (!worst || meanScore < worst.meanScore) {
+      worst = { joint: k, meanScore, meanDelta };
+    }
+  }
+  // Convert mean-delta (radians) into degrees for the message so the
+  // UI surface keeps reading natural.
+  if (!worst || worst.meanDelta < 0.17) {
+    return { legacyJoint: null, meanDelta: 0, message: 'rhythm slipped' };
+  }
+  const deg = Math.round((worst.meanDelta * 180) / Math.PI);
+  return {
+    legacyJoint: CANONICAL_TO_LEGACY_JOINT[worst.joint] ?? null,
+    meanDelta: worst.meanDelta,
+    message: `${CANONICAL_HINT_PRETTY[worst.joint]} ${deg}° off`,
+  };
+}
+
+function partitionBeatsToSkillsCanonical(
+  beats: BeatScore[],
+  skillIds: string[],
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (skillIds.length === 0) return out;
+  if (beats.length === 0) {
+    for (const id of skillIds) out[id] = 0;
+    return out;
+  }
+  const overall = meanArr(beats.map((b) => b.score));
+  const B = beats.length;
+  const K = skillIds.length;
+  for (let k = 0; k < K; k++) {
+    const start = Math.floor((k * B) / K);
+    const end = Math.floor(((k + 1) * B) / K);
+    const slice = beats.slice(start, end);
+    const id = skillIds[k]!;
+    out[id] = slice.length > 0 ? meanArr(slice.map((b) => b.score)) : overall;
+  }
+  return out;
 }
