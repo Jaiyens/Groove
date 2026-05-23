@@ -1,18 +1,16 @@
 // Unit tests for the deterministic scoring layer (lib/scoring/deterministic.ts).
 //
-// Six test cases per SPECK.md §lib/scoring/deterministic.ts:
-//   1. Standing still (canary trip) → displayScore: 10, legs: 0
-//   2. Flailing (canary trip) → displayScore: 30, legs: 0
-//   3. Perfect sincere → 85, GROOVY
-//   4. Sincere with 1 moderate + 2 minor → 82, GROOVY (tonight's data shape)
-//   5. Worst-case sincere (3 major + 5 moderate + 5 minor) → clamped to 70
-//   6. legsVisible toggling on a sincere attempt
+// SPECK round-3 §Group-3: the displayed overall is now the arithmetic mean
+// of the VISIBLE components. The earlier formula (SINCERE_BASE - trouble-
+// spot penalties) is gone; trouble spots no longer move the headline. The
+// breakdown is the source of truth.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   computeDeterministicScore,
+  displayedOverall,
   scoreToTier,
 } from '../lib/scoring/deterministic.ts';
 import type { GeminiScore } from '../lib/scoring/gemini/types.ts';
@@ -29,123 +27,145 @@ function makeGemini(overrides: Partial<GeminiScore> = {}): GeminiScore {
   };
 }
 
-function spot(
-  severity: 'major' | 'moderate' | 'minor',
-  i = 0,
-): GeminiScore['trouble_spots'][number] {
-  return {
-    start_sec: i,
-    end_sec: i + 0.5,
-    body_part: 'body',
-    severity,
-    what_happened: 'detail',
-    fix: 'fix',
-  };
-}
-
-describe('computeDeterministicScore — non-attempt path (canary)', () => {
-  it('standing still passes through Gemini overall_score, forces legs to 0', () => {
-    const gemini = makeGemini({
-      is_actually_dancing: false,
-      overall_score: 10,
-      tier: 'NOT_DANCING',
-      components: { arms: 5, legs: 75, body: 8, timing: 12 },
-    });
-    const result = computeDeterministicScore(gemini, true);
-    assert.equal(result.displayScore, 10);
-    assert.equal(result.displayTier, 'NOT_DANCING');
-    assert.equal(result.components.legs, 0);
-    assert.equal(result.isActuallyDancing, false);
+describe('displayedOverall — SPECK round-3 acceptance numbers', () => {
+  it('legsVisible=true uses the 4-component mean', () => {
+    // SPECK acceptance: arms 50, legs 75, body 35, timing 45 → 51.
+    assert.equal(
+      displayedOverall({ arms: 50, legs: 75, body: 35, timing: 45 }, true),
+      51,
+    );
   });
 
-  it('flailing — passes through ≤39, legs forced to 0', () => {
-    const gemini = makeGemini({
-      is_actually_dancing: false,
-      overall_score: 30,
-      tier: 'NOT_DANCING',
-      components: { arms: 40, legs: 75, body: 35, timing: 25 },
-    });
-    const result = computeDeterministicScore(gemini, true);
-    assert.equal(result.displayScore, 30);
-    assert.equal(result.components.legs, 0);
-    assert.equal(result.displayTier, 'NOT_DANCING');
+  it('legsVisible=false uses the 3-component mean and ignores legs entirely', () => {
+    // SPECK acceptance: same input, legsVisible=false → 43.
+    assert.equal(
+      displayedOverall({ arms: 50, legs: 75, body: 35, timing: 45 }, false),
+      43,
+    );
   });
 
-  it('clamps non-attempt to ≤39 even if Gemini returned a high number', () => {
-    const gemini = makeGemini({
-      is_actually_dancing: false,
-      overall_score: 60, // model contradicted itself
-    });
-    const result = computeDeterministicScore(gemini, true);
-    assert.equal(result.displayScore, 39);
-    assert.equal(result.displayTier, 'NOT_DANCING');
+  it('legs=null + legsVisible=true falls back to the 3-component mean (defensive)', () => {
+    assert.equal(
+      displayedOverall({ arms: 60, legs: null, body: 60, timing: 60 }, true),
+      60,
+    );
+  });
+
+  it('legs=null + legsVisible=false same as legsVisible=true with legs=null', () => {
+    assert.equal(
+      displayedOverall({ arms: 80, legs: null, body: 70, timing: 90 }, false),
+      80,
+    );
+  });
+
+  it('rounds half-up to the nearest integer', () => {
+    // (10 + 10 + 11 + 11) / 4 = 10.5 → 11
+    assert.equal(
+      displayedOverall({ arms: 10, legs: 10, body: 11, timing: 11 }, true),
+      11,
+    );
   });
 });
 
-describe('computeDeterministicScore — sincere-attempt path', () => {
-  it('perfect sincere (no trouble spots) → 85, GROOVY', () => {
-    const gemini = makeGemini({ trouble_spots: [] });
-    const result = computeDeterministicScore(gemini, true);
-    assert.equal(result.displayScore, 85);
-    assert.equal(result.displayTier, 'GROOVY');
-  });
-
-  it("tonight's shape (1 moderate + 2 minor) → 82, SOLID", () => {
-    // SPECK names this case "→ 82, GROOVY" but that contradicts the
-    // tier function in the same spec (GROOVY ≥ 85). The formula is the
-    // source of truth: 85 - 2 - 1 = 82, scoreToTier(82) = SOLID. The
-    // ResultsCard color zone for 75-84 is yellow-green / "NICE WORK." —
-    // still a clear win for the user, which is the product intent.
+describe('computeDeterministicScore — sincere attempt (mean of components)', () => {
+  it('mean of 4 components when legsVisible=true', () => {
     const gemini = makeGemini({
-      trouble_spots: [spot('moderate', 0), spot('minor', 1), spot('minor', 2)],
+      overall_score: 95,
+      components: { arms: 80, legs: 70, body: 90, timing: 80 },
     });
     const result = computeDeterministicScore(gemini, true);
-    assert.equal(result.displayScore, 82);
+    // (80+70+90+80)/4 = 80
+    assert.equal(result.displayScore, 80);
+    assert.equal(result.displayTier, 'SOLID');
+    assert.equal(result.components.legs, 70);
+    assert.equal(result.isActuallyDancing, true);
+  });
+
+  it('headline matches the breakdown for the original failure shape (was 81, now 51)', () => {
+    // The validation data point this spec was written to fix:
+    // arms 50, legs 75, body 35, timing 45 — Gemini's overall said 51,
+    // a separate "boost" pushed the headline to 81. Now the headline IS 51.
+    const gemini = makeGemini({
+      overall_score: 51,
+      components: { arms: 50, legs: 75, body: 35, timing: 45 },
+    });
+    const result = computeDeterministicScore(gemini, true);
+    assert.equal(result.displayScore, 51);
+    assert.equal(result.displayTier, 'TRYING');
+    // The Gemini raw is still surfaced for the debug pill.
+    assert.equal(result.geminiRawScore, 51);
+  });
+
+  it('legsVisible=false excludes legs from the mean and sets components.legs to null', () => {
+    const gemini = makeGemini({
+      components: { arms: 80, legs: 42, body: 80, timing: 80 },
+    });
+    const result = computeDeterministicScore(gemini, false);
+    assert.equal(result.components.legs, null);
+    // (80+80+80)/3 = 80
+    assert.equal(result.displayScore, 80);
     assert.equal(result.displayTier, 'SOLID');
   });
 
-  it('worst-case sincere caps trouble-spot penalty at the SHAKY floor (70)', () => {
-    const gemini = makeGemini({
-      trouble_spots: [
-        spot('major', 0),
-        spot('major', 1),
-        spot('major', 2),
-        spot('moderate', 3),
-        spot('moderate', 4),
-      ],
-    });
-    const result = computeDeterministicScore(gemini, true);
-    // 85 - 10 (major cap) - 4 (2 moderate, no minor) = 71 → still SHAKY
-    // The cap design means we can't actually push below 70 from trouble
-    // spots alone; the clamp is a safety net.
-    assert.ok(result.displayScore >= 70, `expected ≥70, got ${result.displayScore}`);
-    assert.ok(result.displayScore <= 75, `expected ≤75, got ${result.displayScore}`);
-    assert.ok(['SHAKY', 'SOLID'].includes(result.displayTier));
-  });
-});
-
-describe('computeDeterministicScore — legsVisible behavior', () => {
-  it('legsVisible=true passes Gemini legs component through', () => {
+  it('legsVisible=true keeps Gemini legs in the components', () => {
     const gemini = makeGemini({
       components: { arms: 80, legs: 42, body: 80, timing: 80 },
     });
     const result = computeDeterministicScore(gemini, true);
     assert.equal(result.components.legs, 42);
   });
+});
 
-  it('legsVisible=false defaults legs to 75 (upper-body framing)', () => {
+describe('computeDeterministicScore — non-attempt path', () => {
+  it('non-attempt + legsVisible=true: legs forced to 0; mean includes that 0', () => {
     const gemini = makeGemini({
-      components: { arms: 80, legs: 42, body: 80, timing: 80 },
+      is_actually_dancing: false,
+      overall_score: 12,
+      tier: 'NOT_DANCING',
+      // Gemini's legs would default ~75 here — Group 3 forces it to 0
+      // so the bar matches reality.
+      components: { arms: 5, legs: 75, body: 8, timing: 12 },
+    });
+    const result = computeDeterministicScore(gemini, true);
+    assert.equal(result.components.legs, 0);
+    // (5+0+8+12)/4 = 6.25 → 6
+    assert.equal(result.displayScore, 6);
+    assert.equal(result.displayTier, 'NOT_DANCING');
+    assert.equal(result.isActuallyDancing, false);
+  });
+
+  it('non-attempt + legsVisible=false: legs is null; mean excludes legs', () => {
+    const gemini = makeGemini({
+      is_actually_dancing: false,
+      overall_score: 10,
+      components: { arms: 10, legs: 75, body: 15, timing: 5 },
     });
     const result = computeDeterministicScore(gemini, false);
-    assert.equal(result.components.legs, 75);
+    assert.equal(result.components.legs, null);
+    // (10+15+5)/3 = 10
+    assert.equal(result.displayScore, 10);
+    assert.equal(result.displayTier, 'NOT_DANCING');
+  });
+
+  it('non-attempt tier is always NOT_DANCING even when components mean to >=40', () => {
+    // Group 4 will tighten Gemini so this doesn't happen, but if it does
+    // (model contradicts itself), tier must still reflect the canary.
+    const gemini = makeGemini({
+      is_actually_dancing: false,
+      overall_score: 30,
+      components: { arms: 60, legs: 50, body: 50, timing: 50 },
+    });
+    const result = computeDeterministicScore(gemini, true);
+    // legs forced to 0 → (60+0+50+50)/4 = 40
+    assert.equal(result.displayScore, 40);
+    assert.equal(result.displayTier, 'NOT_DANCING');
   });
 });
 
 describe('computeDeterministicScore — purity', () => {
   it('is deterministic for the same input', () => {
     const gemini = makeGemini({
-      trouble_spots: [spot('moderate'), spot('minor', 1)],
+      components: { arms: 70, legs: 60, body: 65, timing: 75 },
     });
     const a = computeDeterministicScore(gemini, true);
     const b = computeDeterministicScore(gemini, true);
@@ -153,10 +173,30 @@ describe('computeDeterministicScore — purity', () => {
   });
 
   it('does not mutate input', () => {
-    const gemini = makeGemini({ trouble_spots: [spot('major')] });
+    const gemini = makeGemini();
     const snapshot = JSON.parse(JSON.stringify(gemini));
     computeDeterministicScore(gemini, true);
     assert.deepEqual(gemini, snapshot);
+  });
+
+  it('trouble_spots no longer affect the headline', () => {
+    // Round 2 dialed displayScore by trouble-spot count; round 3 does not.
+    const noSpots = computeDeterministicScore(
+      makeGemini({ trouble_spots: [] }),
+      true,
+    );
+    const manySpots = computeDeterministicScore(
+      makeGemini({
+        trouble_spots: [
+          { start_sec: 0, end_sec: 0.5, body_part: 'body', severity: 'major', what_happened: 'x', fix: 'x' },
+          { start_sec: 0.5, end_sec: 1, body_part: 'arms', severity: 'major', what_happened: 'x', fix: 'x' },
+          { start_sec: 1, end_sec: 1.5, body_part: 'arms', severity: 'moderate', what_happened: 'x', fix: 'x' },
+          { start_sec: 1.5, end_sec: 2, body_part: 'arms', severity: 'minor', what_happened: 'x', fix: 'x' },
+        ],
+      }),
+      true,
+    );
+    assert.equal(noSpots.displayScore, manySpots.displayScore);
   });
 });
 

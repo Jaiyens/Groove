@@ -351,11 +351,7 @@ function GeminiResultsView({
           label="Legs"
           score={display.components.legs}
           note={
-            !display.isActuallyDancing
-              ? null
-              : finalView.legsVisible === false
-                ? '(upper body only)'
-                : null
+            display.components.legs === null ? '(upper body only)' : null
           }
         />
         <ComponentBar label="Body" score={display.components.body} />
@@ -463,10 +459,13 @@ function CompareTable({
   // sees), Gemini raw (model output, calibration drift), MediaPipe
   // (pose-only baseline). Helps the validator diagnose why the headline
   // diverges from either underlying signal.
-  const rows: Array<[string, number, number, number | null]> = [
+  // SPECK round-3 §Group-3: display.components.legs is nullable
+  // (upper-body-only attempts). Gemini's legs is still always-number per
+  // the current schema; render a dash when the displayed legs is null.
+  const rows: Array<[string, number | null, number, number | null]> = [
     ['Overall', display.displayScore, Math.round(geminiRawOverall), mediapipeOverall != null ? Math.round(mediapipeOverall) : null],
     ['Arms', display.components.arms, Math.round(gemini.arms), mediapipe?.arms != null ? Math.round(mediapipe.arms) : null],
-    ['Legs', display.components.legs, Math.round(gemini.legs), mediapipe?.legs != null ? Math.round(mediapipe.legs) : null],
+    ['Legs', display.components.legs, Math.round(gemini.legs ?? 0), mediapipe?.legs != null ? Math.round(mediapipe.legs) : null],
     ['Body', display.components.body, Math.round(gemini.body), mediapipe?.body != null ? Math.round(mediapipe.body) : null],
     ['Timing', display.components.timing, Math.round(gemini.timing), mediapipe?.timing != null ? Math.round(mediapipe.timing) : null],
   ];
@@ -482,7 +481,7 @@ function CompareTable({
         {rows.map(([label, d, g, mp]) => (
           <li key={label} className="grid grid-cols-4 gap-2 text-xs tabular-nums">
             <span className="text-left text-white/75">{label}</span>
-            <span className="text-right text-white">{d}</span>
+            <span className="text-right text-white">{d != null ? d : '—'}</span>
             <span className="text-right text-white/75">{g}</span>
             <span className="text-right text-white/55">{mp != null ? mp : '—'}</span>
           </li>
@@ -544,12 +543,32 @@ function ComponentBar({
   note,
 }: {
   label: string;
-  score: number;
-  // Small contextual subtitle under the label — used to explain a
-  // defaulted leg score when the user filmed upper-body only (SPECK
-  // §windowing-fix). Null when no annotation applies.
+  // SPECK round-3 §Group-3: null means "this dimension was not assessed"
+  // (legs on an upper-body-only attempt). Renders as a dim dash with no
+  // bar fill — never as 0, which would read as "the user failed legs."
+  score: number | null;
+  // Small contextual subtitle under the label. Null when no annotation
+  // applies.
   note?: string | null;
 }) {
+  if (score === null) {
+    return (
+      <div className="rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[11px] uppercase tracking-widest text-white/60">
+            {label}
+          </span>
+          <span className="text-sm font-bold tabular-nums text-white/35">—</span>
+        </div>
+        {note && (
+          <div className="mt-0.5 text-[9px] uppercase tracking-widest text-white/35">
+            {note}
+          </div>
+        )}
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/5" />
+      </div>
+    );
+  }
   const rounded = Math.round(Math.max(0, Math.min(100, score)));
   return (
     <div className="rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">

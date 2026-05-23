@@ -28,8 +28,10 @@ import type { GeminiScore, GeminiBodyPart, GeminiTier } from '@/lib/scoring/gemi
 import type { JointName } from '@/lib/pose/types';
 import {
   computeDeterministicScore,
+  displayedOverall,
   scoreToTier,
   type DeterministicScore,
+  type DeterministicScoreComponents,
 } from '@/lib/scoring/deterministic';
 
 export type FinalScoreSource = 'gemini' | 'mediapipe-fallback';
@@ -189,17 +191,23 @@ function mediapipeToDisplayScore(
   shaped: GeminiScore,
   legsVisible: boolean,
 ): DeterministicScore {
-  const displayScore = Math.round(shaped.overall_score);
+  // SPECK round-3 §Group-3: even on the MediaPipe-fallback path, the
+  // headline is the mean of visible components. legsVisible=false → legs
+  // null and excluded from the mean.
+  const components: DeterministicScoreComponents = {
+    arms: Math.round(shaped.components.arms),
+    legs: legsVisible ? Math.round(shaped.components.legs ?? 0) : null,
+    body: Math.round(shaped.components.body),
+    timing: Math.round(shaped.components.timing),
+  };
+  const displayScore = displayedOverall(components, legsVisible);
   return {
     displayScore,
-    displayTier: scoreToTier(displayScore),
+    displayTier: shaped.is_actually_dancing
+      ? scoreToTier(displayScore)
+      : 'NOT_DANCING',
     geminiRawScore: shaped.overall_score,
     isActuallyDancing: shaped.is_actually_dancing,
-    components: {
-      arms: Math.round(shaped.components.arms),
-      legs: legsVisible ? Math.round(shaped.components.legs) : 75,
-      body: Math.round(shaped.components.body),
-      timing: Math.round(shaped.components.timing),
-    },
+    components,
   };
 }
