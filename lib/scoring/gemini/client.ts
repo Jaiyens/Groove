@@ -38,6 +38,7 @@
 
 import { GeminiScoreSchema, type GeminiScore } from './types';
 import { detectMotionOnsetIndex } from './motionOnset';
+import { finalizeWebmDuration } from './webmDuration';
 
 export type GeminiResult =
   | { kind: 'success'; score: GeminiScore; latencyMs: number }
@@ -344,15 +345,17 @@ async function detectMotionOnsetInVideo(
 
   const onsetIdx = detectMotionOnsetIndex(samples);
   if (onsetIdx === null) {
+    // Round-4 algorithm: returns null only when the windowed max is below
+    // the 0.5 absolute floor — i.e. the stream is essentially still or
+    // the canvas read produced near-blank frames (CORS taint that didn't
+    // throw, frozen video, blank source). The 50%-of-max rule otherwise
+    // always finds an onset, so this branch now narrows the diagnosis:
+    // sampleMax below 0.5 = video is silent for our purposes; check the
+    // openHiddenVideo metadata log + the per-iteration phase tags above.
     // eslint-disable-next-line no-console
     console.warn('[gemini-client] motion-onset detect early-return: no onset found within scan window', {
       samplesCollected: samples.length,
       ...stats,
-      // The decision rule for onset is: sample > 3× rolling baseline of the
-      // previous 3 samples AND sample ≥ 0.5 absolute floor. If max sample is
-      // below the floor the stream is essentially still; if max ratio over
-      // baseline is below 3× the stream is too uniform (e.g. a fully static
-      // pre-roll with no motion-onset hit reached within the scan limit).
     });
     return null;
   }
@@ -533,6 +536,18 @@ async function trimReferenceClientSide(
 
   const { video, dispose } = await openHiddenVideo(url);
   try {
+    // Round-4 Fix 1: even though the reference is fetched from a normal
+    // URL (not a MediaRecorder blob), apply the seek-to-end-then-back
+    // pass defensively — some CDNs serve webm with un-finalized indexes
+    // and the helper short-circuits when the duration already looks
+    // sane, so it costs nothing for the normal case.
+    const refDurationFix = await finalizeWebmDuration(
+      video,
+      (sec) => seekVideo(video, sec),
+    );
+    // eslint-disable-next-line no-console
+    console.log('[gemini-client] motion-onset trimReference: duration-finalize', refDurationFix);
+
     const durationSec = video.duration;
     if (!Number.isFinite(durationSec) || durationSec <= 0) {
       // eslint-disable-next-line no-console
@@ -665,18 +680,31 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
   try {
     const { video, dispose } = await openHiddenVideo(objectUrl);
     try {
+      // Round-4 Fix 1: MediaRecorder webm blobs notoriously surface
+      // duration=0.001 (or Infinity, or NaN) until a seek-to-end forces
+      // the container index to write. Without this pass, the scan window
+      // collapses to ~0 samples and detectMotionOnsetInVideo returns null
+      // — the exact failure mode the round-4 diagnosis logs caught.
+      const durationFix = await finalizeWebmDuration(
+        video,
+        (sec) => seekVideo(video, sec),
+      );
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset trimAttempt: duration-finalize', durationFix);
+
       const durationSec = video.duration;
       if (!Number.isFinite(durationSec) || durationSec <= 0) {
-        // Some MediaRecorder outputs don't surface a valid duration. Fall
-        // back to passing the blob through. This is the most common cause
-        // of `attemptMotionOnsetSec: null` in the wild — MediaRecorder
-        // webm chunks frequently surface duration=Infinity or NaN until a
-        // full seek-to-end finalizes the index. Worth logging the exact
-        // value so we can tell that case apart from a truly malformed blob.
+        // Even with the duration-finalize pass, some MediaRecorder
+        // outputs still won't surface a valid duration. Fall back to
+        // passing the blob through unchanged.
         // eslint-disable-next-line no-console
-        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid', {
+        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid (after finalize)', {
           durationSec,
           isFinite: Number.isFinite(durationSec),
+          finalizeAttempted: durationFix.attempted,
+          finalizeFixed: durationFix.fixed,
+          finalizeDurationBefore: durationFix.durationBefore,
+          finalizeDurationAfter: durationFix.durationAfter,
           blobBytes: attemptBlob.size,
           blobType: attemptBlob.type,
         });
