@@ -326,12 +326,29 @@ export async function scoreWithGemini(
     });
 
     if (!res.ok) {
+      // Server returns { error, reason? } on 502 — the route's classified
+      // FailureReason tag, when available, is more useful than the bare
+      // status code. Tag the reason `gemini_failed_after_retry` on a 502
+      // so the UI/caller can tell "retry already happened" apart from a
+      // first-attempt failure.
       let detail = '';
+      let upstreamReason: string | undefined;
       try {
-        const errJson = (await res.json()) as { error?: string };
+        const errJson = (await res.json()) as { error?: string; reason?: string };
         detail = errJson.error ? `: ${errJson.error}` : '';
+        upstreamReason = errJson.reason;
       } catch {
         // body wasn't JSON, drop it
+      }
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[gemini-client] api ${res.status} reason=${upstreamReason ?? 'unknown'}${detail}`,
+      );
+      if (res.status === 502) {
+        return {
+          kind: 'error',
+          reason: `gemini_failed_after_retry${upstreamReason ? `:${upstreamReason}` : ''}`,
+        };
       }
       return { kind: 'error', reason: `gemini api ${res.status}${detail}` };
     }
