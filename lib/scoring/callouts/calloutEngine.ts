@@ -53,6 +53,16 @@ export function createCalloutEngine(config: CalloutEngineConfig): CalloutEngine 
   // the max.
   const beatMax: number[] = beats.map(() => -Infinity);
   let nextBeatToCommit = 0;
+  // Per-frame ingestion counter. We log every 30th frame so the terminal
+  // sees similarity values without flooding (the detection loop runs at
+  // 30-60Hz; sampling at 30 gives ~1 line/sec at 30fps).
+  let frameCount = 0;
+
+  // SPECK §callout-investigation: layer 1 — init log. After running one
+  // attempt, this line MUST appear in the terminal. If it doesn't, the
+  // engine isn't being instantiated at all.
+  // eslint-disable-next-line no-console
+  console.log('[callout-engine][init] accentBeats=', beats.length);
 
   const commitUpTo = (latestFrameTs: number) => {
     while (nextBeatToCommit < beats.length) {
@@ -65,23 +75,29 @@ export function createCalloutEngine(config: CalloutEngineConfig): CalloutEngine 
       // and a phantom ALMOST would be misleading.
       if (Number.isFinite(maxSim)) {
         const tier = tierForSimilarity(maxSim);
-        // Per-beat diagnostic so the human can see in the terminal whether
-        // a sincere attempt is producing the expected tier mix. Expected
-        // for a real attempt: mostly PERFECT / GREAT with the occasional
-        // GROOVY peak and rare ALMOST. If every beat is GROOVY (0.9+),
-        // there's a normalization bug upstream — values are inflated and
-        // we should either tune thresholds or fix the per-frame
-        // similarity pipeline.
+        // SPECK §callout-investigation: layer 3 — per-beat decision log
+        // (kept from previous spec). If [init] fires but no [beat] logs
+        // appear, the engine isn't receiving frames at all OR beats are
+        // outside the frame timestamps. Expected mix on a real attempt:
+        // mostly PERFECT/GREAT with occasional GROOVY peaks and rare
+        // ALMOST. Every-beat-GROOVY means a normalization bug upstream.
         // eslint-disable-next-line no-console
         console.log(
-          `[callout-engine] beat=${nextBeatToCommit} timestamp=${beatTs.toFixed(0)}ms windowMaxSimilarity=${maxSim.toFixed(3)} tier=${tier}`,
+          `[callout-engine][beat] index=${nextBeatToCommit} windowMax=${maxSim.toFixed(3)} tier=${tier}`,
         );
-        config.onCallout({
+        const event: CalloutEvent = {
           tier,
           beatIndex: nextBeatToCommit,
           timestamp: beatTs,
           similarity: maxSim,
-        });
+        };
+        // SPECK §callout-investigation: layer 4 — callback fire log.
+        // Confirms the consumer (overlay) actually receives the event.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[callout-engine][fire] tier=${event.tier} at=${event.timestamp.toFixed(0)}`,
+        );
+        config.onCallout(event);
       }
       nextBeatToCommit += 1;
     }
@@ -89,6 +105,17 @@ export function createCalloutEngine(config: CalloutEngineConfig): CalloutEngine 
 
   return {
     ingestFrame: ({ timestamp, similarity }) => {
+      // SPECK §callout-investigation: layer 2 — per-frame ingestion log,
+      // sampled at 1-in-30 so we don't flood. If [init] fires but no
+      // [frame] logs appear, the engine is created but no frames reach
+      // it — bug is at the orchestrator's ingestFrame call site.
+      frameCount += 1;
+      if (frameCount % 30 === 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[callout-engine][frame] ts=${timestamp.toFixed(0)} similarity=${similarity.toFixed(3)}`,
+        );
+      }
       // Sweep any beats whose window has already closed before this frame.
       commitUpTo(timestamp);
       // Then accumulate into the current and immediately-upcoming beat

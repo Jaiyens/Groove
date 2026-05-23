@@ -401,6 +401,17 @@ export default function TestPage({ params }: PageProps) {
       accentBeatTimestamps: accentBeats,
       onCallout: (event) => setLatestCallout(event),
     });
+    // SPECK §callout-investigation: confirms the engine is wired up at
+    // the orchestrator level. If [init] fires but this line doesn't,
+    // something weird is happening with the createCalloutEngine return
+    // value. If this line fires but no [frame] logs follow, ingestFrame
+    // isn't being called.
+    // eslint-disable-next-line no-console
+    console.log('[mode-b][callout-wired] engine created', {
+      accentBeatCount: accentBeats.length,
+      sessionDurationMs,
+      bpm: dance.bpm,
+    });
 
     // MediaRecorder: capture the camera-only stream so the post-
     // attempt grader (Gemini) gets a real attempt video. We record
