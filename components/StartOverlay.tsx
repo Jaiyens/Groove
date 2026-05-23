@@ -93,15 +93,13 @@ export default function StartOverlay({
         </button>
       )}
 
-      {phase === 'counting' && (
-        <div className="mt-8 text-[160px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
-          {count}
-        </div>
-      )}
-
-      {phase === 'go' && (
-        <div className="mt-8 text-[160px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]">
-          GO
+      {(phase === 'counting' || phase === 'go') && (
+        <div
+          className="mt-8 text-[160px] font-medium leading-none tabular-nums text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.6)]"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {phase === 'go' ? 'GO' : count}
         </div>
       )}
     </div>
