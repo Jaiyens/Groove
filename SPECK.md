@@ -1,319 +1,272 @@
-# SPECK.md — Deterministic Scoring + Side-by-Side Holding Screen + Callout Investigation
+# SPEC: Scoring round 3 — fix what validation surfaced
 
-## Context — read this first
+## Context — read this BEFORE you touch any file
 
-Validation of the previous PR (`gemini-generosity-and-ui`) revealed three things:
+Two prior PRs landed: `gemini-windowing-fix` (chunk-trimming reference video, leg-visibility branch, schema-locked prompt) and `gemini-generosity-and-ui` (prompt rewrite, callout UI redesign, callout diagnostic logging). Validation tonight on a real device, three attempts on the same chunk, surfaced five specific failures. This PR fixes them. The architecture stays — MediaPipe drives live callouts during the dance, Gemini drives the post-attempt verdict, MediaPipe falls back on Gemini failure. No structural changes.
 
-**What's working:**
-- Canary is solid. Standing still scores 10, hands-up flailing scores 30. Both correctly tagged `is_actually_dancing: false`. The Gemini signal is reliable enough to be the foundation of further scoring logic.
-- Energy bias is eliminated. Sincere attempt = 55. Same attempt with 300% energy = 55. The prompt fix worked.
-- UI tier-matched headlines and colors render correctly.
+**The five failures, with the actual data:**
 
-**What's not:**
-- Sincere attempts score 55. That's too low for the product to feel rewarding. Users who try will see "GETTING THERE." with a 55 and disengage. We've iterated on the prompt twice trying to push this number up and it barely moves. **We're going to stop fighting the model and compute the displayed score deterministically.**
-- Legs default to 75 even when the user isn't dancing. Standing-still results show "75 LEGS" alongside zeros — looks like a UI bug.
-- Live callouts always fire GROOVY. Previous spec added diagnostic logging but no `[callout-engine]` lines appeared in terminal logs during validation. The engine may not be running at all, or the logging is on the wrong path. Needs real investigation, not tuning.
-- The holding screen still shows only the user's attempt with skeleton overlay. The user asked two specs ago for a side-by-side with the reference video. It was deferred. Shipping it now.
+1. **Sincere attempt (chunk 1/3):** Gemini raw 51, MediaPipe debug 33, displayed overall **81**. Components shown: arms 50, legs 75 (upper-body-only), body 35, timing 45 → arithmetic mean 51. The overall 81 does not match the component breakdown. A user looking at that screen cannot reconcile the number with the bars.
 
-This PR addresses all four. Branch off the latest `gemini-generosity-and-ui` (or main if merged) into `gemini-deterministic-and-sidebyside`.
+2. **Same attempt:** trouble spots reported at 0:00 and 0:02 — both inside the pre-roll padding where the dancer is walking back to the camera, not performing the choreography. The prompt has a padding-ignore clause; it is being ignored. The "Your body remained still throughout the dance" trouble spot spans 0:00–7:38, i.e. the entire chunk including padding.
 
----
+3. **Same attempt — mirroring is broken at the model layer.** Mode A mirrors the reference video for the learner (transform: scaleX(-1) on the REF panel). The learner therefore practices a mirrored version of the dance. In Mode B, the user's attempt is captured from the front-facing camera, which is also mirrored. The reference video sent to Gemini is the **raw, unmirrored** source video. So Gemini compares: unmirrored reference vs mirrored attempt. The current prompt's "grade as a mirror copy" clause was correct for that pairing, but it does not help when the user learned the mirrored version and is replaying it — left/right correspondence between what the user learned and what Gemini scores is now inverted by one flip. Trouble spots citing "right hand thumbs-up gesture" when the user was copying what they saw as their own left hand are an artifact of this.
 
-## Hard rules
+4. **Standing-still attempt:** Gemini fell back to MediaPipe (header reads "FALLBACK SCORING," score 44). Components: arms 19, legs 75 (upper-body-only), body 68, timing 0 → mean 41. Score of 44 for standing still is too high for a NOT_DANCING canary. Separate issue: the legs=75 default for upper-body-only is contributing to the overall as if legs were performed correctly, when in fact legs were not assessed. Upper-body-only mode should EXCLUDE legs from the overall, not impute 75 to it.
 
-1. Architecture stays the same. We're adding a deterministic scoring layer on top of Gemini, not replacing Gemini.
-2. Gemini's `overall_score` becomes an internal debug field. It is logged but never displayed.
-3. All diagnostic logging from previous rounds stays.
-4. Branch: `gemini-deterministic-and-sidebyside`. One commit per file group. Do not push to main.
-5. Mobile-first: verify at 390px.
+5. **Live callouts always read GROOVY**, third report in three rounds. The callout overlay is firing GROOVY on every accent beat regardless of similarity score. Either (a) the threshold check is being short-circuited, (b) the similarity stream feeding the engine is saturated, (c) the tier mapping is bypassed by a default, or (d) the diagnostic logging added in round 2 was never wired to console. Find the cause before changing anything.
+
+6. **Flailing attempt scored 75 with the SOLID tier.** Gemini raw was 45, MediaPipe debug 16, displayed 75. The displayed score for random flailing should be below 40. This is the NOT_DANCING canary failing harder than it failed in round 2 (where flailing scored 50). The generosity rewrite over-corrected.
+
+**Hard rules:**
+
+1. Architecture unchanged. MediaPipe live, Gemini post-attempt, MediaPipe fallback.
+2. All diagnostic logging from rounds 1 and 2 stays. Add to it.
+3. Branch off whatever is current main (or the latest gemini-* branch if rounds 1 and 2 are not yet merged) into `scoring-round-3`. One commit per file group. Do not push to main.
+4. Do not modify the chunk-windowing logic from round 1.
+5. Mobile-first; verify at 390px.
+6. **Do not "tune" thresholds blindly.** For the callout always-GROOVY bug specifically, instrument first, diagnose, then fix. If the diagnosis is "the similarity stream is saturated near 1.0 always," that is a scoring-layer bug, not a threshold-tuning problem, and you should stop and flag.
 
 ---
 
 ## File-by-file plan
 
-### NEW: `lib/scoring/deterministic.ts`
-
-The deterministic scoring layer. Takes Gemini's structured output and computes the displayed score using a formula calibrated for product psychology, not measurement accuracy.
-
-```typescript
-import type { GeminiScore } from './gemini/types';
-
-export type DeterministicScore = {
-  displayScore: number;        // 0-100, what the user sees
-  displayTier: 'NOT_DANCING' | 'TRYING' | 'SHAKY' | 'SOLID' | 'GROOVY';
-  geminiRawScore: number;      // For debug pill / "why are these different"
-  isActuallyDancing: boolean;
-  components: {                // What the UI renders
-    arms: number;
-    legs: number;
-    body: number;
-    timing: number;
-  };
-};
-
-/**
- * Computes the displayed score from Gemini's structured output.
- *
- * Design philosophy: Gemini is excellent at qualitative judgment (what happened,
- * what went wrong, what to fix) and unreliable at consistent quantitative scoring.
- * We use Gemini's judgment to drive a deterministic formula that produces
- * psychologically-calibrated scores: sincere attempts feel rewarding, non-attempts
- * still fail the canary.
- */
-export function computeDeterministicScore(gemini: GeminiScore, legsVisible: boolean): DeterministicScore {
-  // Non-attempt path: trust Gemini's verdict, it's already calibrated correctly
-  if (!gemini.is_actually_dancing) {
-    return {
-      displayScore: clamp(gemini.overall_score, 0, 39),
-      displayTier: 'NOT_DANCING',
-      geminiRawScore: gemini.overall_score,
-      isActuallyDancing: false,
-      components: {
-        arms: gemini.components.arms,
-        legs: 0,  // FIX: legs always 0 when not dancing, ignore the default-75
-        body: gemini.components.body,
-        timing: gemini.components.timing,
-      },
-    };
-  }
-
-  // Sincere attempt path: deterministic formula
-  // Base score: 85 (the "you tried and it was recognizable" score)
-  let score = 85;
-
-  // Trouble spot penalties — capped so a long trouble-spot list can't tank the score
-  const major = gemini.trouble_spots.filter(t => t.severity === 'major');
-  const moderate = gemini.trouble_spots.filter(t => t.severity === 'moderate');
-  const minor = gemini.trouble_spots.filter(t => t.severity === 'minor');
-
-  score -= Math.min(major.length, 2) * 5;        // Max -10 from MAJOR
-  score -= Math.min(moderate.length, 3) * 2;     // Max -6 from MODERATE
-  score -= Math.min(minor.length, 4) * 0.5;      // Max -2 from MINOR
-
-  // Hard bounds for sincere attempts
-  score = clamp(score, 70, 98);
-  score = Math.round(score);
-
-  return {
-    displayScore: score,
-    displayTier: scoreToTier(score),
-    geminiRawScore: gemini.overall_score,
-    isActuallyDancing: true,
-    components: {
-      arms: gemini.components.arms,
-      legs: legsVisible ? gemini.components.legs : 75,  // Upper-body framing: still 75
-      body: gemini.components.body,
-      timing: gemini.components.timing,
-    },
-  };
-}
-
-function scoreToTier(score: number): DeterministicScore['displayTier'] {
-  if (score >= 85) return 'GROOVY';
-  if (score >= 75) return 'SOLID';
-  if (score >= 70) return 'SHAKY';   // The floor for sincere attempts
-  if (score >= 40) return 'TRYING';
-  return 'NOT_DANCING';
-}
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-```
-
-**Unit tests at `tests/deterministic.test.ts`:**
-
-- Standing still input (is_actually_dancing: false, overall_score: 10) → displayScore: 10, components.legs: 0, tier: NOT_DANCING
-- Flailing input (is_actually_dancing: false, overall_score: 30) → displayScore: 30, components.legs: 0
-- Perfect sincere (is_actually_dancing: true, no trouble spots) → displayScore: 85, tier: GROOVY
-- Sincere with 1 moderate, 2 minor (tonight's actual data) → displayScore: 82, tier: GROOVY
-- Sincere with 3 major + 5 moderate + 5 minor (worst case) → displayScore: clamped to 70 floor, tier: SHAKY
-- legsVisible=false sincere → components.legs: 75
-- legsVisible=true sincere → components.legs: passes through Gemini value
-
-**Acceptance:** All unit tests pass. The function is pure (no side effects, deterministic for same input).
-
-### MODIFIED: `lib/scoring/gemini/client.ts` and the Mode B orchestrator
-
-Wire `computeDeterministicScore` into the result path.
-
-Wherever `scoreWithGemini` returns success, immediately call `computeDeterministicScore(geminiResult.score, legsVisible)` and pass the `DeterministicScore` (not the raw `GeminiScore`) to the results card.
-
-The `GeminiScore` object is still available for the debug pill — pass it as a separate prop.
-
-```typescript
-// In Mode B orchestrator
-const geminiResult = await scoreWithGemini({...});
-if (geminiResult.kind === 'success') {
-  const deterministicScore = computeDeterministicScore(geminiResult.score, legsVisible);
-  // Pass deterministicScore as primary, geminiResult.score as raw debug info
-}
-```
-
-The MediaPipe fallback path needs an equivalent — when Gemini fails entirely and MediaPipe takes over, the MediaPipe score is what shows. No deterministic computation on fallback (we can't trust MediaPipe's `is_actually_dancing` heuristic).
-
-**Acceptance:** Tonight's three test cases produce: sincere → 82, energetic-sloppy → 82, standing → 10, flailing → 30.
-
-### MODIFIED: `components/ResultsCard.tsx`
-
-Update to read from `DeterministicScore` instead of `GeminiScore`. The shape is mostly the same — `displayScore` instead of `overall_score`, `displayTier` instead of `tier`, `components` is the same.
-
-Add a "Gemini raw" line to the debug pill when `SHOW_BOTH_SCORES=true`:
-```
-MediaPipe (debug): 31  ·  Gemini raw: 55
-```
-
-When the user taps "Why are these different?", expand to show all three: Display, Gemini raw, MediaPipe. Educational, also useful for tuning.
-
-**Acceptance:** Display score shows 82 for a sincere attempt where Gemini returned 55. Debug pill shows both numbers in validation mode. Tier badge and color match `displayTier`, not Gemini's raw `tier`.
-
-### MODIFIED: `lib/scoring/gemini/prompt.ts`
-
-Two small surgical additions to reduce noisy MODERATE trouble spots. Don't rewrite the whole prompt — just add these two paragraphs near the SEVERITY CALIBRATION section.
-
-```
-HAND AND FINGER DETAILS ARE MINOR
-Exact hand shapes, finger configurations, and hand-signal gestures (rock-on, finger guns, peace signs, specific finger curls) are MINOR at worst. Most students will not replicate these exactly and that is fine. Only call out hand details if the user did a completely wrong motion (e.g., reference was hands up, user kept hands down) — and even then, it's MINOR.
-
-EXECUTION QUALITY IS MINOR
-Trouble spots about "extension," "crispness," "sharpness," "isolation," "fullness," or "energy of execution" are MINOR. Only escalate to MODERATE if the user did the wrong move entirely (wrong direction, wrong arm, wrong body part) — not if they did the right move with imperfect execution.
-```
-
-Update the corresponding tests in `tests/geminiPrompt.test.ts` to verify both new clauses are present in both leg-visibility branches.
-
-**Acceptance:** Tonight's "rock on hand gestures missed" trouble spot would now be tagged MINOR (or omitted) instead of MODERATE. Verify by re-running a sincere attempt and checking the raw response.
-
-### NEW: `components/scoring/SideBySideHoldingScreen.tsx`
-
-Replaces the current `HoldingScreen` component. Shows reference video (left) and user's attempt (right), both playing in sync, both with their respective skeleton overlays.
-
-**Layout (mobile 390px):**
-- Two video panels side by side, stacked vertically in a 2-column grid that takes ~60% of the viewport height.
-- Each panel is 50% width with the video inside maintaining aspect ratio.
-- Reference labeled "REFERENCE" above left video; "YOU" above right video. Small uppercase labels, muted grey.
-- Both videos start playing simultaneously when the screen mounts (use `Promise.all` to await both `.play()` calls before starting).
-- Both loop until the screen unmounts.
-- Both have their skeleton overlay drawn on top.
-
-**Skeleton overlays:**
-- **Right (user) panel:** the user's pose track (pink skeleton). This is what's already implemented for the current holding screen — reuse the rendering logic.
-- **Left (reference) panel:** the reference dancer's pose track (white skeleton). The reference pose track should be precomputed in the dance library data. If it isn't currently precomputed, fall back to no skeleton on the reference side (just the video) and flag this in the PR — that's a separate data pipeline task, not blocking.
-
-**Below the videos:**
-- Rotating status text (same phrases as current holding screen)
-- Progress shimmer
-
-**Minimum mount time:** 3 seconds (same as current).
-
-**Acceptance:**
-- On a real attempt, both videos appear side by side, both play, both loop, both stay in sync within 100ms drift over 7 seconds.
-- User's skeleton draws on right panel.
-- Reference skeleton draws on left panel IF reference pose track exists in the dance data — otherwise just the video.
-- At 390px viewport, both panels are visible and readable.
-
-### MODIFIED: `lib/scoring/callouts/calloutEngine.ts` AND wherever it's invoked
-
-The callout engine investigation. Previous spec added logging at the tier-decision point but no logs appeared, meaning either (a) the engine isn't running, or (b) the logging wasn't on the active code path.
-
-**Add three layers of logging:**
-
-1. **Initialization log.** In `createCalloutEngine` constructor:
-   ```
-   console.log('[callout-engine][init] accentBeats=', config.accentBeatTimestamps.length);
-   ```
-
-2. **Per-frame ingestion log.** Sample at 1 in 30 frames so we don't flood:
-   ```
-   if (frameCount % 30 === 0) console.log('[callout-engine][frame] ts=', timestamp, 'similarity=', similarity);
-   ```
-
-3. **Per-beat decision log** (already exists, keep):
-   ```
-   console.log('[callout-engine][beat] index=', beatIndex, 'windowMax=', windowMax, 'tier=', tier);
-   ```
-
-4. **Callback fire log.** In the place where `onCallout` is invoked:
-   ```
-   console.log('[callout-engine][fire] tier=', event.tier, 'at=', event.timestamp);
-   ```
-
-**Also add a log at the Mode B integration point** — wherever the callout engine is wired up to the per-frame scoring loop:
-   ```
-   console.log('[mode-b][callout-wired] engine created');
-   ```
-
-The point: after running one attempt, the terminal MUST show at least the `[init]` and `[callout-wired]` logs. If neither appears, the engine isn't being instantiated at all. If `[init]` appears but no `[frame]` logs, the engine is created but never receiving frames. If `[frame]` logs appear but no `[beat]` logs, the beat detection is broken.
-
-This is purely diagnostic for this PR. Do not tune thresholds. The next spec uses this data to fix the actual bug.
-
-**Acceptance:** After running one attempt, terminal shows logs from at least the `[init]`, `[callout-wired]`, and `[frame]` levels. If none appear, document this clearly in `/docs/callout-investigation.md` with what was checked — that itself is the deliverable.
-
-### MODIFIED: `components/ResultsCard.tsx` (small additional change)
-
-When `displayScore >= 85`, the score should render with the pink brand color (`#FF1F8E`) and the headline should say "GROOVY!" with celebration energy. When 75-84 (SOLID), use yellow-green (`#A3E635`) with "NICE WORK." or "YOU GOT IT.". When 70-74 (SHAKY, the new floor zone for sincere attempts), use amber and "GETTING THERE."
-
-This means most sincere attempts will now hit GROOVY or SOLID, which is the *point*.
-
-Test cases for `tests/resultsCard.test.tsx`:
-- displayScore 82 → headline "GROOVY!" or equivalent, color pink
-- displayScore 78 → headline "NICE WORK.", color yellow-green
-- displayScore 72 → headline "GETTING THERE.", color amber
-- displayScore 30 → headline "WAS THAT A DANCE?", color red
-
-**Acceptance:** A sincere attempt that produces a deterministic 82 shows pink, large, GROOVY headline. Feels like winning.
+Implementation order matters. Do them in this order. Pause for a diff summary after each file group.
 
 ---
 
-## What this PR does NOT do (deferred)
+### Group 1 — Mirror the reference video sent to Gemini
 
-- **Callout threshold tuning.** This PR adds diagnostic logging only. Tuning happens after we see what the logs say.
-- **Sound design for callouts.** Future.
-- **Reference pose track precomputation pipeline.** If reference pose tracks aren't currently in dance library data, the side-by-side renders the reference video without a skeleton. Adding the precomputation is a separate PR.
-- **Analysis pipeline / move-level metadata.** Saved.
-- **Knowledge graph foundation.** Saved.
-- **Video alignment / MediaRecorder delay fix.** Still no clear evidence in data.
+**Why first:** every other Gemini fix depends on the reference and attempt being in the same orientation. Without this, prompt tuning is fighting noise.
+
+**MODIFIED: `lib/scoring/gemini/client.ts`**
+
+Before sending the reference video as base64, mirror it horizontally to match the attempt's mirrored orientation. Two acceptable implementation paths — pick the simpler one that works:
+
+- **Path A (preferred):** in the client-side trimming step (the FFmpeg.wasm or canvas-based path that already exists for windowing), apply a horizontal flip filter during the same pass. FFmpeg's `hflip` filter. For canvas-based trimming, draw the source video frame to canvas with `ctx.scale(-1, 1); ctx.drawImage(...)` per frame.
+- **Path B (fallback):** if client-side flipping balloons CPU time on mobile to the point where the trim+flip takes longer than the dance itself, do the flip server-side in the API route using ffmpeg in a Node child process. Acceptable cost: +300ms of latency. Document the choice in `docs/scoring-decisions.md`.
+
+Add a payload field `referenceMirrored: true` so the prompt can stop asking Gemini to imagine the mirror correspondence.
+
+**MODIFIED: `lib/scoring/gemini/prompt.ts`**
+
+Delete the "grade as a mirror copy" clause. Replace with:
+
+> The REFERENCE video has been horizontally mirrored so that left/right correspond directly to the ATTEMPT video, which is captured from a front-facing camera. Grade left and right literally — when the reference's left arm goes up, the attempt's left arm should go up.
+
+Update the existing prompt-invariants test (`tests/geminiPrompt.test.ts`) to assert the NEW clause exists and the old mirror-copy clause does NOT exist. Do not delete the test; rewrite the assertion.
+
+**Acceptance:**
+- A reference video that was previously sent with text "wave left arm" appears in Gemini's payload with the left/right physically swapped.
+- Unit test: when called with a known reference video, the base64 of the reference payload differs from the base64 of the raw source.
+- Trouble spots on a sincere attempt no longer reference the opposite hand.
+
+---
+
+### Group 2 — Fix the padding-ignore problem at the source
+
+**Why second:** the prompt's padding-ignore clause is being ignored because the reference video Gemini sees STILL CONTAINS the walking-back-to-camera frames. Telling a model "ignore the first 2 seconds" while showing it those 2 seconds is asking it to override what it sees with what you said. Cut the padding instead of asking Gemini to imagine it isn't there.
+
+**MODIFIED: `lib/scoring/gemini/client.ts`** (or wherever reference trimming lives)
+
+Currently the reference is trimmed to the chunk window `[chunkStartSec, chunkEndSec]`. That window includes any pre-roll where the source dancer is establishing position before the choreography starts. Add a second trim step:
+
+1. After the chunk window is applied, run a **lightweight motion-onset detection** on the trimmed reference: compute mean per-frame pixel-difference (downsampled to 64×64 grayscale for speed). The first frame where pixel-diff exceeds the rolling baseline by 3× is the "movement onset." Trim everything before that.
+2. Mirror this trim on the attempt video using the **same time offset** so that t=0 in both videos corresponds to the same moment in the choreography.
+3. Send to Gemini.
+4. Add to the payload: `referenceMotionOnsetSec: <number>` and `attemptMotionOnsetSec: <number>` for diagnostic logging.
+
+**MODIFIED: `lib/scoring/gemini/prompt.ts`**
+
+Replace the existing "ignore padding" / "trouble spots bounded to attempt" clauses with a stronger version:
+
+> Both videos start exactly at the moment of first dance movement. There is no pre-roll padding. All trouble spots must reference timestamps within the dance, not before it.
+
+Update the prompt-invariants test.
+
+**Acceptance:**
+- Logged `referenceMotionOnsetSec` for the test chunk is > 0.0 (the dancer is walking back to camera for some time before dancing).
+- Trouble spots no longer fire at 0:00 unless there is a genuine error at the actual first dance beat.
+- Add an integration test with a fixture reference video that has 2s of dead air at the start: assert the trimmed reference duration is `originalDuration - ~2s`.
+
+---
+
+### Group 3 — Fix component/overall consistency on the results screen
+
+**Why third:** even with the model behaving correctly, the results UI is currently lying to the user. Components average to 51 and the headline says 81.
+
+**Decide first:** the discrepancy comes from a "boost" or "tier-floor" applied to Gemini's raw overall when computing the displayed overall, but the same boost is not applied to the components. There are two ways to make this honest:
+
+- **Option A (chosen — implement this):** the displayed overall is computed as the arithmetic mean of the four components after their own per-component generosity boost. No separate boost is applied at the top level. This makes the breakdown the source of truth and the headline a derived value. The Gemini raw `overall_score` is retained internally and exposed only on the debug pill.
+- **Option B (reject):** keep the top-level boost and proportionally boost each component to match. Rejected because it makes the components fictional.
+
+**MODIFIED: `lib/scoring/displayScore.ts`** (or wherever the boost lives — search for `Gemini raw` in the codebase to find the logger that produced the debug pill text)
+
+```typescript
+function displayedOverall(gemini: GeminiScore, legsVisible: boolean): number {
+  const c = gemini.components;
+  if (legsVisible) {
+    return Math.round((c.arms + c.legs + c.body + c.timing) / 4);
+  }
+  // Upper-body-only: legs excluded entirely
+  return Math.round((c.arms + c.body + c.timing) / 3);
+}
+```
+
+Apply per-component generosity boosts inside the Gemini prompt instead (Group 4) — not on top of the result.
+
+**MODIFIED: `components/ResultsCard.tsx`** (or wherever the score header renders)
+
+The headline number is now the output of `displayedOverall()`. The debug pill ("Gemini raw: X · MediaPipe (debug): Y") continues to show Gemini's raw `overall_score` and MediaPipe's score side-by-side; that's the diagnostic surface. The components below render unchanged.
+
+**Acceptance:**
+- For the sincere attempt's components (arms 50, legs 75, body 35, timing 45 — assuming Group 4 doesn't change them), the displayed overall is 51, not 81.
+- For an upper-body-only attempt, the displayed overall excludes legs from the mean. The legs pill renders as "(UPPER BODY ONLY)" and shows a single dim dash (`—`), not "75."
+- Add a unit test: `displayedOverall({arms:50, legs:75, body:35, timing:45}, true)` returns 51. `displayedOverall({arms:50, legs:75, body:35, timing:45}, false)` returns 43.
+
+---
+
+### Group 4 — Recalibrate Gemini's component scoring + canary
+
+**Why fourth:** the prompt rewrite from round 2 was too soft on flailing (raw 45 for flailing vs raw 51 for a sincere attempt is a 6-point gap — that's noise, not signal). Tighten the canary, sharpen the components, kill the "default 75 for legs" anti-pattern.
+
+**MODIFIED: `lib/scoring/gemini/prompt.ts`**
+
+Rewrite the canary and component-grading sections. Keep the chunk-window awareness, keep the post-Group-1 mirror clause, keep the post-Group-2 motion-onset clause.
+
+Specific changes:
+
+1. **Canary is now binary AND quantitative.** Current language treats `is_actually_dancing: false` as a flag with no enforced score consequence. New language:
+
+   > Step 1 — Decide `is_actually_dancing`. The attempt is NOT a dance attempt if any of the following are true: (a) the body is mostly still relative to the camera (postural sway only), (b) the limb motion is fast but uncorrelated with the reference (the user is flailing, not copying), (c) the user is out of frame for more than 30% of the chunk. If any of these are true, set `is_actually_dancing: false` AND set `overall_score` to a value between 5 and 25. Components in this case should reflect what was actually observed (e.g., flailing arms might score arms: 15 because there IS arm motion, just wrong; standing-still body should score body: 5). Do not pad components upward to make the result feel kinder.
+
+2. **Sincere-attempt floor is also explicit.** If `is_actually_dancing: true`, no individual component score may be below 35 unless the attempt genuinely shows zero effort on that axis. The current arms=19 on the standing-still attempt is fine because `is_actually_dancing` was false. But a sincere attempt scoring arms=25 is the prompt being too punishing in a different way.
+
+3. **Upper-body-only mode no longer fills `legs` with a default 75.** It returns `legs: null`. Update `GeminiScoreSchema` in `lib/scoring/gemini/types.ts` to accept `legs: z.number().min(0).max(100).nullable()`. The downstream `displayedOverall` from Group 3 already excludes legs in that branch. The UI from Group 3 renders the dim dash.
+
+4. **Trouble-spot count is capped by tier.** GROOVY: max 2. SOLID: max 3. SHAKY: max 4. NOT_DANCING: max 1 ("this didn't look like an attempt at the dance"). Currently the system pads to 3 regardless.
+
+5. **The first insight must be specific and positive — but only if `is_actually_dancing` is true.** If `is_actually_dancing: false`, the insights should not pretend there was good work to praise. Existing language conflated these.
+
+**MODIFIED: `lib/scoring/gemini/types.ts`**
+
+```typescript
+components: z.object({
+  arms: z.number().min(0).max(100),
+  legs: z.number().min(0).max(100).nullable(),
+  body: z.number().min(0).max(100),
+  timing: z.number().min(0).max(100),
+}),
+```
+
+**MODIFIED: `tests/geminiPrompt.test.ts`**
+
+Add assertions for the new canary language, the floor, the cap-by-tier, the nullable legs, and the conditional-positive-insight clause.
+
+**Acceptance (validation pass, not automated):**
+- Sincere attempt: `is_actually_dancing: true`, components between 35 and 95, displayed overall 55–85.
+- Standing still: `is_actually_dancing: false`, overall 5–25, body component low (under 20), arms low.
+- Flailing: `is_actually_dancing: false`, overall 5–25. **This is the canary.** If flailing still scores above 40, the prompt is wrong and you stop and flag — do not tune around it.
+
+---
+
+### Group 5 — Diagnose the always-GROOVY live callout bug
+
+**Why last:** the prior four groups change the post-attempt verdict, which is independent from the live callout engine. Save the diagnostic work for when the rest is stable.
+
+This is a **diagnosis task first, fix task second.** Do not change thresholds before diagnosing.
+
+**Step 1 — Verify the diagnostic logging from round 2 is actually wired.**
+
+Open `lib/scoring/callouts/calloutEngine.ts`. There should be a `console.log("[callout]", ...)` or equivalent on every accent-beat fire. If there is not, that's where round 2 silently failed. Add it now:
+
+```typescript
+console.log('[callout]', {
+  beatIndex,
+  windowMaxSimilarity: maxSim,
+  tier,
+  thresholds: { groovy: T_GROOVY, perfect: T_PERFECT, great: T_GREAT, almost: T_ALMOST },
+  timestamp: performance.now(),
+});
+```
+
+**Step 2 — Run one sincere attempt with that logging on and copy the console output into `docs/callout-diagnosis-round-3.md`.**
+
+Read the log. Three possible diagnoses, each with a different fix:
+
+- **(A) The similarity stream is saturated near 1.0.** Every beat shows `windowMaxSimilarity: 0.99…`. → The fix is in the similarity computation, NOT the callout engine. Find where the per-frame similarity is computed (likely `lib/scoring/mediapipe/perFrame.ts` or similar). The most common cause is averaging cosine similarities over too many joints — the noise floor on random poses is around 0.85 because limb directions don't span much of the unit sphere. Fix by switching to either (i) per-joint angle delta with a per-joint normalization, or (ii) Procrustes-aligned position L2. Document the choice.
+
+- **(B) The thresholds are mis-set OR the tier-mapping function is bypassed.** The log shows varied `windowMaxSimilarity` but `tier: "GROOVY"` regardless. → Inspect `tierForSimilarity()` or whatever the mapping function is called. It's almost certainly hitting a default or a wrong comparator (e.g., `>=` where `<` was meant).
+
+- **(C) The callout overlay is rendering "GROOVY" regardless of what the engine emits.** The log shows correct varied tiers but the screen shows GROOVY. → Inspect `components/CalloutOverlay.tsx`. The most likely cause is the JSX rendering a hardcoded string from a stale debug branch, or the state hook keying off the wrong event field.
+
+**Step 3 — Fix the diagnosed cause. Only the diagnosed cause.**
+
+Don't fix all three at once. Document what you found and what you changed.
+
+**Step 4 — Re-run, confirm callouts now vary by attempt quality.**
+
+Sincere attempt: mix of PERFECT/GREAT/GROOVY, occasional ALMOST.
+Standing still: mostly ALMOST.
+Flailing: mix of ALMOST/GREAT (similarity to fast motion is genuinely high — that's why Gemini matters).
+
+If the fix surfaces a deeper problem (e.g., the similarity stream is genuinely meaningless because the underlying scoring pipeline regressed), **stop and flag.** Do not paper over.
+
+---
+
+## Out of scope
+
+- Apple Vision port.
+- TikTok URL ingestion changes.
+- Skill graph routing changes.
+- Mode A changes.
+- Sound design for callouts.
+- Replacing Gemini with a different model. (See note at the bottom of this doc.)
 
 ---
 
 ## Working agreement
 
-- Pause after each file group, post a diff summary.
-- Flag any conflict with existing code before silently restructuring.
-- The side-by-side holding screen is the biggest visual change — verify on mobile 390px before committing.
-- If reference pose tracks don't exist in the dance data, do NOT block on building that pipeline. Render video-only on the reference side and flag it.
+- After each group, pause and post a diff summary.
+- Mobile-first: verify at 390px.
+- If Group 5 step 2 surfaces diagnosis (A) — a saturated similarity stream — STOP and flag before fixing. That is a scoring-layer rewrite and is a separate spec, not this one.
+- All prior round-1 and round-2 logging stays. Add to it; don't replace it.
+- One commit per group. Branch: `scoring-round-3`. No push to main.
 
 ---
 
-## Acceptance summary (all must pass before PR is ready)
+## Acceptance summary (all must pass)
 
-- [ ] `computeDeterministicScore` unit tests pass for all six test cases listed.
-- [ ] Sincere attempt produces `displayScore` in the 78-92 range (was 55).
-- [ ] Energetic-sloppy attempt produces `displayScore` similar to sincere (energy bias still eliminated).
-- [ ] Standing still produces `displayScore` 5-15, `components.legs: 0`.
-- [ ] Flailing produces `displayScore` 20-35, `components.legs: 0`.
-- [ ] Results card displays the deterministic score, not Gemini's raw `overall_score`.
-- [ ] Validation mode debug pill shows both `Gemini raw` and `MediaPipe`.
-- [ ] Side-by-side holding screen renders both reference and attempt videos at 390px mobile width.
-- [ ] Both videos play in sync (within 100ms drift over 7 seconds).
-- [ ] User's pink skeleton renders on right panel.
-- [ ] Reference skeleton renders on left panel if data exists, otherwise video-only.
-- [ ] Holding screen minimum mount time still ≥3s.
-- [ ] Prompt updated with HAND DETAILS ARE MINOR and EXECUTION QUALITY IS MINOR clauses.
-- [ ] Callout engine emits `[init]`, `[callout-wired]`, `[frame]` logs at minimum on a real attempt. If not, blocker doc explains why.
-- [ ] Results card uses pink for 85+, yellow-green for 75-84, amber for 70-74, red for <40.
-- [ ] All existing tests pass.
-- [ ] Branch pushed locally, not merged.
+- [ ] Reference video sent to Gemini is mirrored to match the attempt orientation; `referenceMirrored: true` in payload; prompt-invariants test updated.
+- [ ] Reference and attempt are both trimmed to motion onset; `referenceMotionOnsetSec` logged; padding-aware prompt clause replaced with "starts at first movement" clause.
+- [ ] Displayed overall = mean of components (excluding legs when upper-body-only). Headline number matches the breakdown bars. Gemini raw shown on debug pill only.
+- [ ] Standing-still attempt: `is_actually_dancing: false`, overall 5–25, headline matches.
+- [ ] Flailing attempt: `is_actually_dancing: false`, overall 5–25. **Hard canary.** If this fails, stop and flag.
+- [ ] Sincere attempt: components in 35–95 range, displayed overall 55–85, trouble spots reference real dance moments (not 0:00 padding).
+- [ ] Live callouts vary by attempt quality. Diagnosis written up in `docs/callout-diagnosis-round-3.md`.
+- [ ] All prior tests still pass.
+- [ ] Branch `scoring-round-3` pushed, no merge to main.
 
 ---
 
-## After Claude Code finishes — your validation
+## After Claude Code finishes — your validation pass
 
-Run three attempts. For each, paste the on-screen display score AND the raw Gemini JSON.
+Same five-attempt protocol as round 2:
 
-1. **Sincere accurate attempt.** Display target: 78-92. Should feel like a win. Headline GROOVY or NICE WORK.
-2. **Standing still.** Display target: 5-15. Legs should show 0, not 75.
-3. **Random flailing.** Display target: 20-35. Legs 0.
+1. **Sincere attempt.** Live callouts should vary. Gemini score 55–85, displayed overall matches components.
+2. **Standing still.** Live callouts mostly ALMOST. Gemini `is_actually_dancing: false`, overall under 25.
+3. **Flailing.** Live callouts mixed. Gemini `is_actually_dancing: false`, overall under 25. **This is the hard canary.**
+4. **Sincere attempt on a different chunk.** Sanity check.
+5. **Deliberately off-beat sincere attempt.** Timing component low, other components normal.
 
-Also paste the terminal output from any one attempt showing the `[callout-engine]` logs. If none appear, that's also useful data — we'll have the diagnostic answer.
+If runs 2 and 3 both score under 25 AND run 1 scores 55–85 AND the live callouts vary, the round is done. Flip `SHOW_BOTH_SCORES=false` and merge.
 
-If sincere lands 78+ and standing/flailing stay <40, the spec succeeded. If sincere is still 60-70, paste the deterministic computation log (`[deterministic] gemini.overall_score=X major=Y moderate=Z minor=W → display=N`) and we tune the formula.
+---
+
+## Note on "should we abandon Gemini" (your question — read this)
+
+The flailing score of 75 is the strongest evidence yet that Gemini-as-judge has a real failure mode. But the failure is not "Gemini cannot tell flailing from dancing." The failure is "the prompt is telling Gemini to be generous, the reference is unmirrored, and the trim still includes padding the prompt told it to ignore." We are not yet at the point where we can fairly say Gemini doesn't work — we're at the point where we can say *this prompt* doesn't work on flailing.
+
+This spec is the last fair test of Gemini. If after this round flailing still scores above 40, the answer is: drop Gemini as the primary scorer, keep MediaPipe + a much stricter event-detection layer (the Just Dance / Dalea approach — per-beat angle deltas, color-coded, no semantic narration), and use Gemini only for the post-attempt *insights* (which are generated from the MediaPipe trouble spots, not used for scoring). That's a separate spec we write together if it comes to it.
+
+Do this round first.
