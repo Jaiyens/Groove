@@ -39,6 +39,7 @@
 import { GeminiScoreSchema, type GeminiScore } from './types';
 import { detectMotionOnsetIndex } from './motionOnset';
 import { finalizeWebmDuration } from './webmDuration';
+import { repairWebmDuration } from './webmFix';
 
 export type GeminiResult =
   | { kind: 'success'; score: GeminiScore; latencyMs: number }
@@ -687,15 +688,36 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
   }
 
-  const objectUrl = URL.createObjectURL(attemptBlob);
+  // Round-5 Fix 2 (SPECK): rewrite the EBML metadata with ts-ebml before
+  // the blob ever hits a <video> element. The previous seek-trick made
+  // duration FINITE but not CORRECT — real attempts ~7s were landing
+  // around 2s. ts-ebml derives the real duration from cluster timestamps
+  // and rebuilds the header via `tools.makeMetadataSeekable`. Returns
+  // the original blob unchanged on parse failure (best-effort).
+  const repair = await repairWebmDuration(attemptBlob);
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset trimAttempt: webm-repair', {
+    blobBytesBefore: repair.blobBytesBefore,
+    blobBytesAfter: repair.blobBytesAfter,
+    // `durationBefore` mirrors the original blob.duration (we can't read
+    // the element duration without opening a <video>; the next log line
+    // surfaces what the browser saw post-open).
+    repaired: repair.repaired,
+    inferredDurationSec: repair.inferredDurationSec,
+  });
+  const repairedBlob = repair.blob;
+
+  const objectUrl = URL.createObjectURL(repairedBlob);
   try {
     const { video, dispose } = await openHiddenVideo(objectUrl);
     try {
       // Round-4 Fix 1: MediaRecorder webm blobs notoriously surface
       // duration=0.001 (or Infinity, or NaN) until a seek-to-end forces
-      // the container index to write. Without this pass, the scan window
-      // collapses to ~0 samples and detectMotionOnsetInVideo returns null
-      // — the exact failure mode the round-4 diagnosis logs caught.
+      // the container index to write. Even after the round-5 ts-ebml
+      // rewrite above, this second pass is cheap (short-circuits when
+      // the duration already looks sane) and a defensive belt-and-braces
+      // — kept so a CDN-served webm that bypasses the repair path still
+      // gets a finalize attempt.
       const durationFix = await finalizeWebmDuration(
         video,
         (sec) => seekVideo(video, sec),
@@ -716,10 +738,10 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
           finalizeFixed: durationFix.fixed,
           finalizeDurationBefore: durationFix.durationBefore,
           finalizeDurationAfter: durationFix.durationAfter,
-          blobBytes: attemptBlob.size,
-          blobType: attemptBlob.type,
+          blobBytes: repairedBlob.size,
+          blobType: repairedBlob.type,
         });
-        return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+        return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
@@ -737,7 +759,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
           durationSec,
           scanEndSec,
         });
-        return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+        return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       // Start slightly before onset to keep the first hit intact.
@@ -773,7 +795,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     console.warn('[gemini-client] motion-onset trimAttempt early-return: outer threw', {
       errorMessage: err instanceof Error ? err.message : String(err),
     });
-    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+    return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
