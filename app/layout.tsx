@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
-import { Inter, Bricolage_Grotesque } from 'next/font/google';
+import { Inter, Bricolage_Grotesque, Bungee } from 'next/font/google';
 import PhoneFrame from '@/components/PhoneFrame';
 import PracticeTracker from '@/components/PracticeTracker';
 import { GraphProvider } from '@/lib/graph/context';
@@ -24,6 +24,15 @@ const bricolage = Bricolage_Grotesque({
   variable: '--font-bricolage',
   display: 'swap',
 });
+// Bungee — heavy display face used by CalloutOverlay for the live tier
+// stamp (GROOVY / PERFECT / GREAT / ALMOST). Picked for character and weight;
+// the only place it should appear is the per-beat live callout.
+const bungee = Bungee({
+  subsets: ['latin'],
+  weight: ['400'],
+  variable: '--font-bungee',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'groove',
@@ -43,7 +52,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${bricolage.variable}`}>
+    <html lang="en" className={`${inter.variable} ${bricolage.variable} ${bungee.variable}`}>
       <body className="bg-cream text-ink">
         <GraphProvider>
           <PracticeTracker />
