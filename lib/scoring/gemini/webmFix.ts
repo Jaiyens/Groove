@@ -32,9 +32,11 @@ export interface RepairWebmResult {
   blobBytesBefore: number;
   blobBytesAfter: number;
   // Duration (in seconds) inferred from the last Cluster's Timecode and
-  // the Info section's TimecodeScale. 0 when the scan couldn't find a
-  // cluster or the read failed.
-  inferredDurationSec: number;
+  // the Info section's TimecodeScale. null when the scan couldn't find a
+  // cluster or the read failed — callers branch on `typeof === 'number'`
+  // to decide whether to trust this value as the authoritative duration
+  // (SPECK overnight Group 1 §duration-source).
+  inferredDurationSec: number | null;
 }
 
 // EBML element IDs (VINT-encoded, marker bits preserved):
@@ -176,7 +178,7 @@ export async function repairWebmDuration(blob: Blob): Promise<RepairWebmResult> 
         repaired: false,
         blobBytesBefore,
         blobBytesAfter: blobBytesBefore,
-        inferredDurationSec: 0,
+        inferredDurationSec: null,
       };
     }
 
@@ -205,7 +207,7 @@ export async function repairWebmDuration(blob: Blob): Promise<RepairWebmResult> 
       repaired: false,
       blobBytesBefore,
       blobBytesAfter: blobBytesBefore,
-      inferredDurationSec: 0,
+      inferredDurationSec: null,
     };
   }
 }

@@ -659,6 +659,70 @@ interface TrimAttemptResult {
   motionOnsetSec: number | null;
 }
 
+// Below this threshold a duration is implausibly short — the attempt is at
+// most a smudge of a frame and motion-onset would scan a near-zero window.
+// SPECK overnight Group 1 §duration-source: the same floor that webmDuration's
+// `minPlausibleDurationSec` default uses, kept here for the inferred-duration
+// validity check.
+const MIN_PLAUSIBLE_DURATION_SEC = 0.5;
+
+// Decide which duration source to trust for the attempt blob.
+//
+// Pre-Group-1 history: the pipeline ran repair → finalize → use video.duration.
+// On real devices the EBML scan inferred ~6.7s correctly but the browser's
+// seek-to-MAX_SAFE_INTEGER trick reported ~1.4s; motion-onset then scanned
+// ~1s and Gemini saw a person starting to move, ruling "not dancing." The
+// repair library knows the right answer; we trust it when it produces one.
+//
+// Decision rule (SPECK overnight Group 1):
+//   - inferredDurationSec is a finite number ≥ MIN_PLAUSIBLE_DURATION_SEC →
+//     authoritative duration is the inferred value; source 'webm-repair-inferred'.
+//   - else (null, NaN, < 0.5s) → fall back to finalizeWebmDuration on a hidden
+//     <video> and use whatever it reports; source 'browser-finalize'.
+//
+// Caller still opens the hidden <video> for the seek+draw pipeline (motion
+// scan and slice re-encode need an HTMLVideoElement), but trim/scan math
+// keys off `authoritativeDurationSec`, not `video.duration`.
+type DurationSource = 'webm-repair-inferred' | 'browser-finalize';
+
+interface DurationDecision {
+  authoritativeDurationSec: number;
+  source: DurationSource;
+  // Surfaced for the diagnostic log line so a future field run can tell
+  // "we used the inferred value" apart from "inferred was null, we used
+  // the browser's value" at a glance.
+  inferredDurationSec: number | null;
+  finalizedDurationSec: number | null;
+}
+
+// Pure decision wrapper — finalize-on-demand is injected so unit tests
+// can pin the inferred-vs-browser branch logic without a DOM harness.
+export async function decideAttemptDuration(
+  inferredDurationSec: number | null,
+  runBrowserFinalize: () => Promise<number>,
+): Promise<DurationDecision> {
+  if (
+    typeof inferredDurationSec === 'number' &&
+    Number.isFinite(inferredDurationSec) &&
+    inferredDurationSec >= MIN_PLAUSIBLE_DURATION_SEC
+  ) {
+    return {
+      authoritativeDurationSec: inferredDurationSec,
+      source: 'webm-repair-inferred',
+      inferredDurationSec,
+      finalizedDurationSec: null,
+    };
+  }
+  // Fall back to the browser's seek-to-end pass.
+  const finalizedDurationSec = await runBrowserFinalize();
+  return {
+    authoritativeDurationSec: finalizedDurationSec,
+    source: 'browser-finalize',
+    inferredDurationSec,
+    finalizedDurationSec,
+  };
+}
+
 // Re-record the attempt starting at its motion-onset moment so that both
 // videos arrive at Gemini with t=0 == first dance movement. If detection
 // fails (no onset, DOM unavailable, CORS taint), we pass the original blob
@@ -700,9 +764,6 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
   console.log('[gemini-client] motion-onset trimAttempt: webm-repair', {
     blobBytesBefore: repair.blobBytesBefore,
     blobBytesAfter: repair.blobBytesAfter,
-    // `durationBefore` mirrors the original blob.duration (we can't read
-    // the element duration without opening a <video>; the next log line
-    // surfaces what the browser saw post-open).
     repaired: repair.repaired,
     inferredDurationSec: repair.inferredDurationSec,
   });
@@ -712,33 +773,39 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
   try {
     const { video, dispose } = await openHiddenVideo(objectUrl);
     try {
-      // Round-4 Fix 1: MediaRecorder webm blobs notoriously surface
-      // duration=0.001 (or Infinity, or NaN) until a seek-to-end forces
-      // the container index to write. Even after the round-5 metadata
-      // rewrite above, this second pass is cheap (short-circuits when
-      // the duration already looks sane) and a defensive belt-and-braces
-      // — kept so a CDN-served webm that bypasses the repair path still
-      // gets a finalize attempt.
-      const durationFix = await finalizeWebmDuration(
-        video,
-        (sec) => seekVideo(video, sec),
+      // SPECK overnight Group 1 §duration-source: the inferred duration
+      // from the EBML scan, when valid, IS the authoritative duration.
+      // We only fall back to finalizeWebmDuration when the scan couldn't
+      // infer a plausible value. This stops the browser's <video>.duration
+      // from overriding the library's correct answer.
+      const decision = await decideAttemptDuration(
+        repair.inferredDurationSec,
+        async () => {
+          const fix = await finalizeWebmDuration(
+            video,
+            (sec) => seekVideo(video, sec),
+          );
+          return fix.durationAfter;
+        },
       );
       // eslint-disable-next-line no-console
-      console.log('[gemini-client] motion-onset trimAttempt: duration-finalize', durationFix);
+      console.log('[gemini-client] motion-onset trimAttempt: duration-source', {
+        source: decision.source,
+        durationSec: decision.authoritativeDurationSec,
+        inferredDurationSec: decision.inferredDurationSec,
+        finalizedDurationSec: decision.finalizedDurationSec,
+      });
 
-      const durationSec = video.duration;
+      const durationSec = decision.authoritativeDurationSec;
       if (!Number.isFinite(durationSec) || durationSec <= 0) {
-        // Even with the duration-finalize pass, some MediaRecorder
-        // outputs still won't surface a valid duration. Fall back to
-        // passing the blob through unchanged.
+        // Even with both paths exhausted, no plausible duration.
         // eslint-disable-next-line no-console
-        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid (after finalize)', {
+        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid (after duration-source decision)', {
           durationSec,
           isFinite: Number.isFinite(durationSec),
-          finalizeAttempted: durationFix.attempted,
-          finalizeFixed: durationFix.fixed,
-          finalizeDurationBefore: durationFix.durationBefore,
-          finalizeDurationAfter: durationFix.durationAfter,
+          durationSource: decision.source,
+          inferredDurationSec: decision.inferredDurationSec,
+          finalizedDurationSec: decision.finalizedDurationSec,
           blobBytes: repairedBlob.size,
           blobType: repairedBlob.type,
         });
@@ -751,6 +818,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         durationSec,
         scanStartSec: 0,
         scanEndSec,
+        durationSource: decision.source,
       });
       const onsetAbsSec = await detectMotionOnsetInVideo(video, 0, scanEndSec);
 
@@ -763,7 +831,10 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
-      // Start slightly before onset to keep the first hit intact.
+      // Start slightly before onset to keep the first hit intact. End at
+      // the authoritative duration — NOT video.duration, because when the
+      // duration-source is 'webm-repair-inferred' the browser's value is
+      // known wrong and using it would re-introduce the 1.4s trim bug.
       const effectiveStartSec = Math.max(0, onsetAbsSec - 0.05);
       const effectiveEndSec = durationSec;
       // eslint-disable-next-line no-console
@@ -771,6 +842,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         onsetAbsSec,
         effectiveStartSec,
         effectiveEndSec,
+        durationSource: decision.source,
       });
       const { blob, mimeType } = await captureVideoSlice(
         video,
@@ -783,6 +855,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         motionOnsetSec: onsetAbsSec,
         blobBytes: blob.size,
         mimeType,
+        durationSource: decision.source,
       });
       return { blob, mimeType, motionOnsetSec: onsetAbsSec };
     } finally {
@@ -801,6 +874,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     URL.revokeObjectURL(objectUrl);
   }
 }
+
 
 export async function scoreWithGemini(
   args: ScoreWithGeminiArgs,

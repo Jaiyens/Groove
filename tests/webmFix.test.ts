@@ -51,10 +51,13 @@ describe('repairWebmDuration — graceful degradation', () => {
     assert.equal(result.blob.type, 'video/webm');
   });
 
-  it('reports inferredDurationSec=0 when the EBML scan could not find a cluster', async () => {
+  it('reports inferredDurationSec=null when the EBML scan could not find a cluster', async () => {
+    // SPECK overnight Group 1: scan-fail now surfaces as `null` rather
+    // than a 0 sentinel so the client can branch on `typeof === 'number'`
+    // when deciding whether to use the inferred value as authoritative.
     const garbage = new Blob([new Uint8Array([1, 2, 3])], { type: 'video/webm' });
     const result = await repairWebmDuration(garbage);
-    assert.equal(result.inferredDurationSec, 0);
+    assert.equal(result.inferredDurationSec, null);
   });
 });
 
@@ -67,7 +70,13 @@ describe('repairWebmDuration — result shape', () => {
     assert.equal(typeof result.repaired, 'boolean');
     assert.equal(typeof result.blobBytesBefore, 'number');
     assert.equal(typeof result.blobBytesAfter, 'number');
-    assert.equal(typeof result.inferredDurationSec, 'number');
+    // inferredDurationSec: number | null per RepairWebmResult contract.
+    // Garbage input → null; valid webm → number. Either is fine here;
+    // we just pin that the field is present and the right shape.
+    assert.ok(
+      result.inferredDurationSec === null || typeof result.inferredDurationSec === 'number',
+      `expected number|null, got ${typeof result.inferredDurationSec}`,
+    );
     assert.ok(result.blob instanceof Blob, 'result.blob is a Blob');
   });
 
