@@ -40,6 +40,7 @@ import { GeminiScoreSchema, type GeminiScore } from './types';
 import { detectMotionOnsetIndex } from './motionOnset';
 import { finalizeWebmDuration } from './webmDuration';
 import { repairWebmDuration } from './webmFix';
+import { renderSideBySideVideo } from './composite';
 import { getMirrorEnabled } from '@/lib/preferences/mirror';
 
 export type GeminiResult =
@@ -1098,11 +1099,6 @@ export async function scoreWithGemini(
     const attemptToSend = attemptTrim.blob;
     const attemptMimeTypeToSend = attemptTrim.mimeType;
 
-    const [attemptBase64, referenceBase64] = await Promise.all([
-      blobToBase64(attemptToSend),
-      blobToBase64(referenceBlob),
-    ]);
-
     // Both videos motion-onset trimmed when BOTH detected an onset and the
     // reference path didn't degrade to the full-fallback. The prompt's
     // "videos start at first movement" clause only fires when both legs of
@@ -1111,6 +1107,86 @@ export async function scoreWithGemini(
       trimMode === 'trimmed' &&
       referenceMotionOnsetSec !== null &&
       attemptMotionOnsetSec !== null;
+
+    // SPECK overnight Group 4 §composite: try the side-by-side renderer
+    // first. If it succeeds, ship the composite to /api/score-gemini-composite
+    // and skip the two-video path entirely. If it fails (any reason),
+    // fall through silently to the existing two-video pipeline.
+    //
+    // We pass the already-trimmed blobs and tell the renderer NOT to apply
+    // mirror at composite time — trimReferenceClientSide already applied
+    // the mirror at trim time (when the preference said so), and
+    // double-flipping would un-mirror. The mirror BOOLEAN is forwarded
+    // separately to the composite endpoint so the prompt can describe
+    // the left/right correspondence.
+    if (trimMode === 'trimmed' && videosMotionOnsetTrimmed) {
+      const composite = await renderSideBySideVideo({
+        // Object URL for the trimmed reference so the composer can
+        // consume it as a <video src>. The reference here is already
+        // mirrored if the preference was on at trim time.
+        referenceUrl: URL.createObjectURL(referenceBlob),
+        attemptBlob: attemptToSend,
+        mirror: false, // do NOT double-flip; trim already mirrored
+        motionOnsetRefSec: 0, // trimmed clip starts at onset
+        motionOnsetAttemptSec: 0, // trimmed clip starts at onset
+        chunkDurationSec: Math.min(7, (chunkEndMs - chunkStartMs) / 1000 + 1),
+      });
+
+      if (composite.kind === 'success') {
+        const compositeBase64 = await blobToBase64(composite.blob);
+        // eslint-disable-next-line no-console
+        console.log('[gemini-client] sending composite', {
+          mirror: referenceMirrored,
+          legsVisible,
+          compositeBytes: compositeBase64.length,
+          mimeType: composite.mimeType,
+          durationSec: composite.durationSec,
+        });
+        const compRes = await fetch('/api/score-gemini-composite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: composedSignal,
+          body: JSON.stringify({
+            compositeVideoBase64: compositeBase64,
+            compositeMimeType: composite.mimeType,
+            legsVisible,
+            mirror: referenceMirrored,
+          }),
+        });
+        if (compRes.ok) {
+          const cJson = (await compRes.json()) as { score?: unknown; latencyMs?: unknown };
+          const cParsed = GeminiScoreSchema.safeParse(cJson.score);
+          if (cParsed.success) {
+            const latencyMs = typeof cJson.latencyMs === 'number' ? cJson.latencyMs : 0;
+            return { kind: 'success', score: cParsed.data, latencyMs };
+          }
+          // eslint-disable-next-line no-console
+          console.warn('[gemini-client] composite response failed schema; falling back to two-video', cParsed.error.flatten());
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn('[gemini-client] composite endpoint non-ok; falling back to two-video', {
+            status: compRes.status,
+          });
+        }
+      } else {
+        // eslint-disable-next-line no-console
+        console.log('[gemini-client] composite failed, falling back to two-video', {
+          reason: composite.reason,
+          detail: composite.detail,
+        });
+      }
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] composite skipped (preconditions not met)', {
+        trimMode,
+        videosMotionOnsetTrimmed,
+      });
+    }
+
+    const [attemptBase64, referenceBase64] = await Promise.all([
+      blobToBase64(attemptToSend),
+      blobToBase64(referenceBlob),
+    ]);
 
     // eslint-disable-next-line no-console
     console.log('[gemini-client] sending', {
