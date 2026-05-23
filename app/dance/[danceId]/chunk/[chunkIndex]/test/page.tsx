@@ -19,7 +19,7 @@ import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
 import VolumeControl from '@/components/VolumeControl';
 import CalloutOverlay from '@/components/scoring/CalloutOverlay';
-import HoldingScreen from '@/components/scoring/HoldingScreen';
+import SideBySideHoldingScreen from '@/components/scoring/SideBySideHoldingScreen';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
 import { useDance } from '@/lib/dances/useDance';
 import { recordChunkScore } from '@/lib/mastery/chunkProgress';
@@ -902,16 +902,21 @@ export default function TestPage({ params }: PageProps) {
             />
           )}
 
-        {/* Holding screen: shown immediately after the attempt ends, sits
-            for at least 3s while MediaPipe final + Gemini run in parallel.
-            Plays back the recorded attempt with the dual-skeleton overlay
-            so the user has something to watch while we score. */}
-        {runState === 'finished' && !holdingDone && attemptBlobUrl && chunk && (
-          <HoldingScreen
+        {/* Side-by-side holding screen: shown immediately after the
+            attempt ends, sits for at least 3s while MediaPipe final +
+            Gemini run in parallel. Renders REFERENCE left, YOU right —
+            both videos play in sync, each with its own skeleton. The
+            reference skeleton only draws when the dance has precomputed
+            pose data; otherwise the reference panel is video-only
+            (SPECK §SideBySide). */}
+        {runState === 'finished' && !holdingDone && attemptBlobUrl && chunk && dance.video_url && (
+          <SideBySideHoldingScreen
             attemptBlobUrl={attemptBlobUrl}
+            referenceVideoUrl={dance.video_url}
             userLandmarkFrames={userLandmarkFramesRef.current}
             referencePoseData={poseData ?? null}
             chunkStartMs={chunk.startMs}
+            chunkEndMs={chunk.endMs}
             geminiResolved={finalView !== null}
             onReady={() => setHoldingDone(true)}
           />
