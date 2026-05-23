@@ -229,3 +229,82 @@ describe('buildGeminiPrompt — generosity calibration', () => {
     assert.ok(out.match(/ACTIONABLE/i), 'insights should be ACTIONABLE');
   });
 });
+
+describe('buildGeminiPrompt — hand-detail + execution-quality clauses', () => {
+  // SPECK §deterministic-scoring §prompt.ts: two surgical additions to
+  // stop the model from tagging stylistic noise (rock-on hand, crispness
+  // notes) as MODERATE. Both clauses must fire in BOTH leg-visibility
+  // branches.
+
+  it('HAND AND FINGER DETAILS clause is present (legsVisible=true)', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.includes('HAND AND FINGER DETAILS ARE MINOR'),
+      'HAND AND FINGER DETAILS heading missing in legsVisible=true branch',
+    );
+    assert.ok(
+      out.includes('rock-on'),
+      'must explicitly name rock-on as a hand-signal example',
+    );
+    assert.ok(
+      out.match(/finger guns/i),
+      'must explicitly name finger guns as a hand-signal example',
+    );
+    assert.ok(
+      out.match(/peace signs/i),
+      'must explicitly name peace signs as a hand-signal example',
+    );
+  });
+
+  it('HAND AND FINGER DETAILS clause is present (legsVisible=false)', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: false,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.includes('HAND AND FINGER DETAILS ARE MINOR'),
+      'HAND AND FINGER DETAILS heading missing in legsVisible=false branch',
+    );
+    assert.ok(out.includes('rock-on'));
+  });
+
+  it('EXECUTION QUALITY clause is present (legsVisible=true)', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.includes('EXECUTION QUALITY IS MINOR'),
+      'EXECUTION QUALITY heading missing in legsVisible=true branch',
+    );
+    for (const word of ['extension', 'crispness', 'sharpness', 'isolation', 'fullness']) {
+      assert.ok(
+        out.includes(word),
+        `EXECUTION QUALITY clause must list "${word}" as a stylistic concern`,
+      );
+    }
+    assert.ok(
+      out.match(/wrong direction, wrong arm, wrong body part/i),
+      'EXECUTION QUALITY must define the escalation condition (wrong move entirely)',
+    );
+  });
+
+  it('EXECUTION QUALITY clause is present (legsVisible=false)', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: false,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.includes('EXECUTION QUALITY IS MINOR'),
+      'EXECUTION QUALITY heading missing in legsVisible=false branch',
+    );
+    assert.ok(out.includes('crispness'));
+  });
+});

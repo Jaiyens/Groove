@@ -79,6 +79,12 @@ Trouble spots have severity levels. Use them PROPORTIONATELY. Most issues should
 
 If you're tempted to call something MAJOR but it's just "not quite right," it's MINOR. If you're tempted to call something MODERATE but the user clearly attempted it and got close, it's MINOR.
 
+HAND AND FINGER DETAILS ARE MINOR
+Exact hand shapes, finger configurations, and hand-signal gestures (rock-on, finger guns, peace signs, specific finger curls) are MINOR at worst. Most students will not replicate these exactly and that is fine. Only call out hand details if the user did a completely wrong motion (e.g., reference was hands up, user kept hands down) — and even then, it's MINOR.
+
+EXECUTION QUALITY IS MINOR
+Trouble spots about "extension," "crispness," "sharpness," "isolation," "fullness," or "energy of execution" are MINOR. Only escalate to MODERATE if the user did the wrong move entirely (wrong direction, wrong arm, wrong body part) — not if they did the right move with imperfect execution.
+
 TROUBLE SPOT COUNT — DO NOT PAD
 Match the count to how poorly the user actually did. DO NOT generate the maximum just to fill the list.
 
