@@ -40,6 +40,7 @@ import { GeminiScoreSchema, type GeminiScore } from './types';
 import { detectMotionOnsetIndex } from './motionOnset';
 import { finalizeWebmDuration } from './webmDuration';
 import { repairWebmDuration } from './webmFix';
+import { getMirrorEnabled } from '@/lib/preferences/mirror';
 
 export type GeminiResult =
   | { kind: 'success'; score: GeminiScore; latencyMs: number }
@@ -523,6 +524,10 @@ interface TrimReferenceResult {
   // detected. null when no onset detected within scan window (kept the
   // legacy padded-trim semantics).
   motionOnsetSec: number | null;
+  // Whether the captured slice was horizontally flipped — surfaced so
+  // the caller can set `referenceMirrored` on the Gemini payload to
+  // match. SPECK overnight Group 2 §mirror-unification.
+  mirror: boolean;
 }
 
 async function trimReferenceClientSide(
@@ -618,11 +623,17 @@ async function trimReferenceClientSide(
       effectiveEndSec,
     });
 
+    // SPECK overnight Group 2 §mirror-unification: flip is no longer
+    // hardcoded — it follows the shared mirror preference so the Gemini
+    // composite reference matches whatever the user is seeing in Mode A
+    // and on the holding screen. The caller surfaces the chosen value
+    // as `referenceMirrored` on the API payload below.
+    const mirror = getMirrorEnabled();
     const { blob, mimeType } = await captureVideoSlice(
       video,
       effectiveStartSec,
       effectiveEndSec,
-      /* flipHorizontally */ true,
+      /* flipHorizontally */ mirror,
     );
 
     // Chunk position within the trimmed slice. With motion-onset trim, the
@@ -639,6 +650,7 @@ async function trimReferenceClientSide(
       referenceChunkEndSec,
       blobBytes: blob.size,
       mimeType,
+      mirror,
     });
 
     return {
@@ -647,6 +659,7 @@ async function trimReferenceClientSide(
       referenceChunkStartSec,
       referenceChunkEndSec,
       motionOnsetSec: onsetAbsSec,
+      mirror,
     };
   } finally {
     dispose();
@@ -911,7 +924,11 @@ export async function scoreWithGemini(
       referenceChunkEndSec = trim.referenceChunkEndSec;
       referenceMotionOnsetSec = trim.motionOnsetSec;
       trimMode = 'trimmed';
-      referenceMirrored = true;
+      // SPECK overnight Group 2 §mirror-unification: trim.mirror reflects
+      // the user's persisted preference at call time. The previous code
+      // always sent `true` here; the prompt's literal-left/right clause
+      // is correct only when mirror was actually applied during capture.
+      referenceMirrored = trim.mirror;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(

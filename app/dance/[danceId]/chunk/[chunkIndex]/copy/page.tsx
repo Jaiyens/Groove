@@ -31,6 +31,11 @@ import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
+import {
+  getMirrorEnabled,
+  onMirrorChanged,
+  setMirrorEnabled,
+} from '@/lib/preferences/mirror';
 import type { PoseLandmark } from '@/lib/pose/types';
 
 interface PageProps {
@@ -80,21 +85,22 @@ export default function CopyAlongPage({ params }: PageProps) {
   const [camState, setCamState] = useState<CamState>('idle');
   const [refMissing, setRefMissing] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
-  // SPECK polish §Fix 2: REF video mirrored by default so the dancer's
-  // left maps to the user's left. Persisted in localStorage so the
-  // preference survives page reloads. Joint-angle DTW is mirroring-
-  // invariant, so scoring is unaffected. The REF SkeletonOverlay also
-  // gets this transform so it stays glued to the joints.
-  const [mirrorRef, setMirrorRef] = useState(true);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = window.localStorage.getItem('groov_mirror_enabled');
-    if (stored !== null) setMirrorRef(stored === 'true');
+  // SPECK polish §Fix 2 → overnight Group 2 §mirror-unification: REF
+  // mirror state lives in lib/preferences/mirror.ts now so the holding
+  // screen REF panel and the Gemini composite read the SAME value. We
+  // initialize from the shared getter and subscribe to broadcasts so a
+  // toggle elsewhere (e.g. a future settings sheet) reflects here too.
+  const [mirrorRef, setMirrorRefState] = useState(getMirrorEnabled);
+  useEffect(() => onMirrorChanged(setMirrorRefState), []);
+  // Persist + broadcast on every toggle. Replaces the previous local
+  // localStorage useEffect.
+  const handleToggleMirror = useCallback(() => {
+    setMirrorRefState((prev) => {
+      const next = !prev;
+      setMirrorEnabled(next);
+      return next;
+    });
   }, []);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('groov_mirror_enabled', String(mirrorRef));
-  }, [mirrorRef]);
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
@@ -600,7 +606,7 @@ export default function CopyAlongPage({ params }: PageProps) {
         <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
         <button
           type="button"
-          onClick={() => setMirrorRef((m) => !m)}
+          onClick={handleToggleMirror}
           aria-pressed={mirrorRef}
           aria-label={mirrorRef ? 'unmirror reference' : 'mirror reference'}
           className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 active:scale-95 ${

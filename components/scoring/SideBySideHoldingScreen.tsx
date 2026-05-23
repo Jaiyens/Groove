@@ -33,6 +33,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import DualSkeletonOverlay from '@/components/DualSkeletonOverlay';
 import { landmarkAt, type ReferencePoseData } from '@/lib/pose/referencePose';
+import { getMirrorEnabled, onMirrorChanged } from '@/lib/preferences/mirror';
 import type { LandmarkFrame, PoseLandmark } from '@/lib/pose/types';
 
 interface SideBySideHoldingScreenProps {
@@ -82,6 +83,14 @@ export default function SideBySideHoldingScreen({
   const [minTimeElapsed, setMinTimeElapsed] = useState(false);
   const [userLandmarks, setUserLandmarks] = useState<PoseLandmark[] | null>(null);
   const [refLandmarks, setRefLandmarks] = useState<PoseLandmark[] | null>(null);
+  // SPECK overnight Group 2 §mirror-unification: REF panel mirrors when
+  // the shared preference says so. Mode A (copy page) writes through
+  // setMirrorEnabled; this surface reads + subscribes so the user sees
+  // the same orientation across surfaces. Attempt side keeps its
+  // hardcoded scaleX(-1) — the recorded blob is in raw camera-sensor
+  // orientation and the flip restores the selfie-camera look.
+  const [mirrorRef, setMirrorRef] = useState(getMirrorEnabled);
+  useEffect(() => onMirrorChanged(setMirrorRef), []);
 
   // Rotate status text every 2s.
   useEffect(() => {
@@ -224,16 +233,29 @@ export default function SideBySideHoldingScreen({
               autoPlay
               muted
               playsInline
-              className="absolute inset-0 h-full w-full object-cover"
+              className={`absolute inset-0 h-full w-full object-cover ${
+                mirrorRef ? '[transform:scaleX(-1)]' : ''
+              }`}
               aria-label="reference dancer"
             />
-            <div className="pointer-events-none absolute inset-0">
+            <div
+              className={`pointer-events-none absolute inset-0 ${
+                mirrorRef ? '[transform:scaleX(-1)]' : ''
+              }`}
+            >
               {/* Reference skeleton: white only (passed as userLandmarks
                   to the overlay so the WHITE channel renders — the dual
                   overlay treats reference as the white skeleton; here we
                   want the reference dancer drawn in white, so we feed
                   refLandmarks into the `referenceLandmarks` slot and
-                  leave userLandmarks null to draw nothing pink). */}
+                  leave userLandmarks null to draw nothing pink).
+
+                  The wrapper applies the same mirror as the video below
+                  so the skeleton stays glued to the dancer when the
+                  shared mirror preference is on. (DualSkeletonOverlay
+                  draws in canonical body frame anchored at center, so a
+                  CSS scaleX(-1) on the wrapper is equivalent to flipping
+                  the skeleton's left/right while keeping it positioned.) */}
               <DualSkeletonOverlay
                 userLandmarks={null}
                 referenceLandmarks={refLandmarks}
