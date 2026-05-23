@@ -43,9 +43,12 @@ export type GeminiSpecScore = z.infer<typeof GeminiSpecScoreSchema>;
 export type GeminiSpecTier = z.infer<typeof GeminiSpecTierSchema>;
 
 // JSON Schema view for Gemini structured-output `responseSchema`. Kept in
-// sync with GeminiSpecScoreSchema above. `propertyOrdering` is a Gemini-
-// specific hint that biases generation toward the canonical key order from
-// the spec's worked examples.
+// sync with GeminiSpecScoreSchema above. Gemini accepts only a strict
+// subset of JSON Schema (type, properties, required, enum, minimum,
+// maximum, items, description) — anything else triggers a 400
+// INVALID_ARGUMENT before the model is even invoked. In particular, do
+// NOT add `propertyOrdering`, `$schema`, `$id`, or `additionalProperties`
+// here.
 export const GeminiSpecResponseJsonSchema = {
   type: 'object',
   properties: {
@@ -59,7 +62,6 @@ export const GeminiSpecResponseJsonSchema = {
     visibility_notes: { type: 'string' },
   },
   required: ['score', 'tier', 'did_well', 'work_on', 'visibility_notes'],
-  propertyOrdering: ['score', 'tier', 'did_well', 'work_on', 'visibility_notes'],
 } as const;
 
 export const GeminiScoreSchema = z.object({
