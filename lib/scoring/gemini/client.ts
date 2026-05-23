@@ -53,7 +53,18 @@ export type ScoreWithGeminiArgs = {
   signal?: AbortSignal;
 };
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Client-side timeout for the /api/score-gemini round trip. Must be > the
+// server's total budget (TOTAL_BUDGET_MS in app/api/score-gemini/route.ts).
+// Otherwise the client gives up before the server's retry path can finish,
+// every transient Gemini 503 forces a MediaPipe fallback even when the
+// retry would have succeeded, and the user sees `FALLBACK SCORING` on a
+// perfectly-valid attempt.
+//
+// Server budget: first attempt ~11s + retry ~26s + overhead ≈ 37s worst case.
+// Floor: 35s (one full server budget). We pick 40s for headroom — three
+// seconds of slack on top of the floor.
+export const SERVER_BUDGET_FLOOR_MS = 35_000;
+export const DEFAULT_TIMEOUT_MS = 40_000;
 const REFERENCE_PADDING_MS = 500;
 // How far past the leading edge of the trim window we scan looking for the
 // first frame of dance movement. 3s is the practical upper bound for a
@@ -777,6 +788,7 @@ export async function scoreWithGemini(
   const composedSignal = signal
     ? mergeSignals(signal, controller.signal)
     : controller.signal;
+  const callStartedAt = performance.now();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
   try {
@@ -914,6 +926,19 @@ export async function scoreWithGemini(
     if (err instanceof DOMException && err.name === 'AbortError') {
       // Was it our internal timeout or a caller cancel?
       if (signal?.aborted) return { kind: 'error', reason: 'cancelled' };
+      // Surface the elapsed wall-clock time so we can tell "client gave
+      // up early" (elapsed ≈ DEFAULT_TIMEOUT_MS) apart from "Gemini
+      // genuinely didn't return" (elapsed much shorter, which would
+      // imply some other AbortError path). The server's retry budget is
+      // ~37s; if elapsedMs is close to DEFAULT_TIMEOUT_MS and the
+      // server logs show a retry in progress, the timeout needs to go
+      // up further.
+      const elapsedMs = Math.round(performance.now() - callStartedAt);
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] timeout', {
+        elapsedMs,
+        budgetMs: DEFAULT_TIMEOUT_MS,
+      });
       return { kind: 'error', reason: 'timeout' };
     }
     return {
