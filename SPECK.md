@@ -1,272 +1,250 @@
-# SPECK.md — Chunk Windowing + Leg Visibility + Generosity Calibration
+SPECK.md — Generosity Rewrite + Callout UI + Failure Visibility
+Context — read this first
+The previous PR (gemini-windowing-fix) landed cleanly. Reference trimming works (~2.1MB / ~7.4s instead of ~5MB / ~15s), trouble spot timestamps stay within attempt bounds, leg-visibility branch routes correctly. The plumbing is correct.
+But validation revealed the scoring itself is wrong, in three specific ways:
 
-## Context
+The numbers are too low and the tone is too harsh. A sincere attempt scored 47. The same dance with bigger motion scored 61. Random flailing scored 50. Trouble spots are padded (4-5 per attempt regardless of severity), tagged MAJOR for minor issues ("started 0.5s late" ≠ catastrophic), and use punitive adjectives ("very small," "significantly delayed," "completely missed"). The system feels mean, and the numbers don't track reality.
+The canary partially fails. Standing still correctly scores 5 (Gemini sees no motion → is_actually_dancing: false). But random flailing scored 50 with is_actually_dancing: true — Gemini hallucinated specific moves the user "attempted." The prompt's generosity language is so strong that any motion gets graded as a sincere attempt.
+Gemini fails silently and you don't know. One sincere attempt produced a 32 with "FALLBACK SCORING" — meaning Gemini failed and MediaPipe took over without any visible reason logged. The fallback architecture works as designed, but we have zero observability into why Gemini failed.
 
-Previous PR (gemini-scoring-with-callouts) shipped the hybrid scoring architecture: MediaPipe drives live callouts during the dance, Gemini drives the post-attempt verdict. Architecture is correct. Pipeline works end-to-end.
+This PR fixes all three. Plus a Just Dance-quality callout UI redesign that was previously deferred. Plus diagnostic logging on the live-callout engine because every callout currently fires GROOVY regardless of attempt quality.
+Branch off the latest gemini-windowing-fix (or main if merged) into gemini-generosity-and-ui.
 
-But validation revealed three correctness bugs in what we're sending Gemini:
+Hard rules
 
-1. **Reference video is way too long.** Logs showed a ~15s reference being sent for a chunk window of `from=1500&to=3000` (1.5s of choreography). Gemini hallucinated trouble spots at `start_sec: 13.0–15.0` for a 7-10s user attempt — it was describing reference events past the end of the user's recording as "you stood still."
+The architecture stays: MediaPipe live callouts during, Gemini final verdict after, MediaPipe fallback on Gemini failure. No structural changes.
+All diagnostic logging from previous rounds stays. Add to it, don't remove.
+Branch: gemini-generosity-and-ui. One commit per file group. Do not push to main.
+Do not modify the chunk-windowing logic from the previous PR — it's correct.
+Mobile-first: verify at 390px.
 
-2. **Gemini doesn't know the reference is a chunk, not a full routine.** Prompt frames it as "a TikTok dance," so Gemini assumes a full performance and penalizes the user for everything in the reference, including incidental motion.
 
-3. **Legs get punished when they're not in frame.** User often films upper-body only; reference shows legs; Gemini scores legs at 0 and tanks overall. MediaPipe knows whether legs are visible — we should pass that to Gemini.
-
-This PR fixes all three. Branch off latest `main` (after merging the previous PR) into `gemini-windowing-fix`.
-
----
-
-## Hard rules
-
-1. The two scoring paths (MediaPipe live callouts, MediaPipe final fallback, Gemini final) all remain. We are not changing the architecture, only the inputs and the prompt.
-2. Do not modify the callout engine or the holding screen.
-3. Backward compatibility: if `legsVisible` is undefined (older clients), default to `true` (current behavior).
-4. Branch: `gemini-windowing-fix`. One commit per file group. Do not push to main.
-
----
-
-## File-by-file plan
-
-### MODIFIED: `lib/scoring/gemini/client.ts`
-
-The browser client currently sends the full reference video and the full attempt blob. Two changes:
-
-**Change 1: Trim the reference to the chunk window with padding.**
-
-Currently the client either fetches the full reference URL or fetches a pre-trimmed reference. Going forward, the client receives the chunk start and end timestamps as parameters and trims the reference video in the browser before encoding.
-
-```typescript
-export type ScoreWithGeminiArgs = {
-  attemptBlob: Blob;
-  referenceVideoUrl: string;
-  chunkStartMs: number;        // NEW: e.g. 1500
-  chunkEndMs: number;          // NEW: e.g. 3000
-  legsVisible: boolean;        // NEW: from MediaPipe
-  signal?: AbortSignal;
-};
-```
-
-Padding: **500ms on each side** of the chunk window. So for `chunkStartMs=1500, chunkEndMs=3000`, the reference sent to Gemini covers `1000ms → 3500ms` (2.5s total). Clamp to `[0, referenceDuration]`.
-
-Implementation: use a hidden `<video>` element + canvas + MediaRecorder to extract the padded chunk window into a new Blob client-side. There is a known pattern for this; if it gets hairy, the alternative is to add a server-side trim endpoint that uses ffmpeg — but try client-side first. If client-side trimming fails or is unreliable, fall back to sending the full reference with explicit `referenceChunkStartSec` and `referenceChunkEndSec` fields in the API call and let Gemini handle the windowing via prompt (less ideal, flag in PR).
-
-**Change 2: Pass `legsVisible` and chunk timing to the API route.**
-
-```typescript
-body: JSON.stringify({
-  referenceVideoBase64,
-  attemptVideoBase64,
-  referenceMimeType,
-  attemptMimeType,
-  legsVisible,                  // NEW
-  referenceChunkStartSec: 0,    // NEW: where in the padded reference the actual chunk begins (0.5s if padded)
-  referenceChunkEndSec: 2.0,    // NEW: where it ends
-})
-```
-
-These last two fields tell Gemini *within the padded reference video* where the actual choreography lives — so it knows "the first 0.5s and last 0.5s are padding, score against the middle."
-
-**Acceptance:** Given a `referenceVideoUrl`, `chunkStartMs=1500`, `chunkEndMs=3000`, the function trims the reference to a 2.5s clip (1000ms–3500ms in original), encodes to base64, and the resulting base64 length is roughly 1/6 of what it was before for the same source video.
-
-### MODIFIED: `app/api/score-gemini/route.ts`
-
-Accept the new fields. Validate. Pass through to the prompt template.
-
-```typescript
-const {
-  referenceVideoBase64,
-  attemptVideoBase64,
-  referenceMimeType,
-  attemptMimeType,
-  legsVisible = true,                // NEW with default
-  referenceChunkStartSec = 0,        // NEW with default
-  referenceChunkEndSec,              // NEW, derived if missing
-} = body;
-```
-
-When building the Gemini request, interpolate the new context into the prompt (see prompt update below). Leave the diagnostic logging from last round in place — it's been useful, keep it.
-
-**Acceptance:** Route accepts new fields without breaking. Old clients sending no `legsVisible` still work (treated as visible).
-
-### MODIFIED: `lib/scoring/gemini/prompt.ts`
-
-This is the biggest substantive change. Replace the entire prompt with the version below. It must remain a single template string that interpolates `legsVisible`, `referenceChunkStartSec`, `referenceChunkEndSec`.
-
-```typescript
-export function buildGeminiPrompt(args: {
+File-by-file plan
+MODIFIED: lib/scoring/gemini/prompt.ts (the biggest change)
+Rewrite the prompt. The current version's "be generous" language is too vague — Gemini interpreted it as "give benefit of the doubt to any motion." The new prompt is more precise: it raises the floor for sincere attempts, redefines what "sincere" means (stricter), recalibrates severity (most things should be MINOR), caps trouble spot counts proportional to score, and requires the first insight to be a positive specific observation.
+Replace the entire function body with:
+typescriptexport function buildGeminiPrompt(args: {
   legsVisible: boolean;
   referenceChunkStartSec: number;
   referenceChunkEndSec: number;
 }): string {
   const { legsVisible, referenceChunkStartSec, referenceChunkEndSec } = args;
 
-  return `You are a dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance.
+  return `You are a supportive dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance. Your job is to help the student improve, not to nitpick. Lead with what worked, then constructively note what to improve.
 
 VIDEOS
 You will receive two videos in order: REFERENCE, then ATTEMPT.
 The ATTEMPT is captured from a front-facing camera and is mirrored. Grade it as a mirror copy — when the reference dancer's left arm goes up, the attempt's right arm going up is CORRECT.
 
 CHUNK CONTEXT
-The reference video is a short chunk of a longer dance, not a complete routine.
-The actual choreography to grade against is between ${referenceChunkStartSec.toFixed(2)}s and ${referenceChunkEndSec.toFixed(2)}s of the reference video. The seconds before and after are padding — the dancer settling in or recovering. IGNORE THOSE PADDING SECONDS.
+The reference is a short chunk of a longer dance, not a complete routine. The actual choreography to grade against is between ${referenceChunkStartSec.toFixed(2)}s and ${referenceChunkEndSec.toFixed(2)}s of the reference video. Anything before or after is padding — the dancer settling in or recovering. IGNORE THE PADDING.
 
-The attempt video may be longer than the choreography window — the user has natural lead-in (preparing to dance) and lead-out (finishing, walking back to camera) time. IGNORE those too. Score only the user's attempt to perform the choreography in the reference window.
+The attempt video may be longer than the choreography window — the user has natural lead-in (preparing to dance) and lead-out (finishing, walking back to camera). IGNORE THOSE TOO. Score only the user's attempt to perform the choreography in the reference window. DO NOT report trouble spots past the end of the reference choreography.
 
-DO NOT report trouble spots past the end of the reference choreography. There is no more dance to compare against.
-
-WHAT TO SCORE AND WHAT TO IGNORE
+WHAT COUNTS AS THE DANCE
 The dance is the deliberate, repeatable choreography — the hits, the arm patterns, the steps, the body movements that are clearly choreographed.
 
 IGNORE incidental motion in the reference:
 - The dancer walking into frame or pressing play
-- Casual swaying while the music starts or between moves
-- Drifting toward or away from the camera
-- Settling into position before the choreography starts
-- Relaxing after the final hit
-These are setup and recovery, not choreography. Do NOT penalize the user for failing to replicate them.
+- Casual swaying while the music starts
+- Drifting toward or away from the camera between moves
+- Settling into position or relaxing after the final hit
+- Natural body micro-movements between choreographed counts
+These are setup and recovery, NOT choreography. Do NOT penalize the user for not replicating them.
 
 PERSONAL STYLE IS NOT AN ERROR
-The user may execute the choreography with their own angle, energy, or flourish. If the core move is recognizable, that is success. Score DOWN only for missing or incorrect choreography — not for stylistic variation.
+The user may execute the choreography with their own angle, energy, or flourish. If the core move is recognizable, that is SUCCESS. Score down only for missing or incorrect choreography — not for stylistic variation. Smaller motion executed correctly beats bigger motion executed incorrectly.
 
 ${legsVisible
   ? 'LEGS: The user has their legs in frame. Score legs normally as part of the choreography.'
-  : 'LEGS: The user is filming UPPER BODY ONLY — legs are not in frame. This is a framing choice, not a performance error. Score the legs component generously (default 75) and do not let leg-related issues affect overall_score significantly. Do NOT include leg-related trouble spots. Focus your trouble spots on arms, body, and timing.'}
+  : 'LEGS: The user is filming UPPER BODY ONLY — legs are not in frame. This is a framing choice, not a performance error. Score the legs component at 75 by default and do NOT let leg-related issues affect overall_score. Do NOT include leg-related trouble spots. Focus your trouble spots on arms, body, and timing.'}
 
-SCORING
-Score four components 0-100: ARMS, LEGS, BODY, TIMING.
+SCORING — RAISE THE FLOOR FOR REAL ATTEMPTS
+This is a HARD RULE. If the user is sincerely attempting the choreography — even badly, even with most moves wrong — the overall_score MUST be at least 50.
 
-Assign OVERALL TIER:
-- GROOVY (85-100): full performance, on the beat, choreography recognizable and well-executed
-- SOLID (65-84): clearly attempting the choreography, mostly correct, recognizable
-- SHAKY (40-64): attempting but missing or wrong on key moves, or noticeably off-beat
-- NOT_DANCING (0-39): standing still, random flailing, off-camera, or no attempt at the choreography
+A "sincere attempt" means: the user is performing recognizable choreographed moves in approximate sequence, with at least some timing relationship to the music. NOT just "any motion is happening." Random arm-waving with no relation to the reference is NOT a sincere attempt.
 
-CANARY
-If the user is NOT actually attempting the choreography (standing completely still, random flailing unrelated to the dance, walking out of frame the whole time), set is_actually_dancing=false and score below 40. The generosity guidance above does NOT apply to non-attempts.
+Three zones, no exceptions:
+- **0-39: Not attempting.** Standing still, off-camera, or motion completely unrelated to the choreography (random flailing).
+- **40-49: Attempting but very poor.** Motion is present and some timing relation to the music exists, but few or no specific reference moves are recognizable.
+- **50-100: Sincere attempt.** User is performing recognizable moves from the choreography, even if execution is imperfect. Floor is 50, no exceptions.
 
-TROUBLE SPOTS
-1-5 trouble spots. Each must be:
-- Timestamped relative to the ATTEMPT video, not the reference
-- Specific: "your right arm extension on the chorus accent didn't reach full" is good; "keep practicing" is not
-- Within the bounds of the attempt video duration
-- About actual choreography, not incidental motion
+Within 50-100, calibrate:
+- **50-64 SHAKY:** Some moves recognizable but many missed, wrong, or significantly off-beat.
+- **65-84 SOLID:** Most moves recognizable, mostly on beat, execution mostly correct.
+- **85-100 GROOVY:** All major moves hit, on the beat, full performance energy.
 
-INSIGHTS
-1-4 specific, actionable observations. Lead with the most impactful one. Mix at least one positive ("your timing on the opening hit was good") with constructive feedback when the attempt was sincere.
+CANARY (this still applies)
+If is_actually_dancing is false, overall_score MUST be below 40. Standing still → score 0-15. Random flailing with no choreography match → score 25-39.
+
+SEVERITY CALIBRATION
+Trouble spots have severity levels. Use them PROPORTIONATELY. Most issues should be MINOR. MAJOR should be rare.
+
+- **MAJOR:** The user completely skipped a move or did a totally different move in its place. Reserved for big, obvious failures.
+- **MODERATE:** The user did the move but with the wrong direction, wrong arm, or 1+ beats off the music.
+- **MINOR:** The move is recognizable but execution wasn't crisp — slightly off angle, slightly small, slightly delayed.
+
+If you're tempted to call something MAJOR but it's just "not quite right," it's MINOR. If you're tempted to call something MODERATE but the user clearly attempted it and got close, it's MINOR.
+
+TROUBLE SPOT COUNT — DO NOT PAD
+Match the count to how poorly the user actually did. DO NOT generate the maximum just to fill the list.
+
+- **overall_score 0-39:** 1-3 trouble spots. For non-attempts, ONE summary trouble spot is enough.
+- **overall_score 40-64:** 2-3 trouble spots. Pick the most important.
+- **overall_score 65-84:** 1-2 trouble spots. The user did mostly well — only call out the top issues.
+- **overall_score 85-100:** 0-1 trouble spots. The user nailed it. Maybe one tiny polish note.
+
+If a trouble spot is MINOR, ask yourself if it's worth including at all. Most MINOR issues should just be omitted.
+
+INSIGHTS — TONE MATTERS
+1-4 insights. The FIRST insight MUST be a specific positive observation about what the user did well. Not generic ("good effort") — specific ("you nailed the arm extension on the second beat"). If you genuinely cannot identify anything positive (only true for non-attempts under 40), say "You showed up and tried — that's the first step." and move on.
+
+Subsequent insights are constructive but PROPORTIONATE. Avoid these adjectives unless the issue is truly extreme: "very," "significantly," "completely," "entirely," "totally," "barely," "not at all." Instead use proportionate language: "slightly," "a bit," "could be sharper," "try to extend a little more."
+
+Insights should be ACTIONABLE — tell the user what to do differently, not just what was wrong.
 
 OUTPUT
-Return ONLY valid JSON matching the schema. No prose, no markdown.`;
+Return ONLY valid JSON matching the schema. No prose, no markdown, no commentary.`;
 }
-```
+Acceptance: Test cases in tests/geminiPrompt.test.ts must verify:
 
-Update the import in `route.ts` from the old constant to the new function. Pass `legsVisible`, `referenceChunkStartSec`, `referenceChunkEndSec` from the request body.
+"Floor is 50" language present
+"is_actually_dancing: false → score below 40" present in both leg-visibility branches
+Severity calibration paragraph present
+Trouble spot count cap language present
+"first insight must be positive" language present
+"personal style is not an error" present
+"smaller motion executed correctly beats bigger motion" present
+All padding-ignore clauses preserved from previous version
 
-**Acceptance:** Calling `buildGeminiPrompt({legsVisible: false, referenceChunkStartSec: 0.5, referenceChunkEndSec: 2.0})` produces a string with the upper-body-only language and the correct timestamps interpolated.
+MODIFIED: app/api/score-gemini/route.ts
+Add retry-once before fallback and failure visibility logging.
+Current behavior: one call to Gemini, parse, return success or {error} with status 502.
+New behavior:
 
-### MODIFIED: Mode B orchestration (wherever `scoreWithGemini` is called)
+Call Gemini.
+On any failure (network error, timeout, schema validation, JSON parse failure), log the specific failure reason with [gemini-score][failure] prefix, then retry exactly once.
+If retry also fails, log [gemini-score][fallback] with the failure reason, return 502 (existing fallback path takes over).
+Failure reasons must be specific and distinct in logs: timeout, network, schema_validation, json_parse, upstream_5xx, upstream_4xx, unknown.
 
-Two changes:
+Edge cases:
 
-**Change 1:** Pass the chunk start/end timestamps (already in the URL as `?from=&to=`) into `scoreWithGemini`.
+Total latency budget: still 30s for the route. If retry would exceed remaining budget, skip retry and go straight to fallback.
+Do NOT retry on 4xx upstream errors (those mean our request is malformed, retrying won't help).
+Preserve all existing [gemini-score] logs from previous rounds. ADD to logging, don't replace.
 
-**Change 2:** Detect leg visibility from MediaPipe pose data. Add a utility:
+Acceptance: Force a Gemini failure (kill network, malform request, mock the SDK). Verify the terminal shows the failure reason, the retry attempt, and either retry-success or final-fallback logs. End-user behavior unchanged on the surface (fallback still silent to UI).
+MODIFIED: lib/scoring/gemini/client.ts
+Browser client may need to handle the case where the API route returns 502 after retry. Verify the existing behavior gracefully returns { kind: 'error', reason: string } on 502.
+If the current implementation doesn't gracefully handle a 502 response, fix it so it returns { kind: 'error', reason: 'gemini_failed_after_retry' } cleanly within 1s, no throw.
+Acceptance: When the API route returns 502, the browser client returns a tagged error within 1s, no throw.
+MODIFIED: components/scoring/CalloutOverlay.tsx — UI redesign
+Currently the callout overlay renders generic 64px text centered on screen, over the user's face. Almost every callout fires GROOVY. Two problems to fix together.
+Visual redesign:
 
-```typescript
-// lib/scoring/legVisibility.ts (NEW)
+Position: bottom center, above any controls. Vertically: ~80% down the viewport. Horizontally: centered.
+Size: 64px on mobile (don't shrink, just move).
+Typography: use a heavy display font face. Add to the project (or use a Google Font import): Bungee, Anton, or Archivo Black — pick one with character. Heavy weight, condensed, all caps, tight letter-spacing (-0.02em), slight italic skew (-3deg).
+Per-tier visual treatment:
 
-/**
- * Determines if the user's legs were visible in their attempt.
- * Returns true if knee/ankle landmarks were detected with confidence > 0.5
- * in at least 60% of frames where pose was detected at all.
- */
-export function detectLegsVisible(poseFrames: PoseFrame[]): boolean {
-  if (poseFrames.length === 0) return true; // default generous
+GROOVY: brand pink #FF1F8E, white outer stroke (4px), radial pink glow (filter: drop-shadow), subtle particle burst on entry (3-5 small pink/white dots radiating outward, fade in 200ms then fade out 400ms). This is the "you nailed it" celebration.
+PERFECT: white fill, pink outer stroke (3px), no glow, no particles. Clean and crisp.
+GREAT: white fill, white outer stroke (1px), no glow. Minimal.
+ALMOST: muted slate #94A3B8, no stroke, no glow. Quietly visible — present but not punishing.
 
-  const LEG_LANDMARKS = [25, 26, 27, 28]; // L_KNEE, R_KNEE, L_ANKLE, R_ANKLE in MediaPipe
-  const VISIBILITY_THRESHOLD = 0.5;
-  const FRAME_RATIO_THRESHOLD = 0.6;
 
-  const framesWithLegsVisible = poseFrames.filter(frame => {
-    if (!frame.landmarks) return false;
-    const visibleLegLandmarks = LEG_LANDMARKS.filter(idx => {
-      const lm = frame.landmarks[idx];
-      return lm && (lm.visibility ?? 0) > VISIBILITY_THRESHOLD;
-    });
-    return visibleLegLandmarks.length >= 3; // at least 3 of 4 leg points visible
-  });
+Animation per tier:
 
-  return (framesWithLegsVisible.length / poseFrames.length) >= FRAME_RATIO_THRESHOLD;
-}
-```
+GROOVY: scale from 0.6 → 1.15 → 1.0 with overshoot (cubic-bezier(0.34, 1.56, 0.64, 1)) in 200ms, hold 500ms, fade out 300ms. Plus a brief 2-frame shake on the apex (rotate -2deg then +2deg).
+PERFECT: scale from 0.7 → 1.1 → 1.0, 180ms in, hold 450ms, fade out 250ms.
+GREAT: scale 0.8 → 1.0, 150ms in, hold 400ms, fade out 250ms.
+ALMOST: opacity 0 → 0.7 → 0, no scale, 800ms total. Subtle.
 
-Then in the orchestrator:
 
-```typescript
-const legsVisible = detectLegsVisible(capturedPoseFrames);
-const geminiResult = await scoreWithGemini({
-  attemptBlob,
-  referenceVideoUrl,
-  chunkStartMs: chunk.fromMs,
-  chunkEndMs: chunk.toMs,
-  legsVisible,
-});
-```
+Z-index: above skeleton overlay (z-10), below results (z-40). Use z-20.
+Pointer-events: none.
+No sound. Sound design deferred to future spec.
 
-**Acceptance:** Running on a clip where the user has legs in frame, `detectLegsVisible` returns `true`. On a clip where the user is upper-body only, returns `false`. Mode B passes the right value to Gemini.
+Use a single positioned div for the text with the active tier's style. For particles on GROOVY, render a brief inline SVG or canvas with absolute-positioned dots that animate outward.
+Acceptance:
 
-### MODIFIED: `components/ResultsCard.tsx` (small change)
+Mobile 390px view: callout sits at ~80% viewport height, centered.
+Each tier visibly looks different — not just the text color.
+GROOVY has particles on entry; others don't.
+Animation feels snappy, not laggy. Compare side-by-side in a dev panel that fires one of each.
 
-When `legsVisible: false` was sent, the legs score in the response will be ~75 (per prompt guidance). Add a small subtle indicator on the LEGS component pill: a tooltip or "(upper body only)" subtext so the user understands why the leg score is what it is. Do NOT hide the pill — just contextualize.
+MODIFIED: lib/scoring/callouts/calloutEngine.ts
+The "everything fires GROOVY" bug. Add diagnostic logging to find the root cause, then tune.
+Diagnostic logging:
+Inside the per-beat fire logic, add:
+console.log(`[callout-engine] beat=${beatIndex} timestamp=${timestamp.toFixed(0)}ms windowMaxSimilarity=${windowMax.toFixed(3)} tier=${tier}`);
+This will let the human see per-beat similarity values in the terminal during an attempt. Expected: for a sincere attempt, values mostly in the 0.5-0.85 range. If every beat is logging 0.9+ (firing GROOVY every time), there's a normalization bug elsewhere.
+Threshold tuning:
+If logs reveal similarity is consistently inflated, lower the thresholds:
 
-Pull the `legsVisible` info through the result object (add it to whatever shape comes back from the orchestrator). Optional polish, not blocking.
+Current: >= 0.88 → GROOVY, >= 0.75 → PERFECT, >= 0.60 → GREAT, < 0.60 → ALMOST
+If logs show real attempts at 0.7-0.9: raise to >= 0.92 → GROOVY, >= 0.82 → PERFECT, >= 0.68 → GREAT
 
-**Acceptance:** When user films upper-body only, the LEGS pill on the results card shows a small "(upper body only)" annotation.
+If logs show real attempts in expected range (0.5-0.85): keep thresholds, the bug is elsewhere (possibly in the per-frame similarity, possibly in window-max picking outliers).
+DO NOT silently re-tune without seeing the logs first. The fix here depends on what the data says. Run one attempt, inspect the logs, then make the call.
+Acceptance: A real attempt produces a mix of tiers in the terminal logs (not all GROOVY). After tuning if needed, sincere attempts produce mostly PERFECT/GREAT with occasional GROOVY peaks and rare ALMOST.
+MODIFIED: components/ResultsCard.tsx
+Two small changes:
 
----
+Tier label rendering. When the score is 50-64, the SHAKY tier currently shows "WAS THAT A DANCE?" (which is fine for sub-40). For 50-64 SHAKY, change the headline to something supportive. Match the headline to the tier:
 
-## What's deliberately NOT changed
+0-39: "WAS THAT A DANCE?" (existing)
+40-49: "JUST TRYING?" (new)
+50-64 SHAKY: "GETTING THERE." (new)
+65-84 SOLID: "NICE WORK." (new)
+85-100 GROOVY: "GROOVY!" or "YOU GOT IT." (new)
 
-- Live callouts (MediaPipe) — unchanged. They already use the chunk window correctly.
-- Holding screen — unchanged.
-- MediaPipe final fallback path — unchanged.
-- Drill mode routing — unchanged. Gemini's trouble_spot timestamps are still relative to the attempt video, the existing `drillUrlForGeminiSpot` adapter still works.
-- Schema — unchanged. We're not adding a `legsExcluded` field because the prompt already handles it via a generous default score.
 
----
+Score color. Currently the score is always red. Change color by tier:
 
-## Out of scope (do NOT do)
+0-39: red (#EF4444)
+40-64: orange/amber (#F59E0B)
+65-84: yellow-green (#A3E635)
+85-100: brand pink (#FF1F8E)
 
-- Server-side video trimming with ffmpeg (try client-side first, only fall back if needed and flag it)
-- Auto-detecting other framing issues (zoomed in too far, off-center, etc.) — legs only for now
-- Changing the schema or component shape
-- Tuning callout thresholds — separate problem
-- Adding analytics on `legsVisible` — separate PR
 
----
 
-## Acceptance summary
+Acceptance: At 47.5, the headline reads "JUST TRYING?" and the score is amber. At 75, reads "NICE WORK." and is yellow-green.
 
-- [ ] Reference video sent to Gemini is approximately 2.5s (chunk + 0.5s padding each side), confirmed by base64 length in logs (roughly 600KB–1.2MB raw depending on resolution).
-- [ ] Gemini's trouble spot timestamps fall within the attempt video duration — no more 13–15s timestamps for a 7s attempt.
-- [ ] When user films upper-body only, `detectLegsVisible` returns `false`, Gemini gets the upper-body-only prompt, and legs scores in the response are ≥70.
-- [ ] When user films full-body, `detectLegsVisible` returns `true`, Gemini scores legs normally.
-- [ ] Sincere attempt on chunk 1 scores ≥60 (validating the generosity calibration works).
-- [ ] Standing-still attempt still scores <40 (canary intact).
-- [ ] Random flailing still scores <40 (canary intact).
-- [ ] Diagnostic logs from previous round are preserved.
-- [ ] All existing tests pass.
-- [ ] Branch `gemini-windowing-fix` pushed locally, not merged.
+What this PR does NOT do (deferred)
 
----
+Video alignment / MediaRecorder delay fix. Hypothesized but no clear data yet. If after these fixes the user still reports "I was on beat but it says I wasn't," that's the next investigation.
+Skeleton size normalization between user and reference. Was a red herring — Gemini doesn't see the skeleton. May still be worth doing for visual quality of the dual-skeleton overlay, but separate concern.
+Side-by-side analysis loading screen (reference + attempt). Saved for next spec.
+Analysis pipeline — Gemini analyzes each library dance into named moves with timestamps. Saved for next spec.
+Knowledge graph foundation. Saved for next spec.
+Sound design for callouts. Future.
+Adaptive recommendations / progression / curriculum logic. Future.
 
-## After Claude Code finishes — your validation
 
-Run three attempts in a row, terminal visible:
+Working agreement
 
-1. **Sincere attempt on chunk 1, upper body only.** Look for legs score ≥70 in the Gemini response. Look for trouble spots that stay within your attempt's time range. Expect overall score 60–85.
+Pause after each file group, post a diff summary.
+Flag conflicts with existing code before silently restructuring.
+If prompt rewrite causes existing snapshot tests to break, update the snapshots — the prompt changing is the point.
+Verify on mobile 390px viewport before considering UI changes done.
 
-2. **Standing still for 7s.** Expect `is_actually_dancing: false`, overall <40. Canary must still work.
 
-3. **Random arm flailing for 7s.** Expect `is_actually_dancing: false`, overall <40. This is the test that Gemini still catches non-dances even with generosity calibration.
+Acceptance summary (all must pass before PR is ready)
 
-Paste the three raw Gemini responses + base64 lengths back if anything looks off.
+ Prompt updated with floor-50 language, severity calibration, count caps, positive-first insight, proportionate adjectives.
+ Sincere attempt on chunk 1 scores ≥60 (validation target — was 47).
+ Sincere bigger-energy attempt does NOT score significantly higher than sincere accurate attempt (energy bias reduced — accurate small > inaccurate big).
+ Standing still still scores <20 (canary intact).
+ Random flailing scores 25-39 (canary partially fixed — flailing not "trying").
+ Trouble spot counts respect score brackets (≥65 → max 2; 85+ → max 1).
+ First insight on any score ≥40 is a specific positive observation.
+ No punitive adjectives ("very," "significantly," "completely") in insights when score ≥50.
+ API route retries once on Gemini failure, logs failure reason, logs fallback.
+ Callout overlay appears bottom center, not on face.
+ Each tier (GROOVY/PERFECT/GREAT/ALMOST) visibly distinct — color, font, motion.
+ GROOVY has particle burst on entry.
+ Callout engine logs per-beat similarity; mix of tiers fires on real attempt (not all GROOVY).
+ Results card headline and score color match tier.
+ All existing tests pass.
+ Branch gemini-generosity-and-ui pushed locally, not merged.
