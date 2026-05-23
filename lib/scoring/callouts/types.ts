@@ -7,7 +7,12 @@
 // Gemini = overall verdict tier 85-100 across the whole attempt.
 // Don't normalize these — they're separate semantic spaces.
 
-export type CalloutTier = 'GROOVY' | 'PERFECT' | 'GREAT' | 'ALMOST';
+// SPEC: score-restoration §Change 3 added 'GOOD' as the third callout word
+// the hardcoded cycler emits. The legacy 'GREAT' / 'ALMOST' tiers stay
+// defined because tierForSimilarity (calloutEngine.ts) still references
+// them for downstream consumers; the live overlay only ever sees the three
+// cycler words after Change 3 lands.
+export type CalloutTier = 'GROOVY' | 'PERFECT' | 'GOOD' | 'GREAT' | 'ALMOST';
 
 export interface CalloutEvent {
   tier: CalloutTier;

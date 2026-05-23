@@ -21,6 +21,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { promises as fs } from 'fs';
+import os from 'os';
+import path from 'path';
+import crypto from 'crypto';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffmpeg from 'fluent-ffmpeg';
 
 import { buildCompositePrompt } from '@/lib/scoring/gemini/prompt';
 import {
@@ -28,6 +34,47 @@ import {
   GeminiSpecScoreSchema,
   type GeminiSpecScore,
 } from '@/lib/scoring/gemini/types';
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+// SPEC: score-restoration §Change 1. Gemini's generateContent rejects
+// video/webm with 400 INVALID_ARGUMENT; transcoding to MP4/H.264 yuv420p
+// with audio stripped is the unlock. The @ffmpeg-installer binary ships
+// with the deployment so we don't depend on a system ffmpeg.
+async function transcodeWebmToMp4(
+  webmBase64: string,
+): Promise<{ mp4Base64: string; mp4Bytes: number; elapsedMs: number }> {
+  const start = Date.now();
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomUUID();
+  const webmPath = path.join(tmpDir, `${id}.webm`);
+  const mp4Path = path.join(tmpDir, `${id}.mp4`);
+  const webmBuf = Buffer.from(webmBase64, 'base64');
+  await fs.writeFile(webmPath, webmBuf);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(webmPath)
+        .videoCodec('libx264')
+        .outputOptions([
+          '-pix_fmt yuv420p',
+          '-an',
+          '-preset ultrafast',
+          '-movflags +faststart',
+        ])
+        .save(mp4Path)
+        .on('end', () => resolve())
+        .on('error', (err: Error) => reject(err));
+    });
+    const mp4Buf = await fs.readFile(mp4Path);
+    return {
+      mp4Base64: mp4Buf.toString('base64'),
+      mp4Bytes: mp4Buf.length,
+      elapsedMs: Date.now() - start,
+    };
+  } finally {
+    await Promise.allSettled([fs.unlink(webmPath), fs.unlink(mp4Path)]);
+  }
+}
 
 export const runtime = 'nodejs';
 // maxDuration must exceed the client's 90s timeout so the route doesn't get
@@ -424,15 +471,63 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // SPEC: score-restoration §Change 1. Transcode WebM to MP4/H.264 before
+    // calling Gemini — the standard generateContent API rejects video/webm.
+    // Skip the transcode if the inbound video is already MP4-compatible
+    // (future-proofing for when composite.ts may output MP4 natively).
+    let videoBase64 = compositeVideoBase64;
+    let videoMimeType = compositeMimeType || 'video/webm';
+    if (videoMimeType.startsWith('video/webm')) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[composite-route-transcode] start mime=${videoMimeType} bytes=${videoBase64.length}`,
+      );
+      try {
+        const transcoded = await transcodeWebmToMp4(videoBase64);
+        videoBase64 = transcoded.mp4Base64;
+        videoMimeType = 'video/mp4';
+        // eslint-disable-next-line no-console
+        console.log(
+          `[composite-route-transcode] done newBytes=${transcoded.mp4Bytes} elapsedMs=${transcoded.elapsedMs}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[composite-route-error] webm to mp4 transcode failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        logRawSdkError('transcode', err);
+        return NextResponse.json(
+          {
+            __debug: {
+              ...extractRawSignature(err),
+              errorMessage: `webm to mp4 transcode failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              geminiRequestPreview: preview,
+            },
+            error: 'webm to mp4 transcode failed',
+            reason: 'transcode_failed',
+          },
+          { status: 502 },
+        );
+      }
+    }
+
     const ai = new GoogleGenAI({ apiKey });
     const routeStart = Date.now();
 
-    const prompt = buildCompositePrompt({ legsVisible, mirror, motionOnsetSec });
+    // SPEC: score-restoration §Change 2. motionOnsetSec is no longer used
+    // by the prompt — the composite is pre-trimmed on both halves. The
+    // request body still accepts the field for backwards-compat but it's
+    // ignored downstream.
+    const prompt = buildCompositePrompt({ legsVisible, mirror });
     preview = {
       promptLength: prompt.length,
       schemaJson: GeminiSpecResponseJsonSchema,
       motionOnsetSec,
-      compositeBytes: compositeVideoBase64.length,
+      compositeBytes: videoBase64.length,
     };
     // eslint-disable-next-line no-console
     console.log('[composite-route-prompt]', prompt);
@@ -442,8 +537,8 @@ export async function POST(req: NextRequest) {
     const callArgs = {
       ai,
       prompt,
-      compositeVideoBase64,
-      compositeMimeType: compositeMimeType || 'video/webm',
+      compositeVideoBase64: videoBase64,
+      compositeMimeType: videoMimeType,
     };
 
     const first = await callGeminiOnce({ ...callArgs, attemptLabel: 'attempt=1' });

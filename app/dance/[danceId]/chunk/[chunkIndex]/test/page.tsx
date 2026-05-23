@@ -32,10 +32,7 @@ import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { FrameSample, LandmarkFrame, PoseLandmark } from '@/lib/pose/types';
 import { BeatTracker } from '@/lib/scoring/beatTracker';
-import {
-  createCalloutEngine,
-  deriveAccentBeatsFromBpm,
-} from '@/lib/scoring/callouts/calloutEngine';
+import { makeCalloutCycler } from '@/lib/scoring/callouts/calloutEngine';
 import type { CalloutEvent } from '@/lib/scoring/callouts/types';
 import { scoreWithGemini } from '@/lib/scoring/gemini/client';
 import { detectLegsVisible } from '@/lib/scoring/legVisibility';
@@ -51,7 +48,7 @@ import {
   frameScoreFromSimilarity,
   scoreSession,
 } from '@/lib/scoring/scorer';
-import { cosineSimilarity, jointAngleAngularSimilarity } from '@/lib/scoring/similarity';
+import { cosineSimilarity } from '@/lib/scoring/similarity';
 import {
   generateReferenceSequence,
   neutralReferenceFrame,
@@ -142,7 +139,11 @@ export default function TestPage({ params }: PageProps) {
   // The event is stored in state (not a ref) because the overlay needs
   // a re-render to pick up the new event; identity-equality drives
   // the animation retrigger.
-  const calloutEngineRef = useRef<ReturnType<typeof createCalloutEngine> | null>(null);
+  // SPEC: score-restoration §Change 3. Live callouts are beat-driven by a
+  // hardcoded cycler instead of DTW similarity. We keep a BeatTracker per
+  // session and the cycler function (returns a word every 2-3 beats).
+  const calloutBeatTrackerRef = useRef<BeatTracker | null>(null);
+  const calloutCyclerRef = useRef<ReturnType<typeof makeCalloutCycler> | null>(null);
   // Stage 4: parallel landmark-frame collection so the scorer can run
   // the canonical-angle pipeline. The legacy vector-frame collection
   // above is kept so the live readout's cosineSimilarity (which still
@@ -388,27 +389,32 @@ export default function TestPage({ params }: PageProps) {
       attemptBlobUrlRef.current = null;
     }
 
-    // Callout engine: derive accent beats every-2nd-beat from BPM, no
-    // separate beat detector needed (audio is reference dance audio
-    // and the BPM is already known). Timestamps are session-relative
-    // (ms since GO) so they match the ingestFrame timestamps we feed
-    // it from the detection loop. SPECK §working-agreement: if accent
-    // beats aren't reliable, fall back to every-800ms — handled inside
-    // deriveAccentBeatsFromBpm.
+    // SPEC: score-restoration §Change 3. Live callouts no longer depend on
+    // DTW similarity. A BeatTracker drives the cycler: every beat we tick
+    // the tracker; the cycler returns null on skip beats and one of
+    // GROOVY / PERFECT / GOOD every 2-3 beats (no two in a row). The
+    // CalloutOverlay still consumes a CalloutEvent — we synthesize one
+    // with the cycler's chosen word as the tier.
     const sessionDurationMs = chunk.endMs - chunk.startMs;
-    const accentBeats = deriveAccentBeatsFromBpm(0, sessionDurationMs, dance.bpm);
-    calloutEngineRef.current = createCalloutEngine({
-      accentBeatTimestamps: accentBeats,
-      onCallout: (event) => setLatestCallout(event),
+    const beatTracker = new BeatTracker(dance.bpm, 0);
+    const cycler = makeCalloutCycler();
+    beatTracker.onBeat((beatIdx, atMs) => {
+      const word = cycler(beatIdx);
+      if (!word) return;
+      const event: CalloutEvent = {
+        tier: word,
+        beatIndex: beatIdx,
+        timestamp: atMs,
+        similarity: 1,
+      };
+      // eslint-disable-next-line no-console
+      console.log('[callout-cycler] fire', { beatIdx, atMs, word });
+      setLatestCallout(event);
     });
-    // SPECK §callout-investigation: confirms the engine is wired up at
-    // the orchestrator level. If [init] fires but this line doesn't,
-    // something weird is happening with the createCalloutEngine return
-    // value. If this line fires but no [frame] logs follow, ingestFrame
-    // isn't being called.
+    calloutBeatTrackerRef.current = beatTracker;
+    calloutCyclerRef.current = cycler;
     // eslint-disable-next-line no-console
-    console.log('[mode-b][callout-wired] engine created', {
-      accentBeatCount: accentBeats.length,
+    console.log('[mode-b][callout-wired] cycler created', {
       sessionDurationMs,
       bpm: dance.bpm,
     });
@@ -546,22 +552,14 @@ export default function TestPage({ params }: PageProps) {
             const sim = cosineSimilarity(vec, ref);
             const s = frameScoreFromSimilarity(Math.max(0, sim));
             setLiveScore((prev) => prev * 0.7 + s * 0.3);
-            // SPECK overnight Group 5 (experimental): the live callout
-            // tier now reads from `jointAngleAngularSimilarity` instead
-            // of cosineSimilarity. Cosine on joint-angle vectors is
-            // structurally saturated (0.95-0.999 for any two normal
-            // poses) and makes every beat fire GROOVY. The per-joint
-            // angular agreement score spreads across the full 0-1 band
-            // and matches the tier thresholds the callout engine was
-            // tuned for. See /docs/callout-tier-diagnosis-overnight.md
-            // for the math. `setLiveScore` above keeps using the cosine
-            // value so the post-attempt displayed score is unchanged
-            // — only the live callout tier is affected here.
-            const calloutSim = jointAngleAngularSimilarity(vec, ref);
-            calloutEngineRef.current?.ingestFrame({
-              timestamp: sessionT,
-              similarity: Math.max(0, calloutSim),
-            });
+            // SPEC: score-restoration §Change 3. Live callouts no longer
+            // read from DTW / pose similarity. The BeatTracker is ticked
+            // here from the detection loop's session clock; on every beat
+            // crossed, the cycler picks the next word and the overlay
+            // re-renders. setLiveScore above still uses cosineSimilarity
+            // for the post-attempt displayed score — only the live callout
+            // source changed.
+            calloutBeatTrackerRef.current?.tick(sessionT);
             if (sessionT - lastHintAtRef.current >= 200) {
               lastHintAtRef.current = sessionT;
               setHint(correctionHint(vec, ref));

@@ -89,6 +89,13 @@ export type ScoreWithGeminiArgs = {
 export const SERVER_BUDGET_FLOOR_MS = 80_000;
 export const DEFAULT_TIMEOUT_MS = 90_000;
 const REFERENCE_PADDING_MS = 500;
+// SPEC: score-restoration §Change 2. Chunk 1 (zero-indexed: chunkIndex === 0)
+// always starts with the user walking back from the camera. Strip the first
+// 1.5s of the attempt before scoring instead of relying on motion-onset
+// detection, which produced inconsistent slice windows and bled walk-back
+// frames into Gemini. Chunks 2+ pass through untrimmed — the user is already
+// dancing from the prior chunk.
+const CHUNK_1_SCORING_OFFSET_SEC = 1.5;
 // How far past the leading edge of the trim window we scan looking for the
 // first frame of dance movement. 3s is the practical upper bound for a
 // "dancer walks back to camera" pre-roll; beyond that the chunker is broken
@@ -812,12 +819,26 @@ export async function decideAttemptDuration(
   };
 }
 
-// Re-record the attempt starting at its motion-onset moment so that both
-// videos arrive at Gemini with t=0 == first dance movement. If detection
-// fails (no onset, DOM unavailable, CORS taint), we pass the original blob
-// through unchanged with motionOnsetSec=null — caller treats it as the
-// degraded fallback path.
-async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult> {
+// Prepare the attempt blob for scoring.
+//
+// SPEC: score-restoration §Change 2. Replaces the motion-onset-based slice
+// with a chunk-index-based offset:
+//   - chunkIndex === 0 (chunk 1): re-encode starting at
+//     CHUNK_1_SCORING_OFFSET_SEC to drop the camera walk-back.
+//   - chunkIndex >= 1 (chunks 2+): no slice — the user is already in
+//     dance position from the prior chunk.
+//
+// Duration repair (EBML scan → browser finalize → server-repair) still runs
+// for both branches because composite generation needs a playable blob with
+// finite duration metadata.
+//
+// `motionOnsetSec` on the result is retained for backwards-compatible logging
+// but is no longer derived from real motion detection — it surfaces the
+// hardcoded offset (1.5 for chunk 0, 0 for others).
+async function trimAttemptForOnset(
+  attemptBlob: Blob,
+  chunkIndex: number,
+): Promise<TrimAttemptResult> {
   // eslint-disable-next-line no-console
   console.log('[gemini-client] motion-onset trimAttempt: entry', {
     blobBytes: attemptBlob.size,
@@ -999,40 +1020,48 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         };
       }
 
-      const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
-      // eslint-disable-next-line no-console
-      console.log('[gemini-client] motion-onset trimAttempt: scanning', {
-        durationSec,
-        scanStartSec: 0,
-        scanEndSec,
-        durationSource: decision.source,
-      });
-      const onsetAbsSec = await detectMotionOnsetInVideo(video, 0, scanEndSec);
-
-      if (onsetAbsSec === null) {
+      // SPEC: score-restoration §Change 2. Motion-onset detection is no
+      // longer fed into the attempt slice. For chunk 1 we slice off the
+      // hardcoded walk-back offset; for chunks 2+ we pass through.
+      if (chunkIndex >= 1) {
         // eslint-disable-next-line no-console
-        console.warn('[gemini-client] motion-onset trimAttempt early-return: detect returned null', {
+        console.log('[gemini-client] chunk-offset trimAttempt: no slice (chunks 2+)', {
+          chunkIndex,
           durationSec,
-          scanEndSec,
+          durationSource: decision.source,
+          blobBytes: workingBlob.size,
         });
         return {
           blob: workingBlob,
           mimeType: workingBlob.type || 'video/webm',
-          motionOnsetSec: null,
+          motionOnsetSec: 0,
           durationSource: decision.source,
           authoritativeDurationSec: decision.authoritativeDurationSec,
         };
       }
 
-      // Start slightly before onset to keep the first hit intact. End at
-      // the authoritative duration — NOT video.duration, because when the
-      // duration-source is 'webm-repair-inferred' the browser's value is
-      // known wrong and using it would re-introduce the 1.4s trim bug.
-      const effectiveStartSec = Math.max(0, onsetAbsSec - 0.05);
+      if (durationSec <= CHUNK_1_SCORING_OFFSET_SEC + 0.1) {
+        // The recording is shorter than the walk-back window. Bail to the
+        // raw blob — slicing would produce an empty clip.
+        // eslint-disable-next-line no-console
+        console.warn('[gemini-client] chunk-offset trimAttempt early-return: duration shorter than chunk-1 offset', {
+          durationSec,
+          offsetSec: CHUNK_1_SCORING_OFFSET_SEC,
+        });
+        return {
+          blob: workingBlob,
+          mimeType: workingBlob.type || 'video/webm',
+          motionOnsetSec: 0,
+          durationSource: decision.source,
+          authoritativeDurationSec: decision.authoritativeDurationSec,
+        };
+      }
+
+      const effectiveStartSec = CHUNK_1_SCORING_OFFSET_SEC;
       const effectiveEndSec = durationSec;
       // eslint-disable-next-line no-console
-      console.log('[gemini-client] motion-onset trimAttempt: onset outcome → capture window', {
-        onsetAbsSec,
+      console.log('[gemini-client] chunk-offset trimAttempt: chunk 1 slice', {
+        chunkIndex,
         effectiveStartSec,
         effectiveEndSec,
         durationSource: decision.source,
@@ -1044,8 +1073,9 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         /* flipHorizontally */ false,
       );
       // eslint-disable-next-line no-console
-      console.log('[gemini-client] motion-onset trimAttempt: done', {
-        motionOnsetSec: onsetAbsSec,
+      console.log('[gemini-client] chunk-offset trimAttempt: done', {
+        chunkIndex,
+        offsetSec: CHUNK_1_SCORING_OFFSET_SEC,
         blobBytes: blob.size,
         mimeType,
         durationSource: decision.source,
@@ -1053,7 +1083,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
       return {
         blob,
         mimeType,
-        motionOnsetSec: onsetAbsSec,
+        motionOnsetSec: CHUNK_1_SCORING_OFFSET_SEC,
         durationSource: decision.source,
         authoritativeDurationSec: decision.authoritativeDurationSec,
       };
@@ -1233,9 +1263,14 @@ export async function scoreWithGemini(
       referenceMirrored = false;
     }
 
-    // Motion-onset trim the attempt (no flip). Always best-effort: if the
-    // re-encode fails, we send the original blob with onset=null.
-    const attemptTrim = await trimAttemptForOnset(attemptBlob);
+    // SPEC: score-restoration §Change 2. Attempt prep now uses a hardcoded
+    // chunk-1 offset (1.5s slice for chunkIndex 0, pass-through for 2+).
+    // The motion-onset detection code stays in client.ts for future use but
+    // no longer influences the slice. chunkIndex defaults to 0 when callers
+    // didn't supply it (legacy paths) — equivalent to the previous "always
+    // trim" behavior, just with a fixed offset.
+    const effectiveChunkIndex = typeof chunkIndex === 'number' ? chunkIndex : 0;
+    const attemptTrim = await trimAttemptForOnset(attemptBlob, effectiveChunkIndex);
     const attemptMotionOnsetSec = attemptTrim.motionOnsetSec;
     const attemptToSend = attemptTrim.blob;
     const attemptMimeTypeToSend = attemptTrim.mimeType;
@@ -1243,14 +1278,10 @@ export async function scoreWithGemini(
     captureTrace.durationSource = attemptTrim.durationSource;
     captureTrace.authoritativeDurationSec = attemptTrim.authoritativeDurationSec;
 
-    // Both videos motion-onset trimmed when BOTH detected an onset and the
-    // reference path didn't degrade to the full-fallback. The prompt's
-    // "videos start at first movement" clause only fires when both legs of
-    // the pipeline produced an aligned slice.
-    const videosMotionOnsetTrimmed =
-      trimMode === 'trimmed' &&
-      referenceMotionOnsetSec !== null &&
-      attemptMotionOnsetSec !== null;
+    // Composite path is gated on the reference trim succeeding. Attempt
+    // motion-onset is no longer a precondition — the chunk-1 offset
+    // (or pass-through for chunks 2+) gives us an aligned right-half.
+    const videosMotionOnsetTrimmed = trimMode === 'trimmed';
 
     // SPECK overnight Group 4 §composite: try the side-by-side renderer
     // first. If it succeeds, ship the composite to /api/score-gemini-composite
@@ -1278,19 +1309,17 @@ export async function scoreWithGemini(
 
       if (composite.kind === 'success') {
         const compositeBase64 = await blobToBase64(composite.blob);
-        // SPEC: score-restoration §3 — composite is pre-trimmed to onset on
-        // both halves, so the user's first frame of dance movement IS the
-        // first frame of the right half. Pass 0 to the prompt; the spec's
-        // section (c) language reads correctly with 0.00s.
+        // SPEC: score-restoration §Change 2 — motion onset is no longer
+        // surfaced to the prompt. Forwarded only for legacy logging and
+        // request-body shape compatibility.
         const compositeMotionOnsetSec = 0;
-        // SPEC: score-restoration §8 — surface the full prompt and response
-        // in the browser console so a validator can read what was sent and
-        // received without leaving the device. The server logs the same on
-        // its end (Vercel logs) but the user runs validation client-side.
+        // Surface the full prompt and response in the browser console so a
+        // validator can read what was sent and received without leaving the
+        // device. The server logs the same on its end (Vercel logs) but the
+        // user runs validation client-side.
         const compositePrompt = buildCompositePrompt({
           legsVisible,
           mirror: referenceMirrored,
-          motionOnsetSec: compositeMotionOnsetSec,
         });
         // eslint-disable-next-line no-console
         console.log('[gemini-prompt]', compositePrompt);

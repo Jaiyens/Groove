@@ -1,7 +1,20 @@
 # Score restoration — status
 
 Branch: `score-restoration` (not pushed)
-Status: ready for user validation.
+Status: ready for user validation — iteration 3.
+
+This is the third major iteration on the `score-restoration` branch:
+
+1. **Iteration 1** — composite prompt rewritten from scratch with the new
+   five-field schema + tier vocabulary; two-video fallback preserved.
+2. **Iteration 2** — diagnostics added (`__debug.errorBody`, full SDK error
+   dump) after the composite call surfaced `400 INVALID_ARGUMENT`. Root
+   cause confirmed: Gemini's standard `generateContent` API rejects
+   `video/webm`.
+3. **Iteration 3 (this commit)** — three coordinated changes (see SPECK.md
+   at repo root): WebM→MP4 server-side transcode, motion-onset trimming
+   replaced with a hardcoded chunk-1 1.5s offset, and live callouts
+   replaced with a hardcoded beat-driven GROOVY / PERFECT / GOOD cycler.
 
 ## Baseline decision
 
@@ -21,7 +34,39 @@ Full reasoning + per-commit prompt diffs:
 Each historical prompt is preserved under
 [docs/score-prompt-history/](./score-prompt-history/).
 
-## What changed
+## Iteration 3 — what changed (this commit)
+
+| File | Change |
+|---|---|
+| `app/api/score-gemini-composite/route.ts` | **Change 1 (transcode).** Inbound composite WebM is transcoded to MP4/H.264 yuv420p (audio stripped, `-preset ultrafast`, `+faststart`) via `fluent-ffmpeg` + `@ffmpeg-installer/ffmpeg` BEFORE the Gemini call. Resolves the `400 INVALID_ARGUMENT` from iteration 2 — Gemini accepts `video/mp4` but not `video/webm`. Already-MP4 inputs pass through. **Change 2 (prompt).** `buildCompositePrompt` no longer surfaces `motionOnsetSec`. |
+| `lib/scoring/gemini/prompt.ts` | **Change 2.** Section (c) MOTION ONSET replaced with (c) PRE-TRIMMED ALIGNMENT — "Grade the entire user video against the entire reference video. Both have been pre-trimmed to align with each other." `motionOnsetSec` arg is now optional / unused. |
+| `lib/scoring/gemini/client.ts` | **Change 2.** New `CHUNK_1_SCORING_OFFSET_SEC = 1.5`. `trimAttemptForOnset` now takes `chunkIndex`: for chunk 0 it slices the attempt at 1.5s (drops the walk-back); for chunks 2+ it returns the duration-repaired blob unchanged. Composite path is no longer gated on attempt motion-onset — it fires whenever the reference trim succeeded. `detectMotionOnsetInVideo` stays defined but is no longer called on the attempt. |
+| `lib/scoring/callouts/calloutEngine.ts` | **Change 3.** New `makeCalloutCycler()` — pure beat-driven cycler over `['GROOVY', 'PERFECT', 'GOOD']`, randomized, never the same word twice in a row, fires every 2-3 beats. `tierForSimilarity` / `createCalloutEngine` retained (still used by tests + post-attempt fallback). |
+| `lib/scoring/callouts/types.ts` | **Change 3.** `CalloutTier` union now includes `'GOOD'`. |
+| `components/scoring/CalloutOverlay.tsx` | **Change 3.** Added `.callout-tier-good` styling (reuses the `callout-great` 800ms animation) and `GOOD: 800` to `TIER_DURATION_MS`. |
+| `app/dance/[danceId]/chunk/[chunkIndex]/test/page.tsx` | **Change 3.** Replaced `createCalloutEngine` + `ingestFrame` with a `BeatTracker.onBeat` listener that calls the cycler and synthesizes a `CalloutEvent`. The detection loop now `tick()`s the tracker with `sessionT` instead of feeding similarity. `jointAngleAngularSimilarity` import removed (no remaining consumer in this file). |
+| `tests/compositePrompt.test.ts` | Section ordering updated to `(c) PRE-TRIMMED ALIGNMENT`. Motion-onset assertion replaced with positive + negative checks: "Grade the entire user video / Both have been pre-trimmed" must appear; "motion onset", "0.16s", "walking back from the camera" must NOT appear. |
+| `next.config.mjs` | `experimental.serverComponentsExternalPackages` adds `fluent-ffmpeg` + `@ffmpeg-installer/ffmpeg` so Next doesn't try to bundle the native binary. |
+| `package.json` | Added `fluent-ffmpeg`, `@ffmpeg-installer/ffmpeg`, `@types/fluent-ffmpeg`. |
+
+### Iteration 3 verification
+
+Curl probe from SPECK.md §Change 1:
+
+```
+ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=10 \
+  -c:v libvpx -b:v 500k -an -y /tmp/test.webm
+B64=$(base64 -i /tmp/test.webm)
+curl -X POST http://localhost:3000/api/score-gemini-composite \
+  -H "Content-Type: application/json" \
+  -d "{\"compositeVideoBase64\":\"$B64\",\"compositeMimeType\":\"video/webm\",\"motionOnsetSec\":0.1,\"legsVisible\":true,\"mirror\":false}"
+```
+
+Returns HTTP 200 with a valid `GeminiSpecScore` (`JUST_STARTED` on the test
+pattern, ~4.5s round-trip including transcode). Confirms transcode is no
+longer blocked by Gemini's accepted-MIME list.
+
+## Iteration 1 — what changed (historical)
 
 | File | Change |
 |---|---|
@@ -123,5 +168,7 @@ when reporting.
 
 - Typecheck: `npx tsc --noEmit` — clean (test-file `.ts`-import errors are
   pre-existing and orthogonal).
-- Tests: `npm test` — 337/337 pass.
-- Build: `npx next build` — succeeds.
+- Tests: `npm test` — 338/338 pass after iteration 3.
+- Curl probe (iteration 3): WebM test pattern → HTTP 200 + valid
+  `GeminiSpecScore` (Gemini grades it `JUST_STARTED`, as expected for a
+  motion-free test source).

@@ -154,30 +154,28 @@ Return ONLY valid JSON matching the schema. No prose, no markdown, no commentary
 // decision — short version: no historical commit emits the new five-field
 // schema (score/tier/did_well/work_on/visibility_notes) or the new tier
 // vocabulary (GROOVY/SOLID/ALMOST/WARMING_UP/JUST_STARTED), so this prompt
-// is written from scratch following the spec's section ordering (a→g) and
-// embeds the calibration anchors + JSON schema worked examples verbatim.
+// is written from scratch following the spec's section ordering and embeds
+// the calibration anchors + JSON schema worked examples verbatim.
 //
-// Section order per spec §Implementation phase:
+// Section order:
 //   a. Side-by-side framing (opening lines)
 //   b. What to compare / what to ignore
-//   c. Motion onset instruction (with the value)
+//   c. Pre-trimmed alignment note (replaces the old motion-onset clause —
+//      SPEC: score-restoration §Change 2, the composite is now pre-trimmed
+//      on both halves so Gemini grades the entire video)
 //   d. Partial visibility handling
 //   e. Calibration anchors (verbatim from spec)
 //   f. Philosophical framing (penultimate paragraph)
 //   g. Response schema with worked examples (final lines)
 //
-// `motionOnsetSec` reflects the user's first frame of dance movement. In the
-// composite pipeline the right-half attempt is already trimmed to onset, so
-// this is typically 0.00s — the language still reads correctly and the
-// "use your judgment after that timestamp" fallback covers cases where the
-// user is still settling after the trim point.
+// `motionOnsetSec` is accepted for backwards-compat but unused — the prompt
+// no longer mentions motion onset.
 export function buildCompositePrompt(args: {
   legsVisible: boolean;
   mirror: boolean;
-  motionOnsetSec: number;
+  motionOnsetSec?: number;
 }): string {
-  const { legsVisible, mirror, motionOnsetSec } = args;
-  const onset = motionOnsetSec.toFixed(2);
+  const { legsVisible, mirror } = args;
 
   // Mirror-orientation note slotted into section (b). The spec is silent on
   // mirror handling, but the composite renderer can pre-flip the LEFT half
@@ -201,8 +199,8 @@ Compare these things: timing on the beat, direction of weight transfer (left/rig
 
 ${mirrorNote}
 
-(c) MOTION ONSET
-The user's first frame of real dance movement is at ${onset}s. Ignore everything in the user's video before that timestamp — they are walking back from the camera or preparing. Begin grading from ${onset}s onward. If you see the user clearly still preparing or adjusting themselves after that timestamp, use your judgment and begin grading at the first beat-aligned dance move you see.
+(c) PRE-TRIMMED ALIGNMENT
+Grade the entire user video against the entire reference video. Both have been pre-trimmed to align with each other.
 
 (d) PARTIAL VISIBILITY
 If part of the user's body is out of frame (commonly legs), grade only the body parts you can see. Note the visibility limitation in the visibility_notes field. Do NOT score out-of-frame body parts as zero or as a penalty — simply exclude them from scoring. ${visibilityHint}

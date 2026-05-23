@@ -136,6 +136,40 @@ export function createCalloutEngine(config: CalloutEngineConfig): CalloutEngine 
   };
 }
 
+// SPEC: score-restoration §Change 3. Hardcoded callout cycler — replaces
+// the live MediaPipe + DTW callout path. The cycler is purely beat-driven:
+// every 2-3 beats it emits one of GROOVY / PERFECT / GOOD, never repeating
+// the same word twice in a row. The DTW scoring code itself stays in this
+// module (tierForSimilarity / createCalloutEngine) because the post-attempt
+// fallback scoring still uses it; only the live callout UI changed source.
+const CALLOUT_WORDS = ['GROOVY', 'PERFECT', 'GOOD'] as const;
+type CyclerWord = (typeof CALLOUT_WORDS)[number];
+const BEATS_PER_CALLOUT_MIN = 2;
+const BEATS_PER_CALLOUT_MAX = 3;
+
+export function makeCalloutCycler(): (beatIdx: number) => CyclerWord | null {
+  let lastWord: CyclerWord | null = null;
+  let beatsUntilNext = 0;
+
+  return function onBeat(): CyclerWord | null {
+    if (beatsUntilNext > 0) {
+      beatsUntilNext -= 1;
+      return null;
+    }
+
+    const candidates = CALLOUT_WORDS.filter((w) => w !== lastWord);
+    const word = candidates[Math.floor(Math.random() * candidates.length)]!;
+
+    lastWord = word;
+    beatsUntilNext =
+      BEATS_PER_CALLOUT_MIN +
+      Math.floor(Math.random() * (BEATS_PER_CALLOUT_MAX - BEATS_PER_CALLOUT_MIN + 1)) -
+      1;
+
+    return word;
+  };
+}
+
 // Helper for callers that don't have a beat tracker handy. Spec says fall
 // back to every 800ms from chunk start if BeatTracker output isn't reliable.
 export function deriveAccentBeatsFromBpm(

@@ -20,7 +20,7 @@ describe('buildCompositePrompt — section ordering (spec §Implementation phase
     const sectionOrder = [
       '(a) SIDE-BY-SIDE FRAMING',
       '(b) WHAT TO COMPARE',
-      '(c) MOTION ONSET',
+      '(c) PRE-TRIMMED ALIGNMENT',
       '(d) PARTIAL VISIBILITY',
       '(e) CALIBRATION ANCHORS',
       '(f) PHILOSOPHICAL FRAMING',
@@ -63,15 +63,30 @@ describe('buildCompositePrompt — what to compare / what to ignore (section b)'
   });
 });
 
-describe('buildCompositePrompt — motion onset (section c)', () => {
-  it('inlines the motionOnsetSec value with 2-decimal formatting', () => {
+// SPEC: score-restoration §Change 2 replaced the motion-onset clause with
+// a pre-trimmed alignment note. The composite is now pre-trimmed on both
+// halves (chunk 1: 1.5s offset; chunks 2+: untrimmed); the prompt no
+// longer surfaces a motionOnsetSec value.
+describe('buildCompositePrompt — pre-trimmed alignment (section c)', () => {
+  it('tells the model both videos are pre-trimmed and to grade the entire span', () => {
     const p = buildCompositePrompt({
       legsVisible: true,
       mirror: true,
       motionOnsetSec: 0.16,
     });
-    assert.match(p, /first frame of real dance movement is at 0\.16s/);
-    assert.match(p, /Begin grading from 0\.16s onward/);
+    assert.match(p, /Grade the entire user video against the entire reference video/);
+    assert.match(p, /Both have been pre-trimmed to align with each other/);
+  });
+
+  it('does not mention motion onset or surface the motionOnsetSec value', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0.16,
+    });
+    assert.equal(/motion onset/i.test(p), false);
+    assert.equal(/0\.16s/.test(p), false);
+    assert.equal(/walking back from the camera/i.test(p), false);
   });
 });
 

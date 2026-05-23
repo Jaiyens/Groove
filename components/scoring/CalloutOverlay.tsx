@@ -41,6 +41,7 @@ interface ActiveCallout {
 const TIER_DURATION_MS: Record<CalloutTier, number> = {
   GROOVY: 1000, // 200ms in + 500ms hold + 300ms out
   PERFECT: 880, // 180ms in + 450ms hold + 250ms out
+  GOOD: 800, // 150ms in + 400ms hold + 250ms out
   GREAT: 800, // 150ms in + 400ms hold + 250ms out
   ALMOST: 800, // 0 → 0.7 → 0 over 800ms
 };
@@ -178,6 +179,14 @@ export default function CalloutOverlay({ event }: CalloutOverlayProps) {
             opacity: 0;
             transform: skewX(-3deg) scale(1);
           }
+        }
+
+        /* GOOD — same minimal treatment as GREAT (Change 3 cycler word). */
+        .callout-tier-good .callout-text {
+          color: #ffffff;
+          -webkit-text-stroke: 1px #ffffff;
+          paint-order: stroke fill;
+          animation: callout-great 800ms forwards;
         }
 
         /* GREAT — white fill, thin white stroke (1px), no glow. Minimal.
