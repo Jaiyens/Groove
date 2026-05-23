@@ -1,272 +1,241 @@
-# SPEC: Scoring round 3 — fix what validation surfaced
+SPEC: Round 4 — mirror consistency + side-by-side Gemini composition
+Hold this spec until motion-onset diagnosis returns
+Round 4 depends on the motion-onset diagnosis from the motion-onset-diagnosis branch landing first. The reason: side-by-side composition requires the same client-side video pipeline (canvas + MediaRecorder + ffmpeg.wasm or equivalent) that motion-onset uses. If diagnosis shows that pipeline is fundamentally broken on the target device, this spec has to be rewritten for server-side composition. Do not start this spec until diagnosis lands and is read.
+Once diagnosis is in: if the fix is "client-side bug, here's the patch," send this spec. If the fix is "abandon client-side video processing, move to server-side," stop and tell the user before we adapt.
 
-## Context — read this BEFORE you touch any file
+Context — read this before touching files
+Round 3 landed: mirror flip for Gemini reference, motion-onset trim (broken on real devices per round 4 diagnosis), headline = mean of components, binary+quantitative canary with component floor 35, tier-capped trouble spots, callout STOP+FLAG on saturated similarity.
+Validation on real device surfaced two new problems beyond the motion-onset bug:
 
-Two prior PRs landed: `gemini-windowing-fix` (chunk-trimming reference video, leg-visibility branch, schema-locked prompt) and `gemini-generosity-and-ui` (prompt rewrite, callout UI redesign, callout diagnostic logging). Validation tonight on a real device, three attempts on the same chunk, surfaced five specific failures. This PR fixes them. The architecture stays — MediaPipe drives live callouts during the dance, Gemini drives the post-attempt verdict, MediaPipe falls back on Gemini failure. No structural changes.
+Mirror inconsistency across surfaces. Mode A's REF panel is mirrored by default (correct — beginners need same-side correspondence). The holding screen's side-by-side panel is NOT mirrored (the right-hand panel shows mirrored attempt next to unmirrored reference — confusing). Gemini's REF input IS mirrored per round 3. Three surfaces, two different mirror states. Need one global toggle, defaulted ON, that affects all three.
+Gemini's two-video architecture is doing more work than it needs to. Currently Gemini receives REFERENCE then ATTEMPT as two separate inline videos and is asked to mentally align them in time and grade the comparison. Tonight's logs show Gemini failing to align — on a sincere attempt it returned overall_score:15 with trouble spots referencing the whole 7-second window because it couldn't tell which parts of the attempt corresponded to which parts of the reference. The fix is structural: send Gemini a single composite video with reference on the left half, attempt on the right half, audio-synced to the reference track. Timing alignment is baked in, the comparison is visual instead of inferential, and the payload is roughly half the size.
 
-**The five failures, with the actual data:**
+The architecture stays — MediaPipe live callouts during, Gemini post-attempt verdict, MediaPipe fallback on Gemini failure. The composite video is just a better INPUT to the Gemini step.
 
-1. **Sincere attempt (chunk 1/3):** Gemini raw 51, MediaPipe debug 33, displayed overall **81**. Components shown: arms 50, legs 75 (upper-body-only), body 35, timing 45 → arithmetic mean 51. The overall 81 does not match the component breakdown. A user looking at that screen cannot reconcile the number with the bars.
+Hard rules
 
-2. **Same attempt:** trouble spots reported at 0:00 and 0:02 — both inside the pre-roll padding where the dancer is walking back to the camera, not performing the choreography. The prompt has a padding-ignore clause; it is being ignored. The "Your body remained still throughout the dance" trouble spot spans 0:00–7:38, i.e. the entire chunk including padding.
+Architecture unchanged at the boundaries. MediaPipe live, Gemini post-attempt, MediaPipe fallback.
+All diagnostic logging from rounds 1, 2, 3 stays. Add to it.
+Branch off scoring-round-3 (after motion-onset-diagnosis is merged into it) into scoring-round-4. One commit per group. Do not push to main.
+Do not modify the canary logic, the component floor, the trouble-spot caps, the tier mapping, or the displayedOverall math from round 3. Those are validated.
+Mobile-first. Verify at 390px.
+If client-side composition fails on the test device, fall back to the current two-video approach. Do NOT show a hard error to the user. Do NOT fall back to MediaPipe-only.
+All four component scores (arms/legs/body/timing) remain in the output schema. The new composite prompt grades them the same way, just from a different visual input.
 
-3. **Same attempt — mirroring is broken at the model layer.** Mode A mirrors the reference video for the learner (transform: scaleX(-1) on the REF panel). The learner therefore practices a mirrored version of the dance. In Mode B, the user's attempt is captured from the front-facing camera, which is also mirrored. The reference video sent to Gemini is the **raw, unmirrored** source video. So Gemini compares: unmirrored reference vs mirrored attempt. The current prompt's "grade as a mirror copy" clause was correct for that pairing, but it does not help when the user learned the mirrored version and is replaying it — left/right correspondence between what the user learned and what Gemini scores is now inverted by one flip. Trouble spots citing "right hand thumbs-up gesture" when the user was copying what they saw as their own left hand are an artifact of this.
 
-4. **Standing-still attempt:** Gemini fell back to MediaPipe (header reads "FALLBACK SCORING," score 44). Components: arms 19, legs 75 (upper-body-only), body 68, timing 0 → mean 41. Score of 44 for standing still is too high for a NOT_DANCING canary. Separate issue: the legs=75 default for upper-body-only is contributing to the overall as if legs were performed correctly, when in fact legs were not assessed. Upper-body-only mode should EXCLUDE legs from the overall, not impute 75 to it.
+File-by-file plan
+Five groups, in order. Pause for a diff summary after each.
 
-5. **Live callouts always read GROOVY**, third report in three rounds. The callout overlay is firing GROOVY on every accent beat regardless of similarity score. Either (a) the threshold check is being short-circuited, (b) the similarity stream feeding the engine is saturated, (c) the tier mapping is bypassed by a default, or (d) the diagnostic logging added in round 2 was never wired to console. Find the cause before changing anything.
+Group 0 — Mirror consistency across all three surfaces
+Why first: every downstream surface (Mode A REF panel, holding-screen REF panel, Gemini composite REF half) needs to read the same mirror state. Without a unified source of truth, the side-by-side composition in Group 2 will inherit the current inconsistency and bake it into the composite video.
+NEW: lib/preferences/mirror.ts
+typescriptconst KEY = 'groov_mirror_enabled';
 
-6. **Flailing attempt scored 75 with the SOLID tier.** Gemini raw was 45, MediaPipe debug 16, displayed 75. The displayed score for random flailing should be below 40. This is the NOT_DANCING canary failing harder than it failed in round 2 (where flailing scored 50). The generosity rewrite over-corrected.
-
-**Hard rules:**
-
-1. Architecture unchanged. MediaPipe live, Gemini post-attempt, MediaPipe fallback.
-2. All diagnostic logging from rounds 1 and 2 stays. Add to it.
-3. Branch off whatever is current main (or the latest gemini-* branch if rounds 1 and 2 are not yet merged) into `scoring-round-3`. One commit per file group. Do not push to main.
-4. Do not modify the chunk-windowing logic from round 1.
-5. Mobile-first; verify at 390px.
-6. **Do not "tune" thresholds blindly.** For the callout always-GROOVY bug specifically, instrument first, diagnose, then fix. If the diagnosis is "the similarity stream is saturated near 1.0 always," that is a scoring-layer bug, not a threshold-tuning problem, and you should stop and flag.
-
----
-
-## File-by-file plan
-
-Implementation order matters. Do them in this order. Pause for a diff summary after each file group.
-
----
-
-### Group 1 — Mirror the reference video sent to Gemini
-
-**Why first:** every other Gemini fix depends on the reference and attempt being in the same orientation. Without this, prompt tuning is fighting noise.
-
-**MODIFIED: `lib/scoring/gemini/client.ts`**
-
-Before sending the reference video as base64, mirror it horizontally to match the attempt's mirrored orientation. Two acceptable implementation paths — pick the simpler one that works:
-
-- **Path A (preferred):** in the client-side trimming step (the FFmpeg.wasm or canvas-based path that already exists for windowing), apply a horizontal flip filter during the same pass. FFmpeg's `hflip` filter. For canvas-based trimming, draw the source video frame to canvas with `ctx.scale(-1, 1); ctx.drawImage(...)` per frame.
-- **Path B (fallback):** if client-side flipping balloons CPU time on mobile to the point where the trim+flip takes longer than the dance itself, do the flip server-side in the API route using ffmpeg in a Node child process. Acceptable cost: +300ms of latency. Document the choice in `docs/scoring-decisions.md`.
-
-Add a payload field `referenceMirrored: true` so the prompt can stop asking Gemini to imagine the mirror correspondence.
-
-**MODIFIED: `lib/scoring/gemini/prompt.ts`**
-
-Delete the "grade as a mirror copy" clause. Replace with:
-
-> The REFERENCE video has been horizontally mirrored so that left/right correspond directly to the ATTEMPT video, which is captured from a front-facing camera. Grade left and right literally — when the reference's left arm goes up, the attempt's left arm should go up.
-
-Update the existing prompt-invariants test (`tests/geminiPrompt.test.ts`) to assert the NEW clause exists and the old mirror-copy clause does NOT exist. Do not delete the test; rewrite the assertion.
-
-**Acceptance:**
-- A reference video that was previously sent with text "wave left arm" appears in Gemini's payload with the left/right physically swapped.
-- Unit test: when called with a known reference video, the base64 of the reference payload differs from the base64 of the raw source.
-- Trouble spots on a sincere attempt no longer reference the opposite hand.
-
----
-
-### Group 2 — Fix the padding-ignore problem at the source
-
-**Why second:** the prompt's padding-ignore clause is being ignored because the reference video Gemini sees STILL CONTAINS the walking-back-to-camera frames. Telling a model "ignore the first 2 seconds" while showing it those 2 seconds is asking it to override what it sees with what you said. Cut the padding instead of asking Gemini to imagine it isn't there.
-
-**MODIFIED: `lib/scoring/gemini/client.ts`** (or wherever reference trimming lives)
-
-Currently the reference is trimmed to the chunk window `[chunkStartSec, chunkEndSec]`. That window includes any pre-roll where the source dancer is establishing position before the choreography starts. Add a second trim step:
-
-1. After the chunk window is applied, run a **lightweight motion-onset detection** on the trimmed reference: compute mean per-frame pixel-difference (downsampled to 64×64 grayscale for speed). The first frame where pixel-diff exceeds the rolling baseline by 3× is the "movement onset." Trim everything before that.
-2. Mirror this trim on the attempt video using the **same time offset** so that t=0 in both videos corresponds to the same moment in the choreography.
-3. Send to Gemini.
-4. Add to the payload: `referenceMotionOnsetSec: <number>` and `attemptMotionOnsetSec: <number>` for diagnostic logging.
-
-**MODIFIED: `lib/scoring/gemini/prompt.ts`**
-
-Replace the existing "ignore padding" / "trouble spots bounded to attempt" clauses with a stronger version:
-
-> Both videos start exactly at the moment of first dance movement. There is no pre-roll padding. All trouble spots must reference timestamps within the dance, not before it.
-
-Update the prompt-invariants test.
-
-**Acceptance:**
-- Logged `referenceMotionOnsetSec` for the test chunk is > 0.0 (the dancer is walking back to camera for some time before dancing).
-- Trouble spots no longer fire at 0:00 unless there is a genuine error at the actual first dance beat.
-- Add an integration test with a fixture reference video that has 2s of dead air at the start: assert the trimmed reference duration is `originalDuration - ~2s`.
-
----
-
-### Group 3 — Fix component/overall consistency on the results screen
-
-**Why third:** even with the model behaving correctly, the results UI is currently lying to the user. Components average to 51 and the headline says 81.
-
-**Decide first:** the discrepancy comes from a "boost" or "tier-floor" applied to Gemini's raw overall when computing the displayed overall, but the same boost is not applied to the components. There are two ways to make this honest:
-
-- **Option A (chosen — implement this):** the displayed overall is computed as the arithmetic mean of the four components after their own per-component generosity boost. No separate boost is applied at the top level. This makes the breakdown the source of truth and the headline a derived value. The Gemini raw `overall_score` is retained internally and exposed only on the debug pill.
-- **Option B (reject):** keep the top-level boost and proportionally boost each component to match. Rejected because it makes the components fictional.
-
-**MODIFIED: `lib/scoring/displayScore.ts`** (or wherever the boost lives — search for `Gemini raw` in the codebase to find the logger that produced the debug pill text)
-
-```typescript
-function displayedOverall(gemini: GeminiScore, legsVisible: boolean): number {
-  const c = gemini.components;
-  if (legsVisible) {
-    return Math.round((c.arms + c.legs + c.body + c.timing) / 4);
-  }
-  // Upper-body-only: legs excluded entirely
-  return Math.round((c.arms + c.body + c.timing) / 3);
+export function getMirrorEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return true; // SSR default
+  const v = localStorage.getItem(KEY);
+  return v === null ? true : v === 'true';
 }
-```
 
-Apply per-component generosity boosts inside the Gemini prompt instead (Group 4) — not on top of the result.
+export function setMirrorEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(KEY, String(enabled));
+  window.dispatchEvent(new CustomEvent('groov:mirror-changed', { detail: enabled }));
+}
 
-**MODIFIED: `components/ResultsCard.tsx`** (or wherever the score header renders)
+export function onMirrorChanged(handler: (enabled: boolean) => void): () => void {
+  const listener = (e: Event) => handler((e as CustomEvent).detail);
+  window.addEventListener('groov:mirror-changed', listener);
+  return () => window.removeEventListener('groov:mirror-changed', listener);
+}
+Default: ON. Single source of truth for all surfaces. Toggle dispatches a custom event so the holding-screen and Gemini client can re-read on change without prop-drilling.
+MODIFIED: Mode A REF panel (find with grep -r "scaleX(-1)" app/dance — it lives wherever Mode A renders the reference video)
+Replace any hardcoded transform: scaleX(-1) on the REF video with a state-driven version that reads from getMirrorEnabled() on mount and subscribes to onMirrorChanged. The skeleton overlay canvas on the REF panel must apply the same transform — already required from prior work, just make sure it reads from the same source.
+MODIFIED: Holding-screen REF panel (find the side-by-side component the user described — probably components/HoldingScreen.tsx or similar)
+The REF panel on the holding screen is currently NOT applying a mirror transform. Fix: apply the same transform: scaleX(-1) driven by getMirrorEnabled(). The attempt-side panel is already mirrored by the front-camera — do NOT add another flip to it.
+MODIFIED: lib/scoring/gemini/client.ts
+The trimReferenceClientSide function currently always flips the canvas (round 3 ff78c62). Change it to read getMirrorEnabled() and apply the flip conditionally. Add to the payload field referenceMirrored: <boolean> based on actual state, not hardcoded true. Update the prompt branch accordingly — the prompt already has a referenceMirrored: true/false switch from round 3.
+MODIFIED: Settings panel (wherever the existing mirror toggle in Mode A lives — there should be one)
+Migrate the existing per-screen toggle to call setMirrorEnabled(). If no toggle exists yet, add one to the Mode A controls bar with a flip-horizontal icon.
+Acceptance:
 
-The headline number is now the output of `displayedOverall()`. The debug pill ("Gemini raw: X · MediaPipe (debug): Y") continues to show Gemini's raw `overall_score` and MediaPipe's score side-by-side; that's the diagnostic surface. The components below render unchanged.
+Flipping mirror in Mode A immediately flips both the Mode A REF panel and (if you then advance to the holding screen) the holding screen REF panel.
+Composite video sent to Gemini reflects the same mirror state.
+Default state is mirror-on on first load (verify by clearing localStorage).
+Toggle persists across reloads.
 
-**Acceptance:**
-- For the sincere attempt's components (arms 50, legs 75, body 35, timing 45 — assuming Group 4 doesn't change them), the displayed overall is 51, not 81.
-- For an upper-body-only attempt, the displayed overall excludes legs from the mean. The legs pill renders as "(UPPER BODY ONLY)" and shows a single dim dash (`—`), not "75."
-- Add a unit test: `displayedOverall({arms:50, legs:75, body:35, timing:45}, true)` returns 51. `displayedOverall({arms:50, legs:75, body:35, timing:45}, false)` returns 43.
 
----
+Group 1 — Composite video rendering (client-side)
+Why this is the riskiest group: the canvas + MediaRecorder pipeline is the same one that's been silently failing for motion-onset. If motion-onset diagnosis surfaced a specific cause (e.g., setTransform conflict with MediaRecorder, NaN duration on streaming blob, mobile Safari MediaRecorder bugs), apply the lessons here. If diagnosis revealed the pipeline can't be salvaged client-side, abort this group and we'll respec for server-side.
+NEW: lib/scoring/gemini/composite.ts
+A renderSideBySideVideo({referenceUrl, attemptBlob, mirror, motionOnsetRefSec, motionOnsetAttemptSec}): Promise<{blob: Blob; mimeType: string} | null> function. Returns null on failure (graceful — the caller falls back to two-video mode).
+Algorithm:
 
-### Group 4 — Recalibrate Gemini's component scoring + canary
+Open both videos as hidden <video> elements. Verify both have valid duration (not NaN, not 0). If either fails, return null and log [composite] open failed.
+Seek both to their respective motion-onset starts.
+Create a canvas, dimensions 1280×720 (16:9). Reference draws to left half (640×720). Attempt draws to right half (640×720). Each source is letterboxed to fit, not cropped — preserve aspect ratio with black bars if needed.
+The reference video element provides the audio track. The attempt video's audio is muted (attempt.muted = true).
+Use requestAnimationFrame to drive a render loop at 30 fps. On each frame:
 
-**Why fourth:** the prompt rewrite from round 2 was too soft on flailing (raw 45 for flailing vs raw 51 for a sincere attempt is a 6-point gap — that's noise, not signal). Tighten the canary, sharpen the components, kill the "default 75 for legs" anti-pattern.
+Read currentTime from both videos. If either has ended, stop the render.
+Draw reference to left half (with setTransform for mirror state per Group 0).
+Draw attempt to right half (NO additional mirror — attempt is already mirrored by camera).
+Optionally overlay a 1px white divider down the middle for visual clarity.
 
-**MODIFIED: `lib/scoring/gemini/prompt.ts`**
 
-Rewrite the canary and component-grading sections. Keep the chunk-window awareness, keep the post-Group-1 mirror clause, keep the post-Group-2 motion-onset clause.
+Capture the canvas stream via canvas.captureStream(30). Add the reference's audio track to the stream via MediaStreamTrack from the reference element's captureStream().
+Pipe the combined stream into MediaRecorder with mimeType: 'video/webm;codecs=vp9,opus'. Start both videos playing in sync via Promise.all([ref.play(), att.play()]).
+When both videos reach the end (or the shorter one ends), stop MediaRecorder. Return the resulting Blob.
+Cleanup: revoke object URLs, remove hidden elements.
 
-Specific changes:
+Add detailed logging at every step using prefix [composite]. Log: video opens, durations, motion-onset starts used, frame count rendered, MediaRecorder events (start, dataavailable, stop, error), total elapsed ms, output blob size.
+MODIFIED: lib/scoring/gemini/client.ts
+The current flow trims reference and attempt separately and sends two videos. New flow:
 
-1. **Canary is now binary AND quantitative.** Current language treats `is_actually_dancing: false` as a flag with no enforced score consequence. New language:
+Run motion-onset detection on both videos (existing code).
+Try composite path: call renderSideBySideVideo. If it returns a blob, send THAT to the API as a single video. Set a new payload flag compositeMode: true.
+Fallback path: if composite returns null, fall back to current two-video approach (trim ref + send both). Set compositeMode: false. Log [gemini-client] composite failed, falling back to two-video.
 
-   > Step 1 — Decide `is_actually_dancing`. The attempt is NOT a dance attempt if any of the following are true: (a) the body is mostly still relative to the camera (postural sway only), (b) the limb motion is fast but uncorrelated with the reference (the user is flailing, not copying), (c) the user is out of frame for more than 30% of the chunk. If any of these are true, set `is_actually_dancing: false` AND set `overall_score` to a value between 5 and 25. Components in this case should reflect what was actually observed (e.g., flailing arms might score arms: 15 because there IS arm motion, just wrong; standing-still body should score body: 5). Do not pad components upward to make the result feel kinder.
+MODIFIED: app/api/score-gemini/route.ts
+Accept either {compositeVideoBase64, compositeMimeType, compositeMode: true} OR {referenceVideoBase64, attemptVideoBase64, ..., compositeMode: false}. Branch on compositeMode and build the Gemini contents array accordingly:
 
-2. **Sincere-attempt floor is also explicit.** If `is_actually_dancing: true`, no individual component score may be below 35 unless the attempt genuinely shows zero effort on that axis. The current arms=19 on the standing-still attempt is fine because `is_actually_dancing` was false. But a sincere attempt scoring arms=25 is the prompt being too punishing in a different way.
+Composite mode: single inlineData part with the composite video.
+Two-video mode: existing two inlineData parts.
 
-3. **Upper-body-only mode no longer fills `legs` with a default 75.** It returns `legs: null`. Update `GeminiScoreSchema` in `lib/scoring/gemini/types.ts` to accept `legs: z.number().min(0).max(100).nullable()`. The downstream `displayedOverall` from Group 3 already excludes legs in that branch. The UI from Group 3 renders the dim dash.
+Log compositeMode and compositeVideoBase64.length (if composite) for diagnostics.
+Acceptance:
 
-4. **Trouble-spot count is capped by tier.** GROOVY: max 2. SOLID: max 3. SHAKY: max 4. NOT_DANCING: max 1 ("this didn't look like an attempt at the dance"). Currently the system pads to 3 regardless.
+Composite video plays correctly when downloaded and inspected (reference left, attempt right, reference audio, both moving in sync from t=0 of dance start).
+Composite blob size is roughly equal to one of the original videos, not double (the side-by-side composition compresses about as well as a single video).
+On a device where composite succeeds, payload contains compositeMode: true and a single video.
+On a device where composite fails (force by passing bad inputs), payload falls back to compositeMode: false with two videos and no user-visible error.
 
-5. **The first insight must be specific and positive — but only if `is_actually_dancing` is true.** If `is_actually_dancing: false`, the insights should not pretend there was good work to praise. Existing language conflated these.
 
-**MODIFIED: `lib/scoring/gemini/types.ts`**
+Group 2 — Composite prompt rewrite
+Why second: the prompt has to match the input format. The current prompt assumes two separate videos. The composite prompt is grading left vs right of a single video.
+MODIFIED: lib/scoring/gemini/prompt.ts
+Add a compositeMode: boolean parameter. When compositeMode: true, generate a NEW prompt body. When false, fall back to the existing two-video prompt (preserved for the fallback path).
+The new composite prompt:
+You are a dance teacher grading a student's attempt at a TikTok dance.
 
-```typescript
-components: z.object({
-  arms: z.number().min(0).max(100),
-  legs: z.number().min(0).max(100).nullable(),
-  body: z.number().min(0).max(100),
-  timing: z.number().min(0).max(100),
-}),
-```
+You will receive ONE video showing two performances side by side:
+- LEFT half: the REFERENCE dancer (the choreography to be matched)
+- RIGHT half: the STUDENT's ATTEMPT
 
-**MODIFIED: `tests/geminiPrompt.test.ts`**
+Both halves play in perfect time sync. The audio is from the REFERENCE track. Both performances start at the first beat of the choreography — there is no pre-roll, no walking-back-to-camera, no warmup.
 
-Add assertions for the new canary language, the floor, the cap-by-tier, the nullable legs, and the conditional-positive-insight clause.
+The reference has been horizontally mirrored so that left/right correspond directly to the student's attempt (which is captured from a front-facing camera). When the reference's left arm goes up, the student's left arm should go up — they should look like mirror images of each other on the same side of the screen.
 
-**Acceptance (validation pass, not automated):**
-- Sincere attempt: `is_actually_dancing: true`, components between 35 and 95, displayed overall 55–85.
-- Standing still: `is_actually_dancing: false`, overall 5–25, body component low (under 20), arms low.
-- Flailing: `is_actually_dancing: false`, overall 5–25. **This is the canary.** If flailing still scores above 40, the prompt is wrong and you stop and flag — do not tune around it.
+STEP 1 — DECIDE is_actually_dancing.
 
----
+The attempt is NOT a dance attempt if any of the following are true while watching the RIGHT half of the video:
+(a) the body is mostly still relative to the camera (postural sway only)
+(b) the limb motion is fast but uncorrelated with the LEFT half (the student is flailing, not copying)
+(c) the student is out of frame for more than 30% of the video
 
-### Group 5 — Diagnose the always-GROOVY live callout bug
+If any of these are true, set is_actually_dancing: false AND set overall_score to a value between 5 and 25. Components should reflect what was actually observed on the RIGHT half. Do not pad upward.
 
-**Why last:** the prior four groups change the post-attempt verdict, which is independent from the live callout engine. Save the diagnostic work for when the rest is stable.
+STEP 2 — SINCERE ATTEMPT SCORING.
 
-This is a **diagnosis task first, fix task second.** Do not change thresholds before diagnosing.
+If is_actually_dancing: true, grade four components 0-100 by comparing the RIGHT half to the LEFT half:
+- ARMS: how closely the student's arm shapes, positions, and motion match the reference's
+- LEGS: how closely the student's leg motion matches. If legs are not visible on the RIGHT half (upper-body framing), set legs: null. Do NOT impute a default.
+- BODY: how closely the student's torso isolations, weight shifts, and overall body engagement match
+- TIMING: how aligned in time the student's beats are with the reference's. Since both halves play in sync, you can directly see whether a movement on the RIGHT lags or leads the corresponding movement on the LEFT.
 
-**Step 1 — Verify the diagnostic logging from round 2 is actually wired.**
+No individual sincere-attempt component may be below 35 unless the student genuinely showed zero effort on that axis.
 
-Open `lib/scoring/callouts/calloutEngine.ts`. There should be a `console.log("[callout]", ...)` or equivalent on every accent-beat fire. If there is not, that's where round 2 silently failed. Add it now:
+STEP 3 — TROUBLE SPOTS, CAPPED BY TIER.
 
-```typescript
-console.log('[callout]', {
-  beatIndex,
-  windowMaxSimilarity: maxSim,
-  tier,
-  thresholds: { groovy: T_GROOVY, perfect: T_PERFECT, great: T_GREAT, almost: T_ALMOST },
-  timestamp: performance.now(),
-});
-```
+Pick the most important moments where the student diverges from the reference. Reference timestamps within the video (e.g., 0:02-0:03). Each trouble spot has body_part, severity, what_happened, fix.
 
-**Step 2 — Run one sincere attempt with that logging on and copy the console output into `docs/callout-diagnosis-round-3.md`.**
+Counts capped by tier:
+- GROOVY (85-100): max 2 trouble spots
+- SOLID (65-84): max 3
+- SHAKY (40-64): max 4
+- NOT_DANCING: exactly 1, saying "this didn't look like an attempt at the dance"
 
-Read the log. Three possible diagnoses, each with a different fix:
+DO NOT include trouble spots about:
+- Hand shape details (thumb up vs palm flat) — these are execution noise
+- Subtle body isolations the student missed when the main move was correct
+- The first or last 200ms (compression artifacts)
 
-- **(A) The similarity stream is saturated near 1.0.** Every beat shows `windowMaxSimilarity: 0.99…`. → The fix is in the similarity computation, NOT the callout engine. Find where the per-frame similarity is computed (likely `lib/scoring/mediapipe/perFrame.ts` or similar). The most common cause is averaging cosine similarities over too many joints — the noise floor on random poses is around 0.85 because limb directions don't span much of the unit sphere. Fix by switching to either (i) per-joint angle delta with a per-joint normalization, or (ii) Procrustes-aligned position L2. Document the choice.
+STEP 4 — INSIGHTS.
 
-- **(B) The thresholds are mis-set OR the tier-mapping function is bypassed.** The log shows varied `windowMaxSimilarity` but `tier: "GROOVY"` regardless. → Inspect `tierForSimilarity()` or whatever the mapping function is called. It's almost certainly hitting a default or a wrong comparator (e.g., `>=` where `<` was meant).
+If is_actually_dancing: true, return 2-4 insights. The FIRST insight must be a specific, positive observation about what the student did well. Subsequent insights are actionable corrections.
 
-- **(C) The callout overlay is rendering "GROOVY" regardless of what the engine emits.** The log shows correct varied tiers but the screen shows GROOVY. → Inspect `components/CalloutOverlay.tsx`. The most likely cause is the JSX rendering a hardcoded string from a stale debug branch, or the state hook keying off the wrong event field.
+If is_actually_dancing: false, return 1-2 insights. Do NOT fabricate praise. Acknowledge the attempt wasn't a copy of the choreography and suggest watching the reference first.
 
-**Step 3 — Fix the diagnosed cause. Only the diagnosed cause.**
+Return ONLY valid JSON matching the schema. No prose, no markdown.
+MODIFIED: tests/geminiPrompt.test.ts
+Add a new test block for compositeMode: true. Assert:
 
-Don't fix all three at once. Document what you found and what you changed.
+The "ONE video showing two performances side by side" sentence is present
+"LEFT half" and "RIGHT half" language is present
+The "horizontally mirrored... look like mirror images" clause is present
+The canary trip conditions (a)(b)(c) reference "the RIGHT half"
+All Group 4 (round 3) invariants — floor of 35, legs: null, tier-capped trouble spots, conditional positive-first insights — are present in the new prompt
 
-**Step 4 — Re-run, confirm callouts now vary by attempt quality.**
+Keep all existing compositeMode: false tests intact (they verify the two-video fallback prompt).
+Acceptance:
 
-Sincere attempt: mix of PERFECT/GREAT/GROOVY, occasional ALMOST.
-Standing still: mostly ALMOST.
-Flailing: mix of ALMOST/GREAT (similarity to fast motion is genuinely high — that's why Gemini matters).
+All 225+ round-3 tests still pass.
+New composite-mode tests pass.
+Manual: dump the actual prompt being sent on a composite-mode attempt and read it end-to-end for grammar and clarity.
 
-If the fix surfaces a deeper problem (e.g., the similarity stream is genuinely meaningless because the underlying scoring pipeline regressed), **stop and flag.** Do not paper over.
 
----
+Group 3 — Wire composite mode through the orchestration
+Why third: Groups 0-2 build the pieces; this group connects them and makes one real composite attempt actually flow end-to-end.
+MODIFIED: the Mode B test page orchestrator (find with grep -r "scoreWithGemini" app/dance)
+Add a feature flag NEXT_PUBLIC_COMPOSITE_MODE_ENABLED=true (default true for the validation pass; can be flipped to false to revert to two-video without code changes). When the flag is on, the orchestrator calls the new composite path. When off, the existing two-video path.
+The flag also gets logged: [gemini-client] composite mode flag: <true|false>.
+Acceptance:
 
-## Out of scope
+With flag on, one sincere attempt produces a composite video, sends it to Gemini, returns a valid score that reflects the new prompt.
+With flag off, the existing two-video path still works unchanged.
+Toggle requires only a .env.local change, no code edit.
 
-- Apple Vision port.
-- TikTok URL ingestion changes.
-- Skill graph routing changes.
-- Mode A changes.
-- Sound design for callouts.
-- Replacing Gemini with a different model. (See note at the bottom of this doc.)
 
----
+Group 4 — Validation gate doc
+NEW: docs/round-4-validation.md
+Write the five-attempt validation protocol for the user to follow. Same five attempts as round 3 (sincere, standing still, flailing, different chunk, off-beat) but with composite-mode-specific things to watch for:
 
-## Working agreement
+Sincere attempt: does the composite video render? Check the terminal for [composite] logs showing frame count, duration, blob size. Does Gemini score it 55-85 with components in the 35-95 range?
+Standing still: composite still renders (the right half is just a still person). Gemini canary should fire — is_actually_dancing: false, overall 5-25.
+Flailing — the hard canary. This is the test side-by-side is supposed to be better at. With both halves visible to Gemini at the same time, it should be obvious the right half isn't doing what the left half is doing. Overall must score under 25. If it doesn't, side-by-side did not solve the canary problem and we have a deeper issue with Gemini's vision.
+Different chunk: sanity check.
+Off-beat: with timing baked into the composite, Gemini should now flag timing far more accurately than in two-video mode. Watch for timing component to drop while other components stay normal.
 
-- After each group, pause and post a diff summary.
-- Mobile-first: verify at 390px.
-- If Group 5 step 2 surfaces diagnosis (A) — a saturated similarity stream — STOP and flag before fixing. That is a scoring-layer rewrite and is a separate spec, not this one.
-- All prior round-1 and round-2 logging stays. Add to it; don't replace it.
-- One commit per group. Branch: `scoring-round-3`. No push to main.
+Plus one composite-specific check:
+6. Force composite failure (e.g., pass a bad attempt blob in dev tools) and verify the two-video fallback fires silently. User should not see an error.
 
----
+Out of scope
 
-## Acceptance summary (all must pass)
+Server-side composition (if motion-onset diagnosis says we have to go this route, separate spec).
+Changes to MediaPipe live callouts. The saturated-similarity rewrite from round 3's STOP+FLAG is its own future spec.
+Changes to Mode A beyond the mirror-toggle plumbing.
+Replacing the trouble-spot tier caps or component floor from round 3.
 
-- [ ] Reference video sent to Gemini is mirrored to match the attempt orientation; `referenceMirrored: true` in payload; prompt-invariants test updated.
-- [ ] Reference and attempt are both trimmed to motion onset; `referenceMotionOnsetSec` logged; padding-aware prompt clause replaced with "starts at first movement" clause.
-- [ ] Displayed overall = mean of components (excluding legs when upper-body-only). Headline number matches the breakdown bars. Gemini raw shown on debug pill only.
-- [ ] Standing-still attempt: `is_actually_dancing: false`, overall 5–25, headline matches.
-- [ ] Flailing attempt: `is_actually_dancing: false`, overall 5–25. **Hard canary.** If this fails, stop and flag.
-- [ ] Sincere attempt: components in 35–95 range, displayed overall 55–85, trouble spots reference real dance moments (not 0:00 padding).
-- [ ] Live callouts vary by attempt quality. Diagnosis written up in `docs/callout-diagnosis-round-3.md`.
-- [ ] All prior tests still pass.
-- [ ] Branch `scoring-round-3` pushed, no merge to main.
 
----
+Working agreement
 
-## After Claude Code finishes — your validation pass
+Pause for a diff summary after each group.
+Mobile-first. 390px.
+All round-1/2/3 logging stays. Add [composite] and [gemini-client] composite ... prefixes.
+If Group 1's MediaRecorder pipeline fails on the test device the same way motion-onset failed, STOP and flag. We move to server-side composition in a separate spec.
+One commit per group. Branch scoring-round-4. No push to main.
 
-Same five-attempt protocol as round 2:
 
-1. **Sincere attempt.** Live callouts should vary. Gemini score 55–85, displayed overall matches components.
-2. **Standing still.** Live callouts mostly ALMOST. Gemini `is_actually_dancing: false`, overall under 25.
-3. **Flailing.** Live callouts mixed. Gemini `is_actually_dancing: false`, overall under 25. **This is the hard canary.**
-4. **Sincere attempt on a different chunk.** Sanity check.
-5. **Deliberately off-beat sincere attempt.** Timing component low, other components normal.
+Acceptance summary (all must pass)
 
-If runs 2 and 3 both score under 25 AND run 1 scores 55–85 AND the live callouts vary, the round is done. Flip `SHOW_BOTH_SCORES=false` and merge.
-
----
-
-## Note on "should we abandon Gemini" (your question — read this)
-
-The flailing score of 75 is the strongest evidence yet that Gemini-as-judge has a real failure mode. But the failure is not "Gemini cannot tell flailing from dancing." The failure is "the prompt is telling Gemini to be generous, the reference is unmirrored, and the trim still includes padding the prompt told it to ignore." We are not yet at the point where we can fairly say Gemini doesn't work — we're at the point where we can say *this prompt* doesn't work on flailing.
-
-This spec is the last fair test of Gemini. If after this round flailing still scores above 40, the answer is: drop Gemini as the primary scorer, keep MediaPipe + a much stricter event-detection layer (the Just Dance / Dalea approach — per-beat angle deltas, color-coded, no semantic narration), and use Gemini only for the post-attempt *insights* (which are generated from the MediaPipe trouble spots, not used for scoring). That's a separate spec we write together if it comes to it.
-
-Do this round first.
+ Mirror state is unified across Mode A REF, holding-screen REF, and Gemini REF input via groov_mirror_enabled localStorage key.
+ Default mirror state is ON; toggle persists; all three surfaces respect it.
+ Composite video renders successfully on the test device.
+ Composite payload has compositeMode: true and a single video.
+ Composite prompt rewrite is in place; all round-3 invariants preserved; new tests assert composite-specific language.
+ Sincere attempt scores 55-85 with components in 35-95.
+ Flailing scores under 25 — hard canary, do not tune around if it fails.
+ Standing still scores under 25.
+ Composite failure falls back silently to two-video; user sees no error.
+ All round-1/2/3 tests still pass.
+ Branch scoring-round-4 pushed, no merge to main.
