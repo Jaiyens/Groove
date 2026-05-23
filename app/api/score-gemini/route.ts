@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 
-import { GEMINI_SCORING_PROMPT } from '@/lib/scoring/gemini/prompt';
+import { buildGeminiPrompt } from '@/lib/scoring/gemini/prompt';
 import {
   GeminiResponseJsonSchema,
   GeminiScoreSchema,
@@ -32,6 +32,15 @@ interface RequestBody {
   attemptVideoBase64?: string;
   referenceMimeType?: string;
   attemptMimeType?: string;
+  // SPECK §windowing-fix: chunk windowing context for the prompt. The
+  // reference is now a padded chunk (chunk window ± 500ms) rather than
+  // the full routine; these two fields tell Gemini which interior
+  // seconds of the reference are the actual choreography and which are
+  // padding. legsVisible comes from MediaPipe pose analysis on the
+  // client; when false, the prompt downweights legs.
+  legsVisible?: boolean;
+  referenceChunkStartSec?: number;
+  referenceChunkEndSec?: number;
 }
 
 export async function POST(req: NextRequest) {
@@ -47,12 +56,18 @@ export async function POST(req: NextRequest) {
     attemptVideoBase64,
     referenceMimeType,
     attemptMimeType,
+    legsVisible = true,
+    referenceChunkStartSec = 0,
+    referenceChunkEndSec,
   } = body;
 
   console.log('[gemini-score] referenceVideoBase64 length:', referenceVideoBase64?.length ?? 'MISSING');
   console.log('[gemini-score] attemptVideoBase64 length:', attemptVideoBase64?.length ?? 'MISSING');
   console.log('[gemini-score] referenceMimeType:', referenceMimeType);
   console.log('[gemini-score] attemptMimeType:', attemptMimeType);
+  console.log('[gemini-score] legsVisible:', legsVisible);
+  console.log('[gemini-score] referenceChunkStartSec:', referenceChunkStartSec);
+  console.log('[gemini-score] referenceChunkEndSec:', referenceChunkEndSec);
 
   if (!referenceVideoBase64 || !attemptVideoBase64) {
     return NextResponse.json(
@@ -60,6 +75,16 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
+
+  // Derive the chunk-end seconds if the client didn't send one. We can't
+  // know the reference duration here (the bytes are opaque base64), so
+  // default to a 2s window from the chunk start — matches the typical
+  // chunk size (1.5s) + padding. The client should always send this in
+  // practice; the default is a fallback for older clients.
+  const resolvedChunkEndSec =
+    typeof referenceChunkEndSec === 'number' && referenceChunkEndSec > referenceChunkStartSec
+      ? referenceChunkEndSec
+      : referenceChunkStartSec + 2.0;
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -70,13 +95,19 @@ export async function POST(req: NextRequest) {
   const startTime = Date.now();
 
   try {
+    const prompt = buildGeminiPrompt({
+      legsVisible,
+      referenceChunkStartSec,
+      referenceChunkEndSec: resolvedChunkEndSec,
+    });
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [
         {
           role: 'user',
           parts: [
-            { text: GEMINI_SCORING_PROMPT },
+            { text: prompt },
             { text: 'REFERENCE:' },
             {
               inlineData: {
