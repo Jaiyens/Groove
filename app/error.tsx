@@ -17,7 +17,7 @@ export default function GlobalError({
   return (
     <main className="flex h-full w-full flex-col items-center justify-center p-8 text-center">
       <div className="text-2xl font-bold text-accent-red">Something snapped.</div>
-      <p className="mt-3 max-w-xs text-sm text-text-muted">
+      <p className="mt-3 max-w-xs text-sm text-ink-muted">
         {error.message || 'Unknown error.'}
       </p>
       <div className="mt-6 flex gap-2">
