@@ -58,6 +58,11 @@ interface RequestBody {
   legsVisible?: boolean;
   referenceChunkStartSec?: number;
   referenceChunkEndSec?: number;
+  // SPECK round-3 §Group-1: client trims + horizontally flips the reference
+  // so left/right matches the front-camera-mirrored attempt. Fallback path
+  // (no trim) sends false and the prompt switches back to the mirror-copy
+  // safety clause.
+  referenceMirrored?: boolean;
 }
 
 // Distinct failure reasons surfaced in logs and the response body so we can
@@ -210,6 +215,7 @@ export async function POST(req: NextRequest) {
     legsVisible = true,
     referenceChunkStartSec = 0,
     referenceChunkEndSec,
+    referenceMirrored = true,
   } = body;
 
   console.log('[gemini-score] referenceVideoBase64 length:', referenceVideoBase64?.length ?? 'MISSING');
@@ -219,6 +225,7 @@ export async function POST(req: NextRequest) {
   console.log('[gemini-score] legsVisible:', legsVisible);
   console.log('[gemini-score] referenceChunkStartSec:', referenceChunkStartSec);
   console.log('[gemini-score] referenceChunkEndSec:', referenceChunkEndSec);
+  console.log('[gemini-score] referenceMirrored:', referenceMirrored);
 
   if (!referenceVideoBase64 || !attemptVideoBase64) {
     return NextResponse.json(
@@ -249,6 +256,7 @@ export async function POST(req: NextRequest) {
     legsVisible,
     referenceChunkStartSec,
     referenceChunkEndSec: resolvedChunkEndSec,
+    referenceMirrored,
   });
 
   const callArgs = {

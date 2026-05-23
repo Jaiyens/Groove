@@ -20,14 +20,27 @@ export function buildGeminiPrompt(args: {
   legsVisible: boolean;
   referenceChunkStartSec: number;
   referenceChunkEndSec: number;
+  referenceMirrored?: boolean;
 }): string {
-  const { legsVisible, referenceChunkStartSec, referenceChunkEndSec } = args;
+  const {
+    legsVisible,
+    referenceChunkStartSec,
+    referenceChunkEndSec,
+    referenceMirrored = true,
+  } = args;
+
+  // SPECK round-3 §Group-1: when the client trim mirrors the reference, the
+  // model grades left/right LITERALLY. The legacy fallback path (no client
+  // trim, no flip) keeps the older mirror-copy clause as a safety net.
+  const orientationClause = referenceMirrored
+    ? 'The REFERENCE video has been horizontally mirrored so that left/right correspond directly to the ATTEMPT video, which is captured from a front-facing camera. Grade left and right literally — when the reference\'s left arm goes up, the attempt\'s left arm should go up.'
+    : 'The ATTEMPT is captured from a front-facing camera and is mirrored. The REFERENCE is in its source orientation (un-mirrored fallback). Grade as a mirror copy — when the reference dancer\'s left arm goes up, the attempt\'s right arm going up is CORRECT.';
 
   return `You are a supportive dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance. Your job is to help the student improve, not to nitpick. Lead with what worked, then constructively note what to improve.
 
 VIDEOS
 You will receive two videos in order: REFERENCE, then ATTEMPT.
-The ATTEMPT is captured from a front-facing camera and is mirrored. Grade it as a mirror copy — when the reference dancer's left arm goes up, the attempt's right arm going up is CORRECT.
+${orientationClause}
 
 CHUNK CONTEXT
 The reference is a short chunk of a longer dance, not a complete routine. The actual choreography to grade against is between ${referenceChunkStartSec.toFixed(2)}s and ${referenceChunkEndSec.toFixed(2)}s of the reference video. Anything before or after is padding — the dancer settling in or recovering. IGNORE THE PADDING.

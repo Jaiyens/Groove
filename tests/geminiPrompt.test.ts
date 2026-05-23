@@ -108,13 +108,57 @@ describe('buildGeminiPrompt — canary intact (legs branch agnostic)', () => {
 });
 
 describe('buildGeminiPrompt — mirror grading + style tolerance', () => {
-  it('keeps the mirror-copy grading clause', () => {
+  // SPECK round-3 §Group-1: the client now horizontally flips the reference
+  // in the same canvas pass that trims it, so left/right corresponds directly
+  // and the model grades literally. The legacy "mirror copy" clause survives
+  // only as a fallback when client-side trim/flip failed.
+
+  it('default (referenceMirrored=true) uses the literal-left/right clause and drops mirror-copy', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
-    assert.ok(out.match(/mirror copy/i), 'mirror-copy clause missing');
+    assert.ok(
+      out.includes('REFERENCE video has been horizontally mirrored'),
+      'must announce the reference is pre-mirrored',
+    );
+    assert.ok(
+      out.match(/Grade left and right literally/i),
+      'must instruct literal left/right grading',
+    );
+    assert.ok(
+      !out.match(/mirror copy/i),
+      'old mirror-copy clause must be removed in the mirrored branch',
+    );
+  });
+
+  it('explicit referenceMirrored=true matches the default', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+      referenceMirrored: true,
+    });
+    assert.ok(out.includes('REFERENCE video has been horizontally mirrored'));
+    assert.ok(!out.match(/mirror copy/i));
+  });
+
+  it('referenceMirrored=false keeps the legacy mirror-copy clause for the un-trimmed fallback', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+      referenceMirrored: false,
+    });
+    assert.ok(
+      out.match(/mirror copy/i),
+      'fallback branch must still hand the model the mirror-copy rule',
+    );
+    assert.ok(
+      !out.includes('REFERENCE video has been horizontally mirrored'),
+      'fallback branch must NOT claim the reference was pre-mirrored',
+    );
   });
 
   it('keeps personal-style tolerance so sincere attempts score generously', () => {

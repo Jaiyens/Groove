@@ -6,6 +6,14 @@
 // ship a 15s reference for a 1.5s chunk (SPECK §windowing-fix). Then
 // base64-encodes both clips and POSTs to the serverless endpoint.
 //
+// Mirroring (SPECK round-3 §Group-1): the front-facing camera captures the
+// attempt mirrored, so the canvas pump also FLIPS the reference horizontally
+// in the same pass — left/right in the reference now corresponds directly to
+// left/right in the attempt. `referenceMirrored: true` rides on the payload so
+// the prompt can stop asking the model to imagine a mirror correspondence.
+// Fallback path (un-trimmed full reference) sends `referenceMirrored: false`
+// — that path is rare and known-degraded.
+//
 // Timeout: 30s (SPECK §Hard rule 7) — past that, callers should treat it
 // as a Gemini failure and fall back to MediaPipe silently. We DON'T retry
 // — Gemini latency is the same order of magnitude as the retry budget, and
@@ -163,6 +171,11 @@ async function trimReferenceClientSide(
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('trim: canvas 2d context unavailable');
 
+    // Horizontal flip set once: every subsequent drawImage emits a mirrored
+    // frame without a per-frame save/restore. Match the attempt's mirrored
+    // orientation so Gemini compares same-handed motion.
+    ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
+
     // Draw one frame so the captureStream has content from t=0.
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -267,6 +280,7 @@ export async function scoreWithGemini(
     let referenceChunkStartSec: number;
     let referenceChunkEndSec: number;
     let trimMode: 'trimmed' | 'full-fallback';
+    let referenceMirrored: boolean;
     try {
       const trim = await trimReferenceClientSide(
         referenceVideoUrl,
@@ -278,10 +292,11 @@ export async function scoreWithGemini(
       referenceChunkStartSec = trim.referenceChunkStartSec;
       referenceChunkEndSec = trim.referenceChunkEndSec;
       trimMode = 'trimmed';
+      referenceMirrored = true;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(
-        '[gemini-client] client-side trim failed; sending full reference with window hint',
+        '[gemini-client] client-side trim failed; sending full reference with window hint (un-mirrored fallback)',
         err,
       );
       referenceBlob = await fetchReferenceAsBlob(referenceVideoUrl, composedSignal);
@@ -291,6 +306,7 @@ export async function scoreWithGemini(
       referenceChunkStartSec = chunkStartMs / 1000;
       referenceChunkEndSec = chunkEndMs / 1000;
       trimMode = 'full-fallback';
+      referenceMirrored = false;
     }
 
     const [attemptBase64, referenceBase64] = await Promise.all([
@@ -301,6 +317,7 @@ export async function scoreWithGemini(
     // eslint-disable-next-line no-console
     console.log('[gemini-client] sending', {
       trimMode,
+      referenceMirrored,
       referenceBytes: referenceBase64.length,
       attemptBytes: attemptBase64.length,
       chunkStartMs,
@@ -322,6 +339,7 @@ export async function scoreWithGemini(
         legsVisible,
         referenceChunkStartSec,
         referenceChunkEndSec,
+        referenceMirrored,
       }),
     });
 
