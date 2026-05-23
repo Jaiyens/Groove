@@ -1,356 +1,272 @@
-# SPEC: Hybrid Scoring — Live Callouts (MediaPipe) + Post-Attempt Verdict (Gemini)
+# SPECK.md — Chunk Windowing + Leg Visibility + Generosity Calibration
 
-## Context — read this first
+## Context
 
-Mode B scoring was rebuilt last night with MediaPipe (joint angles, DTW, per-joint weights, dual-skeleton overlay, drill mode, results card). All 97 tests pass. The rebuild summary lives at `/docs/scoring-rebuild-summary.md`.
+Previous PR (gemini-scoring-with-callouts) shipped the hybrid scoring architecture: MediaPipe drives live callouts during the dance, Gemini drives the post-attempt verdict. Architecture is correct. Pipeline works end-to-end.
 
-The architecture decision for this PR: **two systems, two jobs.**
+But validation revealed three correctness bugs in what we're sending Gemini:
 
-1. **MediaPipe drives LIVE in-dance callouts** — GROOVY / PERFECT / GREAT / ALMOST flash on screen during the dance, on accent beats, as the user moves. Per-frame, local, free, real-time. This is the dopamine layer.
-2. **Gemini 2.5 Flash drives the POST-ATTEMPT verdict** — overall score, per-component breakdown, semantic insights, timestamped trouble spots. Async (5-15s after attempt ends), via inline base64 video. This is the intelligence layer.
-3. **The dual-skeleton overlay is the visual language throughout** — Mode A practice, during the dance, and on the post-attempt holding screen. Built last night, reused as-is.
+1. **Reference video is way too long.** Logs showed a ~15s reference being sent for a chunk window of `from=1500&to=3000` (1.5s of choreography). Gemini hallucinated trouble spots at `start_sec: 13.0–15.0` for a 7-10s user attempt — it was describing reference events past the end of the user's recording as "you stood still."
 
-The two systems do not share vocabulary or compete. Live callouts are vibe; Gemini is the verdict. When they disagree, Gemini wins.
+2. **Gemini doesn't know the reference is a chunk, not a full routine.** Prompt frames it as "a TikTok dance," so Gemini assumes a full performance and penalizes the user for everything in the reference, including incidental motion.
 
----
+3. **Legs get punished when they're not in frame.** User often films upper-body only; reference shows legs; Gemini scores legs at 0 and tanks overall. MediaPipe knows whether legs are visible — we should pass that to Gemini.
 
-## What you are building
-
-### High-level flow
-
-1. User finishes attempt setup, countdown plays (existing).
-2. **During the dance:** MediaPipe runs per-frame as it does today, but now also drives an overlay layer that flashes a callout (GROOVY / PERFECT / GREAT / ALMOST) on accent beats. Callouts are visual only, no sound, large centered glyph, fades in 150ms, holds 400ms, fades out 250ms.
-3. **Attempt ends:** recording is captured to a Blob, holding screen launches immediately (minimum 3s).
-4. **Holding screen:** plays back the user's attempt with the dual-skeleton overlay. Status text rotates: "Watching your timing…" → "Checking arm extension…" → "Measuring rhythm…"
-5. **In parallel:** MediaPipe final scoring runs locally (existing pipeline). Gemini scoring runs via fetch to a new serverless endpoint with inline base64 video.
-6. Both resolve. After minimum 3s of holding screen has elapsed AND Gemini has returned, transition to results.
-7. **Results screen:** Gemini's score is the headline. Gemini's tier, components, insights, and trouble spots drive the UI. Drill mode routing uses Gemini's trouble_spots.
-8. **Validation mode (`NEXT_PUBLIC_SHOW_BOTH_SCORES=true`):** MediaPipe final score appears as a small grey debug pill below Gemini's score, plus a "Why are these different?" expander.
-9. **Fallback:** if Gemini fails (timeout, network, schema error), results screen renders from MediaPipe silently. No user-visible error.
-
----
-
-## File-by-file plan
-
-### NEW: `lib/scoring/callouts/types.ts`
-
-```typescript
-export type CalloutTier = 'GROOVY' | 'PERFECT' | 'GREAT' | 'ALMOST';
-
-export type CalloutEvent = {
-  tier: CalloutTier;
-  beatIndex: number;      // which accent beat this fired on
-  timestamp: number;      // performance.now() at fire time
-  similarity: number;     // raw 0-1 similarity score from MediaPipe at this moment
-};
-```
-
-### NEW: `lib/scoring/callouts/calloutEngine.ts`
-
-The per-frame logic that decides when to fire a callout and at what tier.
-
-Requirements:
-- Accepts a stream of per-frame similarity scores (already computed by the existing scoring pipeline — do not recompute).
-- Accepts a list of **accent beat timestamps** for the current chunk. For now, derive accent beats as every 2nd beat from the existing `beatTracker.ts` output. If beat tracker is unreliable, fall back to every 800ms from chunk start.
-- On each accent beat, look at a small window (±150ms) of similarity scores around that beat and take the max. This rewards the user for being roughly on-beat without punishing minor timing slips.
-- Map the window-max similarity to a tier using these thresholds (tunable constants at the top of the file):
-  - `>= 0.88` → GROOVY
-  - `>= 0.75` → PERFECT
-  - `>= 0.60` → GREAT
-  - `< 0.60`  → ALMOST
-- **Critical: thresholds are calibrated toward generosity.** Live callouts are the dopamine layer; harsh judgment is Gemini's job. If a session is averaging mostly ALMOST, the user disengages. Tune so that a real attempt fires mostly PERFECT/GREAT with occasional GROOVY peaks and rare ALMOST.
-- Emit `CalloutEvent` via callback. Do not store all events in component state — that re-renders too often.
-
-```typescript
-export function createCalloutEngine(config: {
-  accentBeatTimestamps: number[];
-  onCallout: (event: CalloutEvent) => void;
-}): {
-  ingestFrame: (frame: { timestamp: number; similarity: number }) => void;
-  reset: () => void;
-};
-```
-
-**Acceptance:** Unit test with a synthetic similarity stream where a known accent beat has similarity 0.92 → fires GROOVY. Stream with similarity 0.4 → fires ALMOST. No callouts fire between accent beats.
-
-### NEW: `components/scoring/CalloutOverlay.tsx`
-
-The visual layer that renders the callout text.
-
-Requirements:
-- Listens to `CalloutEvent`s and renders the most recent one, large, centered over the video.
-- Animation: scale-in from 0.7 → 1.0 with 150ms ease-out, hold 400ms, fade-out with 250ms ease-in. Total on-screen time ~800ms.
-- Color per tier:
-  - GROOVY: brand pink (#FF1F8E), with a subtle radial glow
-  - PERFECT: white with pink stroke
-  - GREAT: white
-  - ALMOST: muted grey (#BBB) — visible but not punishing
-- Typography: heavy display sans, 64px on mobile, all caps, tight letter-spacing.
-- **Z-index above the skeleton overlay but below any modal/results layer.**
-- If a new callout fires while a previous is still animating, the new one immediately replaces it (no queueing, no stacking).
-- No sound. Vibe is visual only for now.
-
-**Acceptance:** Manually fire callouts via dev panel, verify timing feels good (snappy, not laggy). On mobile (390px), text is readable but doesn't dominate the screen.
-
-### NEW: `lib/scoring/gemini/types.ts`
-
-Define the structured-output schema Gemini returns. Use Zod for runtime validation.
-
-```typescript
-import { z } from 'zod';
-
-export const TroubleSpotSchema = z.object({
-  start_sec: z.number(),
-  end_sec: z.number(),
-  body_part: z.enum(['arms', 'legs', 'body', 'timing']),
-  severity: z.enum(['minor', 'moderate', 'major']),
-  what_happened: z.string(),
-  fix: z.string(),
-});
-
-export const GeminiScoreSchema = z.object({
-  is_actually_dancing: z.boolean(),
-  overall_score: z.number().min(0).max(100),
-  tier: z.enum(['GROOVY', 'SOLID', 'SHAKY', 'NOT_DANCING']),
-  components: z.object({
-    arms: z.number().min(0).max(100),
-    legs: z.number().min(0).max(100),
-    body: z.number().min(0).max(100),
-    timing: z.number().min(0).max(100),
-  }),
-  insights: z.array(z.string()).min(1).max(4),
-  trouble_spots: z.array(TroubleSpotSchema).max(5),
-});
-
-export type GeminiScore = z.infer<typeof GeminiScoreSchema>;
-```
-
-**Note on vocabulary overlap:** Gemini's tier `GROOVY` and the live-callout tier `GROOVY` share a name but are different concepts. Gemini's GROOVY = overall verdict tier 85-100. Live callout GROOVY = single-moment peak hit. Do not normalize these; they're separate semantic spaces. Add a comment to that effect in the types file.
-
-### NEW: `lib/scoring/gemini/prompt.ts`
-
-```typescript
-export const GEMINI_SCORING_PROMPT = `You are a dance teacher grading a student's attempt at a TikTok dance.
-
-You will receive two videos in order: REFERENCE, then ATTEMPT.
-The ATTEMPT is captured from a front-facing camera and is mirrored. Grade it as a mirror copy — when the reference dancer's left arm goes up, the attempt's right arm going up is CORRECT.
-
-Score four components 0-100: ARMS, LEGS, BODY, TIMING.
-Assign OVERALL TIER:
-- GROOVY (85-100): full performance, on the beat, full extension
-- SOLID (65-84): clearly attempting the dance, mostly correct
-- SHAKY (40-64): attempting but missing key moves or off-beat
-- NOT_DANCING (0-39): standing still, flailing randomly, or off-camera
-
-CRITICAL CANARY: If the attempt is not actually a dance attempt (standing still, hands flailing randomly, walking out of frame), set is_actually_dancing=false and score below 40.
-
-Trouble spots must be specific and timestamped. "Your right arm extension on the chorus accent didn't reach full extension" is good. "Keep practicing" is not.
-
-Insights should be 1-4 specific, actionable observations. Lead with the biggest issue.
-
-Return ONLY valid JSON matching the schema. No prose, no markdown.`;
-```
-
-### NEW: `app/api/score-gemini/route.ts`
-
-Next.js API route. POST with `referenceVideoBase64`, `attemptVideoBase64`, mime types. Calls Gemini 2.5 Flash with inline video (NOT Files API — known reliability issues). Validates response with `GeminiScoreSchema`. Returns `{score, latencyMs}` or `{error}`.
-
-```typescript
-import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
-import { GEMINI_SCORING_PROMPT } from '@/lib/scoring/gemini/prompt';
-import { GeminiScoreSchema } from '@/lib/scoring/gemini/types';
-
-export const runtime = 'nodejs';
-export const maxDuration = 60;
-
-export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { referenceVideoBase64, attemptVideoBase64, referenceMimeType, attemptMimeType } = body;
-
-  if (!referenceVideoBase64 || !attemptVideoBase64) {
-    return NextResponse.json({ error: 'Missing videos' }, { status: 400 });
-  }
-
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const startTime = Date.now();
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [{
-        role: 'user',
-        parts: [
-          { text: GEMINI_SCORING_PROMPT },
-          { text: 'REFERENCE:' },
-          { inlineData: { mimeType: referenceMimeType || 'video/mp4', data: referenceVideoBase64 } },
-          { text: 'ATTEMPT:' },
-          { inlineData: { mimeType: attemptMimeType || 'video/mp4', data: attemptVideoBase64 } },
-        ],
-      }],
-      config: {
-        responseMimeType: 'application/json',
-        // Hand-write the JSON schema matching GeminiScoreSchema, or use zod-to-json-schema package
-        responseSchema: /* TODO: JSON Schema */,
-      },
-    });
-
-    const latencyMs = Date.now() - startTime;
-    const parsed = GeminiScoreSchema.parse(JSON.parse(response.text));
-    return NextResponse.json({ score: parsed, latencyMs });
-  } catch (err) {
-    console.error('[gemini-score] failed', err);
-    return NextResponse.json({ error: String(err) }, { status: 502 });
-  }
-}
-```
-
-**Acceptance:** `POST /api/score-gemini` with real video pair returns valid `{score, latencyMs}`. Test once with curl before wiring UI.
-
-### NEW: `lib/scoring/gemini/client.ts`
-
-Browser client. Takes attempt Blob + reference video URL, encodes both to base64, POSTs to `/api/score-gemini`, validates response, returns tagged union. 30s timeout. Never throws.
-
-```typescript
-export type GeminiResult =
-  | { kind: 'success'; score: GeminiScore; latencyMs: number }
-  | { kind: 'error'; reason: string };
-
-export async function scoreWithGemini(
-  attemptBlob: Blob,
-  referenceVideoUrl: string,
-  signal?: AbortSignal,
-): Promise<GeminiResult>;
-```
-
-**Note on payload size:** Vercel API routes cap request bodies (~4.5MB Hobby, 5MB Pro). Two 15s 720p clips base64-encoded can hit that ceiling. If you hit it: change the API contract so the reference is passed as a URL (server fetches it) and only the attempt goes as base64. Flag this in a comment but don't pre-optimize — measure first.
-
-**Acceptance:** Given an attempt Blob + reference URL, returns success or tagged error in under 30s. Never throws to caller.
-
-### NEW: `components/scoring/HoldingScreen.tsx`
-
-Shown after attempt ends, before results.
-
-Requirements:
-- Plays back the user's recorded attempt from the Blob URL.
-- Renders the dual-skeleton overlay on top (reuse the component from last night's rebuild — find and import it, do not rebuild).
-- Status text below the video, rotating every 2 seconds: "Watching your timing…" → "Checking arm extension…" → "Measuring rhythm…" → "Almost there…"
-- Subtle progress shimmer at bottom (no percentage).
-- **Stays mounted for minimum 3 seconds** even if Gemini returns faster.
-- When both `minTimeElapsed && geminiResolved` → fade to results.
-
-**Acceptance:** Immediately renders after attempt. Video replays with dual skeletons. Status text rotates. Transition to results is smooth, never less than 3s.
-
-### MODIFIED: Mode B orchestration
-
-Wire the new pieces in. Find where MediaPipe scoring currently kicks off in Mode B.
-
-**During the dance (new):**
-- Initialize `createCalloutEngine` at countdown end, passing in the accent beat timestamps for this chunk.
-- The existing per-frame scoring loop already computes a similarity score per frame. Pipe each frame into `calloutEngine.ingestFrame({timestamp, similarity})`.
-- `CalloutOverlay` mounts above the video, listens to the callout events, renders them.
-
-**After attempt ends (modified):**
-```typescript
-const [mediapipeFinal, geminiResult] = await Promise.all([
-  scoreMediaPipeFinal(attemptFrames, referencePoseTrack),  // existing
-  scoreWithGemini(attemptBlob, referenceVideoUrl),         // new
-]);
-
-const finalScore = geminiResult.kind === 'success'
-  ? { primary: geminiResult.score, backup: mediapipeFinal, source: 'gemini' as const }
-  : { primary: mediapipeFinalToGeminiShape(mediapipeFinal), backup: null, source: 'mediapipe-fallback' as const };
-```
-
-Build the `mediapipeFinalToGeminiShape` adapter so results card has one shape to render. Stub insights/trouble_spots from MediaPipe's existing per-joint output — quality lower but loop unbroken.
-
-**Acceptance:** Live callouts fire during the dance. Both final scoring paths run in parallel. Gemini success drives UI; failure falls back to MediaPipe silently with `console.warn`.
-
-### MODIFIED: `components/scoring/ResultsCard.tsx`
-
-Add validation-mode rendering using `process.env.NEXT_PUBLIC_SHOW_BOTH_SCORES`.
-
-- `true`: Gemini score is the headline. MediaPipe shows as small grey debug pill `"MediaPipe (debug): 67"`. "Why are these different?" expander shows side-by-side per-component comparison.
-- `false`: Only Gemini. MediaPipe never visible.
-- Insights and trouble spots always come from Gemini (or the adapter when Gemini failed).
-- Drill mode routing reads `finalScore.primary.trouble_spots` — same field name in both cases.
-
-**Acceptance:** Toggle env var, both modes render correctly.
-
-### NEW: `.env.local` keys
-
-```
-GEMINI_API_KEY=
-NEXT_PUBLIC_SHOW_BOTH_SCORES=true
-```
-
-`SHOW_BOTH_SCORES=true` during validation. Flip to `false` after 10-20 real attempts confirm Gemini is the better signal.
+This PR fixes all three. Branch off latest `main` (after merging the previous PR) into `gemini-windowing-fix`.
 
 ---
 
 ## Hard rules
 
-1. **Live callouts are VIBE only.** They do not influence the final score, are not aggregated, are not reported to Gemini, do not affect drill routing. Gemini is the verdict.
-2. **Calibrate callouts toward generosity.** Real attempts should fire mostly PERFECT/GREAT. ALMOST is rare. If testing shows ALMOST firing more than 30% of the time on a sincere attempt, lower the thresholds.
-3. **Do not modify the MediaPipe scoring code from last night.** Add to it (the callout engine consumes its similarity stream), do not change it.
-4. **Use inline base64 for Gemini, NOT the Files API.**
-5. **Dual-skeleton overlay is reused, not rebuilt.** Import the existing component.
-6. **Schema is the contract.** Invalid Gemini response → MediaPipe fallback. No regex repair attempts.
-7. **30s timeout on Gemini → fallback.**
-8. **Branch:** `gemini-scoring-with-callouts`. Do not push to main. One commit per file group.
-9. **Holding screen minimum 3s** even if Gemini is faster.
+1. The two scoring paths (MediaPipe live callouts, MediaPipe final fallback, Gemini final) all remain. We are not changing the architecture, only the inputs and the prompt.
+2. Do not modify the callout engine or the holding screen.
+3. Backward compatibility: if `legsVisible` is undefined (older clients), default to `true` (current behavior).
+4. Branch: `gemini-windowing-fix`. One commit per file group. Do not push to main.
 
 ---
 
-## Out of scope
+## File-by-file plan
 
-- Sound effects for callouts (later PR — design + asset work).
-- Streaming Gemini responses.
-- Caching Gemini results.
-- Removing MediaPipe final scoring (separate PR after validation).
-- Changes to Mode A.
-- Changes to knowledge graph or drill routing logic.
-- Analytics, auth, rate limiting.
-- Multi-language callout text.
+### MODIFIED: `lib/scoring/gemini/client.ts`
+
+The browser client currently sends the full reference video and the full attempt blob. Two changes:
+
+**Change 1: Trim the reference to the chunk window with padding.**
+
+Currently the client either fetches the full reference URL or fetches a pre-trimmed reference. Going forward, the client receives the chunk start and end timestamps as parameters and trims the reference video in the browser before encoding.
+
+```typescript
+export type ScoreWithGeminiArgs = {
+  attemptBlob: Blob;
+  referenceVideoUrl: string;
+  chunkStartMs: number;        // NEW: e.g. 1500
+  chunkEndMs: number;          // NEW: e.g. 3000
+  legsVisible: boolean;        // NEW: from MediaPipe
+  signal?: AbortSignal;
+};
+```
+
+Padding: **500ms on each side** of the chunk window. So for `chunkStartMs=1500, chunkEndMs=3000`, the reference sent to Gemini covers `1000ms → 3500ms` (2.5s total). Clamp to `[0, referenceDuration]`.
+
+Implementation: use a hidden `<video>` element + canvas + MediaRecorder to extract the padded chunk window into a new Blob client-side. There is a known pattern for this; if it gets hairy, the alternative is to add a server-side trim endpoint that uses ffmpeg — but try client-side first. If client-side trimming fails or is unreliable, fall back to sending the full reference with explicit `referenceChunkStartSec` and `referenceChunkEndSec` fields in the API call and let Gemini handle the windowing via prompt (less ideal, flag in PR).
+
+**Change 2: Pass `legsVisible` and chunk timing to the API route.**
+
+```typescript
+body: JSON.stringify({
+  referenceVideoBase64,
+  attemptVideoBase64,
+  referenceMimeType,
+  attemptMimeType,
+  legsVisible,                  // NEW
+  referenceChunkStartSec: 0,    // NEW: where in the padded reference the actual chunk begins (0.5s if padded)
+  referenceChunkEndSec: 2.0,    // NEW: where it ends
+})
+```
+
+These last two fields tell Gemini *within the padded reference video* where the actual choreography lives — so it knows "the first 0.5s and last 0.5s are padding, score against the middle."
+
+**Acceptance:** Given a `referenceVideoUrl`, `chunkStartMs=1500`, `chunkEndMs=3000`, the function trims the reference to a 2.5s clip (1000ms–3500ms in original), encodes to base64, and the resulting base64 length is roughly 1/6 of what it was before for the same source video.
+
+### MODIFIED: `app/api/score-gemini/route.ts`
+
+Accept the new fields. Validate. Pass through to the prompt template.
+
+```typescript
+const {
+  referenceVideoBase64,
+  attemptVideoBase64,
+  referenceMimeType,
+  attemptMimeType,
+  legsVisible = true,                // NEW with default
+  referenceChunkStartSec = 0,        // NEW with default
+  referenceChunkEndSec,              // NEW, derived if missing
+} = body;
+```
+
+When building the Gemini request, interpolate the new context into the prompt (see prompt update below). Leave the diagnostic logging from last round in place — it's been useful, keep it.
+
+**Acceptance:** Route accepts new fields without breaking. Old clients sending no `legsVisible` still work (treated as visible).
+
+### MODIFIED: `lib/scoring/gemini/prompt.ts`
+
+This is the biggest substantive change. Replace the entire prompt with the version below. It must remain a single template string that interpolates `legsVisible`, `referenceChunkStartSec`, `referenceChunkEndSec`.
+
+```typescript
+export function buildGeminiPrompt(args: {
+  legsVisible: boolean;
+  referenceChunkStartSec: number;
+  referenceChunkEndSec: number;
+}): string {
+  const { legsVisible, referenceChunkStartSec, referenceChunkEndSec } = args;
+
+  return `You are a dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance.
+
+VIDEOS
+You will receive two videos in order: REFERENCE, then ATTEMPT.
+The ATTEMPT is captured from a front-facing camera and is mirrored. Grade it as a mirror copy — when the reference dancer's left arm goes up, the attempt's right arm going up is CORRECT.
+
+CHUNK CONTEXT
+The reference video is a short chunk of a longer dance, not a complete routine.
+The actual choreography to grade against is between ${referenceChunkStartSec.toFixed(2)}s and ${referenceChunkEndSec.toFixed(2)}s of the reference video. The seconds before and after are padding — the dancer settling in or recovering. IGNORE THOSE PADDING SECONDS.
+
+The attempt video may be longer than the choreography window — the user has natural lead-in (preparing to dance) and lead-out (finishing, walking back to camera) time. IGNORE those too. Score only the user's attempt to perform the choreography in the reference window.
+
+DO NOT report trouble spots past the end of the reference choreography. There is no more dance to compare against.
+
+WHAT TO SCORE AND WHAT TO IGNORE
+The dance is the deliberate, repeatable choreography — the hits, the arm patterns, the steps, the body movements that are clearly choreographed.
+
+IGNORE incidental motion in the reference:
+- The dancer walking into frame or pressing play
+- Casual swaying while the music starts or between moves
+- Drifting toward or away from the camera
+- Settling into position before the choreography starts
+- Relaxing after the final hit
+These are setup and recovery, not choreography. Do NOT penalize the user for failing to replicate them.
+
+PERSONAL STYLE IS NOT AN ERROR
+The user may execute the choreography with their own angle, energy, or flourish. If the core move is recognizable, that is success. Score DOWN only for missing or incorrect choreography — not for stylistic variation.
+
+${legsVisible
+  ? 'LEGS: The user has their legs in frame. Score legs normally as part of the choreography.'
+  : 'LEGS: The user is filming UPPER BODY ONLY — legs are not in frame. This is a framing choice, not a performance error. Score the legs component generously (default 75) and do not let leg-related issues affect overall_score significantly. Do NOT include leg-related trouble spots. Focus your trouble spots on arms, body, and timing.'}
+
+SCORING
+Score four components 0-100: ARMS, LEGS, BODY, TIMING.
+
+Assign OVERALL TIER:
+- GROOVY (85-100): full performance, on the beat, choreography recognizable and well-executed
+- SOLID (65-84): clearly attempting the choreography, mostly correct, recognizable
+- SHAKY (40-64): attempting but missing or wrong on key moves, or noticeably off-beat
+- NOT_DANCING (0-39): standing still, random flailing, off-camera, or no attempt at the choreography
+
+CANARY
+If the user is NOT actually attempting the choreography (standing completely still, random flailing unrelated to the dance, walking out of frame the whole time), set is_actually_dancing=false and score below 40. The generosity guidance above does NOT apply to non-attempts.
+
+TROUBLE SPOTS
+1-5 trouble spots. Each must be:
+- Timestamped relative to the ATTEMPT video, not the reference
+- Specific: "your right arm extension on the chorus accent didn't reach full" is good; "keep practicing" is not
+- Within the bounds of the attempt video duration
+- About actual choreography, not incidental motion
+
+INSIGHTS
+1-4 specific, actionable observations. Lead with the most impactful one. Mix at least one positive ("your timing on the opening hit was good") with constructive feedback when the attempt was sincere.
+
+OUTPUT
+Return ONLY valid JSON matching the schema. No prose, no markdown.`;
+}
+```
+
+Update the import in `route.ts` from the old constant to the new function. Pass `legsVisible`, `referenceChunkStartSec`, `referenceChunkEndSec` from the request body.
+
+**Acceptance:** Calling `buildGeminiPrompt({legsVisible: false, referenceChunkStartSec: 0.5, referenceChunkEndSec: 2.0})` produces a string with the upper-body-only language and the correct timestamps interpolated.
+
+### MODIFIED: Mode B orchestration (wherever `scoreWithGemini` is called)
+
+Two changes:
+
+**Change 1:** Pass the chunk start/end timestamps (already in the URL as `?from=&to=`) into `scoreWithGemini`.
+
+**Change 2:** Detect leg visibility from MediaPipe pose data. Add a utility:
+
+```typescript
+// lib/scoring/legVisibility.ts (NEW)
+
+/**
+ * Determines if the user's legs were visible in their attempt.
+ * Returns true if knee/ankle landmarks were detected with confidence > 0.5
+ * in at least 60% of frames where pose was detected at all.
+ */
+export function detectLegsVisible(poseFrames: PoseFrame[]): boolean {
+  if (poseFrames.length === 0) return true; // default generous
+
+  const LEG_LANDMARKS = [25, 26, 27, 28]; // L_KNEE, R_KNEE, L_ANKLE, R_ANKLE in MediaPipe
+  const VISIBILITY_THRESHOLD = 0.5;
+  const FRAME_RATIO_THRESHOLD = 0.6;
+
+  const framesWithLegsVisible = poseFrames.filter(frame => {
+    if (!frame.landmarks) return false;
+    const visibleLegLandmarks = LEG_LANDMARKS.filter(idx => {
+      const lm = frame.landmarks[idx];
+      return lm && (lm.visibility ?? 0) > VISIBILITY_THRESHOLD;
+    });
+    return visibleLegLandmarks.length >= 3; // at least 3 of 4 leg points visible
+  });
+
+  return (framesWithLegsVisible.length / poseFrames.length) >= FRAME_RATIO_THRESHOLD;
+}
+```
+
+Then in the orchestrator:
+
+```typescript
+const legsVisible = detectLegsVisible(capturedPoseFrames);
+const geminiResult = await scoreWithGemini({
+  attemptBlob,
+  referenceVideoUrl,
+  chunkStartMs: chunk.fromMs,
+  chunkEndMs: chunk.toMs,
+  legsVisible,
+});
+```
+
+**Acceptance:** Running on a clip where the user has legs in frame, `detectLegsVisible` returns `true`. On a clip where the user is upper-body only, returns `false`. Mode B passes the right value to Gemini.
+
+### MODIFIED: `components/ResultsCard.tsx` (small change)
+
+When `legsVisible: false` was sent, the legs score in the response will be ~75 (per prompt guidance). Add a small subtle indicator on the LEGS component pill: a tooltip or "(upper body only)" subtext so the user understands why the leg score is what it is. Do NOT hide the pill — just contextualize.
+
+Pull the `legsVisible` info through the result object (add it to whatever shape comes back from the orchestrator). Optional polish, not blocking.
+
+**Acceptance:** When user films upper-body only, the LEGS pill on the results card shows a small "(upper body only)" annotation.
 
 ---
 
-## Working agreement
+## What's deliberately NOT changed
 
-- After each file group, pause and post a diff summary.
-- Flag any conflict with existing code before restructuring silently.
-- Mobile-first: verify callouts, holding screen, and results card at 390px.
-- If Gemini's structured output is reliably malformed, stop and flag — do not paper over with repairs.
-- If accent-beat timestamps aren't reliably available from the existing beat tracker, fall back to the every-800ms strategy and note it in the PR.
-
----
-
-## Acceptance summary (all must pass)
-
-- [ ] `/api/score-gemini` returns validated `GeminiScore` for real video pair via curl.
-- [ ] `scoreWithGemini` browser client returns success or tagged error, never throws.
-- [ ] **Live callouts fire during the dance on accent beats** with correct tier mapping.
-- [ ] Callout overlay animation feels snappy on mobile, doesn't overlap with skeleton overlay.
-- [ ] Mode B kicks off MediaPipe final + Gemini final in parallel after attempt.
-- [ ] Holding screen displays for minimum 3s with replay + dual-skeleton + rotating status.
-- [ ] Results card renders Gemini score as primary; MediaPipe shows as debug pill when `SHOW_BOTH_SCORES=true`.
-- [ ] Gemini failure (force by killing network mid-call) → results card shows MediaPipe score, no visible error.
-- [ ] Drill mode still works using Gemini's trouble_spots.
-- [ ] All existing 97 tests still pass.
-- [ ] Branch `gemini-scoring-with-callouts` pushed, no merge to main.
+- Live callouts (MediaPipe) — unchanged. They already use the chunk window correctly.
+- Holding screen — unchanged.
+- MediaPipe final fallback path — unchanged.
+- Drill mode routing — unchanged. Gemini's trouble_spot timestamps are still relative to the attempt video, the existing `drillUrlForGeminiSpot` adapter still works.
+- Schema — unchanged. We're not adding a `legsExcluded` field because the prompt already handles it via a generous default score.
 
 ---
 
-## After Claude Code finishes — your validation pass
+## Out of scope (do NOT do)
 
-Run 5 real attempts on the same dance:
+- Server-side video trimming with ffmpeg (try client-side first, only fall back if needed and flag it)
+- Auto-detecting other framing issues (zoomed in too far, off-center, etc.) — legs only for now
+- Changing the schema or component shape
+- Tuning callout thresholds — separate problem
+- Adding analytics on `legsVisible` — separate PR
 
-1. **Real sincere attempt.** Live callouts should fire mostly PERFECT/GREAT, occasional GROOVY peaks, rare ALMOST. Gemini score 65-85.
-2. **Standing still.** Live callouts should fire mostly ALMOST. Gemini `is_actually_dancing: false`, score below 40.
-3. **Random flailing.** Live callouts mixed ALMOST/GREAT (similarity is high for random fast motion). Gemini `is_actually_dancing: false`, score below 40 — this is the key Gemini advantage over MediaPipe.
-4. **Real attempt on a different dance.** Sanity check.
-5. **Deliberately off-beat real attempt.** Live callouts should drop tier (timing similarity drops). Gemini should call out timing in the insights.
+---
 
-If runs 1 and 3 produce wildly different Gemini scores (real high, flailing low) AND live callouts feel good on the sincere attempt, flip `SHOW_BOTH_SCORES=false` and merge.
+## Acceptance summary
 
-If anything looks off, paste the JSON outputs back and we tune the prompt or thresholds.
+- [ ] Reference video sent to Gemini is approximately 2.5s (chunk + 0.5s padding each side), confirmed by base64 length in logs (roughly 600KB–1.2MB raw depending on resolution).
+- [ ] Gemini's trouble spot timestamps fall within the attempt video duration — no more 13–15s timestamps for a 7s attempt.
+- [ ] When user films upper-body only, `detectLegsVisible` returns `false`, Gemini gets the upper-body-only prompt, and legs scores in the response are ≥70.
+- [ ] When user films full-body, `detectLegsVisible` returns `true`, Gemini scores legs normally.
+- [ ] Sincere attempt on chunk 1 scores ≥60 (validating the generosity calibration works).
+- [ ] Standing-still attempt still scores <40 (canary intact).
+- [ ] Random flailing still scores <40 (canary intact).
+- [ ] Diagnostic logs from previous round are preserved.
+- [ ] All existing tests pass.
+- [ ] Branch `gemini-windowing-fix` pushed locally, not merged.
+
+---
+
+## After Claude Code finishes — your validation
+
+Run three attempts in a row, terminal visible:
+
+1. **Sincere attempt on chunk 1, upper body only.** Look for legs score ≥70 in the Gemini response. Look for trouble spots that stay within your attempt's time range. Expect overall score 60–85.
+
+2. **Standing still for 7s.** Expect `is_actually_dancing: false`, overall <40. Canary must still work.
+
+3. **Random arm flailing for 7s.** Expect `is_actually_dancing: false`, overall <40. This is the test that Gemini still catches non-dances even with generosity calibration.
+
+Paste the three raw Gemini responses + base64 lengths back if anything looks off.
