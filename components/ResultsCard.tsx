@@ -50,17 +50,34 @@ interface ResultsCardProps {
 
 const SHOW_BOTH_SCORES = process.env.NEXT_PUBLIC_SHOW_BOTH_SCORES === 'true';
 
+// Headline + color brackets align with the prompt's score zones
+// (SPECK §generosity-rewrite §ResultsCard): 0-39 / 40-49 / 50-64 / 65-84 / 85+.
+// PASS_THRESHOLD (70) is the mastery gate and stays untouched — it gates
+// chunk unlocks, not headline copy.
+//
+// Strings are stored uppercase to match the spec literally; the markup also
+// applies `uppercase` via CSS so the rendered output is unaffected by the
+// literal case.
 function headlineCopy(score: number): string {
-  if (score >= 85) return 'Nailed it.';
-  if (score >= PASS_THRESHOLD) return 'You got it.';
-  if (score >= 50) return 'Getting there.';
-  return 'Keep practicing.';
+  if (score >= 85) return 'YOU GOT IT.';
+  if (score >= 65) return 'NICE WORK.';
+  if (score >= 50) return 'GETTING THERE.';
+  if (score >= 40) return 'JUST TRYING?';
+  return 'WAS THAT A DANCE?';
 }
 
+// Score color by zone — exact hex values per SPECK:
+//   85+   pink         #FF1F8E
+//   65-84 yellow-green #A3E635
+//   40-64 amber        #F59E0B
+//   0-39  red          #EF4444
+// Tailwind arbitrary values keep these hexes local to this file rather
+// than promoting them into the global palette tokens.
 function scoreColorClass(score: number): string {
-  if (score >= PASS_THRESHOLD) return 'text-accent-green';
-  if (score >= 50) return 'text-accent-amber';
-  return 'text-accent-red';
+  if (score >= 85) return 'text-[#FF1F8E]';
+  if (score >= 65) return 'text-[#A3E635]';
+  if (score >= 40) return 'text-[#F59E0B]';
+  return 'text-[#EF4444]';
 }
 
 function barColorClass(score: number): string {
@@ -442,13 +459,14 @@ function CompareTable({
 }
 
 function headlineCopyForTier(tier: GeminiScore['tier'], score: number): string {
-  // Gemini owns the tier; we only need to map it to a one-line headline
-  // that matches the existing Mode B voice.
-  if (tier === 'NOT_DANCING') return 'Was that a dance?';
-  if (tier === 'GROOVY') return 'Nailed it.';
-  if (tier === 'SOLID') return 'You got it.';
-  if (score >= 50) return 'Getting there.';
-  return 'Keep practicing.';
+  // Score is the source of truth for headline copy (matches the prompt's
+  // explicit score zones). Keep the tier param so callers can keep passing
+  // it — useful for telemetry — but use the score to map to copy so a
+  // Gemini answer with a divergent tier still gets a consistent headline.
+  // NOT_DANCING is special-cased to keep the "Was that a dance?" voice
+  // when Gemini sets the canary, even if the score lands on the 0-39 edge.
+  if (tier === 'NOT_DANCING' || score < 40) return 'WAS THAT A DANCE?';
+  return headlineCopy(score);
 }
 
 function formatSeconds(sec: number): string {
