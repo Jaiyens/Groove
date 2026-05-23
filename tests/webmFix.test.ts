@@ -50,7 +50,7 @@ describe('repairWebmDuration — graceful degradation', () => {
     assert.equal(result.blob.type, 'video/webm');
   });
 
-  it('reports inferredDurationSec=0 when ts-ebml could not infer duration', async () => {
+  it('reports inferredDurationSec=0 when the EBML scan could not find a cluster', async () => {
     const garbage = new Blob([new Uint8Array([1, 2, 3])], { type: 'video/webm' });
     const result = await repairWebmDuration(garbage);
     assert.equal(result.inferredDurationSec, 0);
