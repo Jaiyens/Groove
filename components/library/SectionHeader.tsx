@@ -8,7 +8,7 @@ export default function SectionHeader({ title, subtitle, rightSlot }: SectionHea
   return (
     <div className="mb-3 flex items-end justify-between">
       <div>
-        <h2 className="text-xl font-medium leading-none tracking-tight text-ink">{title}</h2>
+        <h2 className="text-xl font-medium leading-tight tracking-tight text-ink">{title}</h2>
         {subtitle && (
           <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
         )}
