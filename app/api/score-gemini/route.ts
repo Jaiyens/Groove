@@ -49,6 +49,11 @@ export async function POST(req: NextRequest) {
     attemptMimeType,
   } = body;
 
+  console.log('[gemini-score] referenceVideoBase64 length:', referenceVideoBase64?.length ?? 'MISSING');
+  console.log('[gemini-score] attemptVideoBase64 length:', attemptVideoBase64?.length ?? 'MISSING');
+  console.log('[gemini-score] referenceMimeType:', referenceMimeType);
+  console.log('[gemini-score] attemptMimeType:', attemptMimeType);
+
   if (!referenceVideoBase64 || !attemptVideoBase64) {
     return NextResponse.json(
       { error: 'Missing videos: need referenceVideoBase64 and attemptVideoBase64' },
@@ -95,6 +100,9 @@ export async function POST(req: NextRequest) {
         responseSchema: GeminiResponseJsonSchema as any,
       },
     });
+
+    console.log('[gemini-score] raw response text:', response.text);
+    console.log('[gemini-score] latencyMs:', Date.now() - startTime);
 
     const latencyMs = Date.now() - startTime;
     const text = response.text;
