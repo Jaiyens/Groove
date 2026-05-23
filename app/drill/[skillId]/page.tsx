@@ -199,7 +199,7 @@ export default function DrillPage({ params }: PageProps) {
 
   if (!graph) {
     return (
-      <main className="flex h-full items-center justify-center text-text-muted">
+      <main className="flex h-full items-center justify-center text-ink-muted">
         Loading…
       </main>
     );
