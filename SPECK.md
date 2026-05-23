@@ -1,409 +1,300 @@
-# SPECK — overnight rebuild of the Gemini scoring data layer
+# SPECK — overnight UI/UX audit + scoring debug surface
 
 ## Read this first
 
-You are working overnight. The user is asleep. **Aggressive mode: keep going, try alternatives, ship what works.** Do not stop and ask. If something fails, document the failure, then try something else. Only stop when (a) you have shipped everything in this spec and your spare-time pickups, or (b) you hit something that genuinely cannot be solved without the user.
+You are working overnight. The user is asleep. **Aggressive mode: keep going, try alternatives, ship what works.** Do not stop and ask. If something fails on one file, move to the next. Only stop when (a) you have shipped everything in this spec, or (b) you hit something that genuinely cannot be solved without the user.
 
-Branch off `gemini-timeout-and-webm-repair`. New branch: `overnight-data-rebuild`. One commit per file group. Do not push to main.
+Branch off `overnight-data-rebuild`. New branch: `overnight-polish-and-debug`. **One commit per fix, tagged by category.** Do not push to main.
 
-When you finish each group, paste a diff summary to the terminal so the user can read the trail when they wake up. End the run with a status report at `/docs/overnight-status.md` covering: what shipped, what got skipped and why, what needs human validation, what surprised you.
+When you finish each track, paste a diff summary to the terminal so the user can read the trail when they wake up. End the run with a status report at `/docs/overnight-polish-status.md`.
 
 ---
 
 ## The big picture — why this exists
 
-Five rounds of scoring work have shipped. The deterministic layer is calibrated. The prompt is recalibrated. The components are honest. The headline derives from components. The motion-onset detector works. The webm-repair library inferred the right duration.
+The scoring pipeline got five rounds of focused work and now needs a real-device validation pass in the morning before we know what to do next. That validation is blocked until the user wakes up. Meanwhile, the rest of the app has been getting incremental fixes without anyone doing a systematic pass. There's almost certainly low-hanging fruit: inconsistent button styles, missing loading states, accessibility issues, places where components were written twice instead of reused, dead code paths, mobile bugs.
 
-**But the data going to Gemini is still wrong.** Tonight's validation showed:
+Tonight's mission is two tracks:
 
-- The webm-repair library correctly inferred `inferredDurationSec: 6.712` from the raw attempt blob.
-- But `finalizeWebmDuration` then opens the same blob in a hidden `<video>` and the browser reports 1.378s after the MAX_SAFE_INTEGER seek trick.
-- Everything downstream uses 1.378s. The attempt gets trimmed to ~1s. Gemini sees one second of a person starting to move and correctly concludes "they didn't dance."
-- The result: `is_actually_dancing: false`, overall_score: 10, on what was a sincere 7-second attempt.
+1. **Polish track:** systematic UI/UX audit of every page and component. Document everything. Auto-fix the safe categories. Flag the unsafe ones for human review.
+2. **Debug track:** build a `/debug/scoring` page that lets the user replay attempts in the morning and inspect exactly what Gemini saw — without having to re-record. This is the validation tool that will accelerate every future scoring iteration.
 
-The data layer is the blocker. Until Gemini sees a real 7-second performance, every downstream calibration is fitting to noise.
-
-**Your mission:** fix the data layer once and for all, then ship the side-by-side composition architecture that makes Gemini's job easier, then unify the mirror state across all three surfaces, then diagnose the always-GROOVY callout bug. In that order. Each group's acceptance gates the next.
+The polish track is bigger. The debug track is the higher-leverage smaller piece. Do polish first because it has more independent fixes (more chances to ship something useful even if other parts fail). Do debug second.
 
 ---
 
 ## Hard rules
 
-1. The architecture stays at the boundaries: MediaPipe live callouts during the dance, Gemini post-attempt verdict, MediaPipe fallback on Gemini failure.
-2. All diagnostic logging from rounds 1–5 stays. Add to it. Do not remove `[gemini-client]`, `[gemini-score]`, `[deterministic]`, or `[callout-engine]` lines.
-3. The deterministic scoring layer (`displayedOverall` = mean of components, components nullable for upper-body-only, NOT_DANCING tier when canary fails) is validated. Do not modify the formula.
-4. The Gemini prompt is validated to the extent it can be without clean data. Do not rewrite the prompt body. Group 5 may add NEW clauses for the composite-video case, but the existing canary, floor-35, tier-capped trouble spots, and conditional-positive-insight clauses STAY.
-5. Mobile-first. Verify at 390px in DevTools.
-6. Every group must keep tests passing. If a group ships and tests fail, revert that group and write up what went wrong in the status doc.
+1. **One commit per fix.** Each commit message starts with a category tag: `polish(a11y):`, `polish(typography):`, `polish(spacing):`, `polish(mobile):`, `polish(dead-code):`, `polish(consistency):`, or `feat(debug-scoring):`. The user must be able to revert any single fix without losing others.
+2. **No layout changes.** No restructuring page hierarchy. No moving components between files. No changing component APIs. If a fix would require those, flag it in the audit doc instead of doing it.
+3. **No new dependencies.** Use what's installed. If a fix would need a new package, flag it.
+4. **All existing tests must pass after every commit.** Run `npm test` after each fix. If a fix breaks tests and you can't make them pass within ~3 attempts, revert that fix and document.
+5. **All diagnostic logging from rounds 1–5 stays.** Do not touch `[gemini-client]`, `[gemini-score]`, `[deterministic]`, `[callout-engine]` lines.
+6. **The scoring pipeline is locked.** Do not modify `lib/scoring/`, `app/api/score-gemini*`, `app/api/repair-webm`, or anything under `lib/scoring/gemini/`. The polish track does not touch these. The debug track only READS from them.
+7. **Mobile-first.** Verify Tailwind classes work at 390px. Touch targets ≥ 44px. No horizontal scroll.
+8. **The mirror unification from Group 2 of the prior run is canonical.** Anywhere a component references mirror state, it reads from `lib/preferences/mirror.ts`. Do not introduce new mirror logic.
 
 ---
 
-## Group 1 — Trust the webm-repair inferred duration
+## Track 1 — UI/UX audit + polish (the big track)
 
-**Why first:** until this lands, every other group is debugging on broken data. This is a one-file change with a one-file test update. Highest leverage of any task in this spec.
+### Phase 1.A — Audit pass (READ ONLY, write findings to disk)
 
-### The bug, restated for clarity
+Before touching any code, walk every file under `app/` and `components/`. For each file, look for issues in these categories. Write findings to `/docs/ui-audit.md` as you go. Categorize every finding.
 
-In `lib/scoring/gemini/client.ts`, `trimAttemptForOnset` currently does this:
+**Categories to look for:**
 
-1. Call `repairWebmDuration(blob)` — returns a `RepairWebmResult` with the blob and a log line showing `inferredDurationSec: 6.712` (correct).
-2. Call `finalizeWebmDuration(blob)` — opens a hidden `<video>` element, seeks to MAX_SAFE_INTEGER, reads `video.duration`. On the test device, this returns 1.378s (wrong, ~5s short).
-3. Use `finalizedDurationSec` (1.378s) as the authoritative duration for motion-onset scanning and trim window calculation.
-4. Result: attempt gets trimmed to ~1.35s. Gemini sees 1 second of video. Verdict: not dancing.
+**A11Y (accessibility):**
+- Missing `alt` text on images
+- Buttons with no accessible label (icon-only buttons without `aria-label`)
+- Form inputs without labels or `aria-label`
+- Color used as the only way to convey information
+- Focus states that are removed (`outline: none` without replacement)
+- Heading hierarchy broken (h1 → h3 with no h2)
+- Click handlers on non-button elements without `role="button"` and keyboard handlers
+- Modals/overlays without focus trap or escape-to-close
+- Live regions missing for dynamic content (toasts, score updates)
+- Color contrast issues — anything where text color and background color look close. Check `text-gray-400` on `bg-white`, `text-white` on light backgrounds, etc.
 
-The repair library already knows the right answer. The browser doesn't. **Use the library's answer.**
+**TYPOGRAPHY:**
+- Inconsistent font sizes for similar UI roles (one button uses `text-sm`, another uses `text-base`, both are "primary action buttons")
+- Inconsistent font weights for similar roles
+- Missing line-height on long text blocks
+- Letter-spacing inconsistencies
+- Mixed font families where one is intended
+- Display fonts (Bungee, etc) used in body text or vice versa
 
-### MODIFIED: `lib/scoring/gemini/webmFix.ts`
+**SPACING:**
+- Inconsistent padding/margin for similar containers (one card uses `p-4`, another uses `p-6`)
+- Magic numbers in spacing (`mt-[13px]` instead of Tailwind's scale)
+- Stacked elements without consistent gap (some use `space-y-4`, some use `mb-4` on each child)
+- Containers that touch viewport edges on mobile (no horizontal padding)
 
-The `RepairWebmResult` type must expose `inferredDurationSec` on the return value. Right now it's logged but may not be on the typed return. Make it public:
+**MOBILE:**
+- Touch targets smaller than 44px (interactive elements with small heights/widths)
+- Text that overflows on narrow viewports
+- Modals or fixed elements that overflow the viewport
+- Buttons positioned where thumbs can't reach (top of screen on long pages)
+- Forms where the keyboard would cover the input
+- Hover-only interactions with no tap equivalent
 
-```typescript
-export type RepairWebmResult = {
-  blob: Blob;
-  repaired: boolean;
-  bytesBefore: number;
-  bytesAfter: number;
-  inferredDurationSec: number | null;  // NEW or PROMOTED to public
-};
+**DEAD CODE:**
+- Imports that aren't used (after type-only refactors)
+- Components defined but never imported
+- Props passed but never used
+- State variables that are set but never read
+- Effects with no observable purpose
+- Commented-out code older than a few days
+
+**CONSISTENCY:**
+- Two components doing the same thing in different ways (two button styles, two card styles)
+- Colors used inline as hex when a Tailwind token exists
+- Tailwind arbitrary values where a token would work (`bg-[#FF1F8E]` instead of a named color)
+- One page using `<Link>` for navigation, another using `router.push()` for the same kind of nav
+- Inconsistent loading states (one page shows spinner, another shows skeleton, another shows nothing)
+- Inconsistent empty states
+- Inconsistent error states
+
+**INTERACTION:**
+- Buttons without visible disabled states
+- Forms that submit on Enter but don't show that affordance
+- Click areas smaller than the visible element (or vice versa)
+- Long actions without progress feedback
+- Destructive actions without confirmation
+
+For each finding, write:
+```
+### [CATEGORY] [file:line]
+What: <one-line description>
+Why it matters: <one-line user impact>
+Fix: <proposed fix, or "FLAG — needs human review">
+Safety: SAFE | FLAG
 ```
 
-If the field is already there, this group does nothing in this file. If not, surface it. The value comes from the existing EBML scan that reads the last Cluster Timecode and TimecodeScale.
+`SAFE` means: the fix changes appearance/behavior in a small, isolated, easily-revertible way and you're confident the result is better. `FLAG` means: the fix would change layout, change a component's contract, or has a judgment call you can't make alone.
 
-### MODIFIED: `lib/scoring/gemini/client.ts`
+Save the audit as `/docs/ui-audit.md`. Commit with message: `docs(ui-audit): catalog of UI/UX findings before polish pass`.
 
-Inside `trimAttemptForOnset`, replace the linear "repair then finalize" pipeline with a duration-source decision:
+### Phase 1.B — Auto-fix the SAFE findings
 
-```typescript
-const repairResult = await repairWebmDuration(attemptBlob);
-const inferred = repairResult.inferredDurationSec;
+Work through `/docs/ui-audit.md`. For every finding tagged `SAFE`:
 
-let authoritativeDurationSec: number;
-let durationSource: 'webm-repair-inferred' | 'browser-finalize';
-let finalizedDurationSec: number | null = null;
+1. Make the fix.
+2. Run `npm test`. If it fails and you can't fix within 3 attempts, revert and re-tag the finding `FLAG` in the audit doc.
+3. Commit with appropriate category tag.
 
-if (typeof inferred === 'number' && Number.isFinite(inferred) && inferred >= 0.5) {
-  authoritativeDurationSec = inferred;
-  durationSource = 'webm-repair-inferred';
-} else {
-  const finalized = await finalizeWebmDuration(repairResult.blob);
-  finalizedDurationSec = finalized.durationAfter;
-  authoritativeDurationSec = finalized.durationAfter;
-  durationSource = 'browser-finalize';
-}
+**Order matters.** Do a11y first (highest leverage, lowest risk), then dead-code (clears noise), then consistency (sets a baseline), then typography + spacing, then mobile, then interaction. This order means each later category benefits from earlier cleanup.
 
-console.log('[gemini-client] motion-onset trimAttempt: duration-source', {
-  source: durationSource,
-  durationSec: authoritativeDurationSec,
-  inferredDurationSec: inferred,
-  finalizedDurationSec,
-});
-```
+**Commit granularity:** group fixes by file when they're the same category. One commit can cover "polish(a11y): add aria-labels to icon buttons in components/library/*" if it's a single mechanical change across files. Do NOT combine categories into one commit.
 
-Everything downstream (motion-onset scanning, trim window math, scan-end calculation) uses `authoritativeDurationSec`.
+**Things to watch out for:**
 
-**Do NOT modify `trimReferenceClientSide`.** The reference path reads from an mp4 URL and `video.duration` works correctly there.
+- **Tailwind tokens:** if the project has a custom color palette in `tailwind.config.ts`, prefer the tokens. If you find hex values that match existing tokens, swap them. If they don't match, leave them and flag.
+- **Headers and titles:** if multiple pages set their own `<h1>`, they should look consistent. Don't centralize them — just make sure they use the same classes.
+- **Buttons:** if there's a `Button` component, audit whether all interactive elements use it. If not, flag — but don't bulk-replace.
+- **`<Link>` vs `router.push`:** if a button-styled `<a>` does navigation, prefer `<Link>`. Inverse — don't convert programmatic navigation just for consistency.
+- **Loading/empty/error states:** if a page is missing one, add the simplest version (a centered "Loading..." or "Nothing here yet"). Match the visual style of other states in the app. Flag if there's no existing pattern.
 
-### NEW: `tests/durationSource.test.ts`
+### Phase 1.C — Flag report
 
-Three test cases:
-1. `inferredDurationSec` is 6.7 → uses `webm-repair-inferred`, downstream sees 6.7.
-2. `inferredDurationSec` is null → falls back to `finalizeWebmDuration`, downstream sees whatever the browser produced (mock returning 7.0).
-3. `inferredDurationSec` is 0.2 (implausibly short) → falls back to `finalizeWebmDuration`. Implausibly short means < 0.5s.
+After auto-fixes are done, re-read `/docs/ui-audit.md`. Anything still tagged `FLAG` stays in the doc with full context. Add a final section at the top of the audit doc: `## Flagged for human review`, listing each flagged item with a one-line reason it was deferred.
 
-Use mocks. Don't try to construct real webm files in tests.
-
-### Acceptance
-
-- All existing tests still pass.
-- The 3 new tests pass.
-- After this lands, a sincere attempt should show in the terminal:
-  - `[gemini-client] motion-onset trimAttempt: duration-source { source: 'webm-repair-inferred', durationSec: ~6.7 }`
-  - `[gemini-client] motion-onset trimAttempt: scanning { durationSec: ~6.7 }`
-  - `[gemini-client] motion-onset trimAttempt: done { blobBytes: 1.5MB–2MB range }`
-
-Commit message: `fix(duration-source): trust webm-repair inferred duration over browser seek`
+Commit: `docs(ui-audit): final report with flagged items for human review`.
 
 ---
 
-## Group 2 — Mirror unification across all three surfaces
+## Track 2 — Scoring debug surface
 
-**Why second:** mirror state has to be coherent before composite-video composition (Group 4) bakes mirror choices into the rendered output.
+This is the higher-leverage smaller track. Build a `/debug/scoring` page that lets the user replay past attempts and inspect exactly what Gemini saw, without re-recording.
 
-### The bug
+### Why
 
-Three surfaces render the reference video. They currently have two different mirror states:
+Every scoring iteration so far has required the user to dance in front of a camera, then paste console logs back. That's a 5–10 minute loop per attempt. With this debug surface, the user can record once, save the artifacts, and replay-validate any code change against the same artifacts.
 
-| Surface | Mirror state | Status |
-|---|---|---|
-| Mode A REF panel | `transform: scaleX(-1)` hardcoded | Mirrored ✓ |
-| Holding-screen REF panel | No transform | NOT mirrored ✗ |
-| Gemini reference input | Mirrored via Round 3's `trimReferenceClientSide` flip | Mirrored ✓ |
+It's also the foundation for systematic prompt tuning: you can load 5 saved attempts (sincere, flailing, standing still, upper-body-only, partial-frame) and run them through the current code path to see how it scores each one. That's the eval harness Gemini-grading needs to mature.
 
-### NEW: `lib/preferences/mirror.ts`
+### Phase 2.A — Capture infrastructure
 
-```typescript
-const KEY = 'groov_mirror_enabled';
-const EVENT = 'groov:mirror-changed';
+When a real attempt happens, save the artifacts to localStorage (or IndexedDB if size demands) under a key like `groov_debug_attempt_<timestamp>`. Artifacts to save:
 
-export function getMirrorEnabled(): boolean {
-  if (typeof localStorage === 'undefined') return true;
-  const v = localStorage.getItem(KEY);
-  return v === null ? true : v === 'true';
-}
+- The raw attempt blob (base64 or as a Blob URL — investigate which works better with the size constraints)
+- The reference video URL
+- The chunk start/end timestamps
+- The motion-onset values (ref + attempt)
+- The mirror state
+- The legs visible flag
+- The full request body sent to `/api/score-gemini` (or `/api/score-gemini-composite`)
+- The full response from the API including `latencyMs`, `[gemini-score]` block, raw Gemini response, deterministic-layer output
 
-export function setMirrorEnabled(enabled: boolean): void {
-  if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(KEY, String(enabled));
-  window.dispatchEvent(new CustomEvent(EVENT, { detail: enabled }));
-}
-
-export function onMirrorChanged(handler: (enabled: boolean) => void): () => void {
-  const listener = (e: Event) => handler((e as CustomEvent).detail);
-  window.addEventListener(EVENT, listener);
-  return () => window.removeEventListener(EVENT, listener);
-}
-```
-
-### MODIFIED: Mode A REF panel
-
-Find with `grep -r "scaleX(-1)" app/dance components/`. Replace hardcoded transform with state-driven:
-
-```tsx
-const [mirror, setMirror] = useState(getMirrorEnabled());
-useEffect(() => onMirrorChanged(setMirror), []);
-<video style={{ transform: mirror ? 'scaleX(-1)' : 'none' }} />
-```
-
-Skeleton overlay must apply the same transform from the same source.
-
-### MODIFIED: Holding-screen REF panel
-
-Likely `components/scoring/SideBySideHoldingScreen.tsx`. Apply mirror to REF panel only. **Do not add a second flip to the attempt side** — the front-camera already mirrors it at the hardware level.
-
-### MODIFIED: `lib/scoring/gemini/client.ts`
-
-`trimReferenceClientSide` currently hardcodes `ctx.scale(-1, 1)`. Change to read `getMirrorEnabled()` at call time. Update `referenceMirrored` in the API payload to reflect actual state.
-
-### MODIFIED: Mode A controls
-
-If a mirror toggle exists, migrate it to `setMirrorEnabled()`. If not, add one with a `FlipHorizontal` icon from lucide-react. Tooltip: "Mirror reference (recommended)."
-
-### Acceptance
-
-- Toggling in Mode A flips Mode A REF panel immediately.
-- Holding screen REF panel reflects the same state.
-- Gemini composite reflects the same state.
-- Default ON. Persists across reloads.
-- All existing tests pass. Add one test for `getMirrorEnabled` defaulting to true.
-
-Commit message: `feat(mirror): unify mirror state across mode A, holding screen, gemini input`
-
----
-
-## Group 3 — Server-side webm repair fallback
-
-**Why third:** Group 1 handles the case where `fix-webm-duration` can infer a duration. We need a server-side fallback for when it can't.
-
-### Architecture
-
-New endpoint: `POST /api/repair-webm`. Accepts base64 webm, returns re-encoded webm with fixed duration via ffmpeg.wasm. Invoked from client ONLY when `repairWebmDuration` returns null AND `finalizeWebmDuration` also fails.
-
-### NEW: `app/api/repair-webm/route.ts`
-
-Use `@ffmpeg/ffmpeg` (ffmpeg.wasm). Install `@ffmpeg/ffmpeg` and `@ffmpeg/util` if not present.
+### NEW: `lib/debug/attemptStore.ts`
 
 ```typescript
-import { NextRequest, NextResponse } from 'next/server';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
-
-export const runtime = 'nodejs';
-export const maxDuration = 30;
-
-let ffInstance: FFmpeg | null = null;
-
-async function getFFmpeg() {
-  if (ffInstance) return ffInstance;
-  const ff = new FFmpeg();
-  await ff.load();
-  ffInstance = ff;
-  return ff;
-}
-
-export async function POST(req: NextRequest) {
-  const { webmBase64 } = await req.json();
-  if (!webmBase64) return NextResponse.json({ error: 'missing webmBase64' }, { status: 400 });
-
-  try {
-    const ff = await getFFmpeg();
-    await ff.writeFile('in.webm', await fetchFile(Buffer.from(webmBase64, 'base64')));
-    await ff.exec(['-i', 'in.webm', '-c:v', 'copy', '-c:a', 'copy', '-fflags', '+genpts', 'out.webm']);
-    const out = await ff.readFile('out.webm');
-    const buf = Buffer.from(out as Uint8Array);
-    return NextResponse.json({
-      webmBase64: buf.toString('base64'),
-      bytesBefore: Buffer.from(webmBase64, 'base64').length,
-      bytesAfter: buf.length,
-    });
-  } catch (err) {
-    console.error('[repair-webm] failed', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
-  }
-}
-```
-
-If ffmpeg.wasm install fails or won't run, try `child_process.spawn('ffmpeg', ...)` with a system ffmpeg. Document what worked in the status report.
-
-### MODIFIED: `lib/scoring/gemini/client.ts`
-
-After Group 1's duration-source decision, if `durationSource === 'browser-finalize'` AND the result is still implausible (< 0.5s, NaN, > 60s), invoke server-side repair as last-resort fallback. Add `'server-repair'` as third value of `durationSource`.
-
-### Acceptance
-
-- Endpoint exists and returns 200 on valid webm.
-- Returns 400/500 with clear errors on bad input.
-- Client fallback fires only when both prior paths fail.
-- New test: `tests/repairWebmRoute.test.ts` with mocked happy path.
-
-Commit message: `feat(repair-webm): server-side ffmpeg.wasm fallback for broken webm duration`
-
----
-
-## Group 4 — Side-by-side composite video
-
-**Why fourth:** depends on Groups 1, 2, 3 landing.
-
-### The argument
-
-Today Gemini gets two separate videos and has to mentally align them. Composite approach: render a single video with REFERENCE on left half, ATTEMPT on right half, audio-synced to reference. Gemini does visual comparison instead of temporal inference. Halves the API payload.
-
-### NEW: `lib/scoring/gemini/composite.ts`
-
-```typescript
-export type CompositeResult =
-  | { kind: 'success'; blob: Blob; mimeType: string; durationSec: number }
-  | { kind: 'failure'; reason: string };
-
-export async function renderSideBySideVideo(args: {
+export type SavedAttempt = {
+  id: string;            // timestamp-based
+  savedAt: number;
+  danceId: string;
+  chunkIndex: number;
   referenceUrl: string;
-  attemptBlob: Blob;
+  attemptBlobBase64: string;    // see size note below
+  attemptMimeType: string;
+  chunkStartMs: number;
+  chunkEndMs: number;
+  motionOnsetRefSec: number | null;
+  motionOnsetAttemptSec: number | null;
   mirror: boolean;
-  motionOnsetRefSec: number;
-  motionOnsetAttemptSec: number;
-  chunkDurationSec: number;
-}): Promise<CompositeResult>;
+  legsVisible: boolean;
+  requestPayload: unknown;       // the body of the POST to /api/score-gemini[-composite]
+  responseRaw: unknown;          // the Gemini JSON before deterministic-layer transformation
+  responseDeterministic: unknown; // what ResultsCard rendered
+  latencyMs: number;
+  durationSource: 'webm-repair-inferred' | 'browser-finalize' | 'server-repair' | null;
+  authoritativeDurationSec: number;
+  notes?: string;                // user-editable, written by the debug page
+};
+
+export async function saveAttempt(attempt: Omit<SavedAttempt, 'id' | 'savedAt'>): Promise<string>;
+export async function listAttempts(): Promise<SavedAttempt[]>;
+export async function getAttempt(id: string): Promise<SavedAttempt | null>;
+export async function deleteAttempt(id: string): Promise<void>;
+export async function updateNotes(id: string, notes: string): Promise<void>;
 ```
 
-Algorithm:
-1. Open both videos as hidden `<video>` elements. `playsInline`, attempt `muted`, reference `crossOrigin: anonymous`.
-2. Verify both durations valid (not NaN, not 0, not > 60s). Else return failure.
-3. Seek both to motion-onset starts. Wait for `seeked` events.
-4. Canvas 1280×720. Reference draws to left half (640×720), attempt to right half. Letterbox to preserve aspect ratio.
-5. Build output MediaStream: canvas video track + reference audio track.
-6. Apply mirror to reference draw if `mirror === true`.
-7. MediaRecorder with `video/webm;codecs=vp9`.
-8. Play both. Each animation frame, draw both into halves. Stop when `chunkDurationSec` elapsed.
-9. Return blob.
+**Storage decision:** localStorage caps at ~5–10MB per origin. A 7s webm at 1.5MB base64-encodes to ~2MB. So localStorage holds ~3 attempts max before throwing. Use **IndexedDB** via a tiny wrapper. Don't pull in a library — write a 50-line wrapper using the native API. Schema: one object store `attempts`, keyPath `id`.
 
-10-second internal timeout. Heavy `[composite]` logging. Never throw to caller — failure degrades to two-video.
+If IndexedDB write fails (private browsing, disk quota), fall back to localStorage and warn in console. If both fail, return an error string from `saveAttempt`.
 
 ### MODIFIED: `lib/scoring/gemini/client.ts`
 
-```typescript
-const composite = await renderSideBySideVideo({
-  referenceUrl,
-  attemptBlob: trimmedAttempt.blob,
-  mirror: getMirrorEnabled(),
-  motionOnsetRefSec: trimmedReference.motionOnsetSec ?? 0,
-  motionOnsetAttemptSec: trimmedAttempt.motionOnsetSec ?? 0,
-  chunkDurationSec: Math.min(7, attemptDurationSec),
-});
+After `scoreWithGemini` returns (whether success or fallback), call `saveAttempt(...)` with all the inputs and outputs collected during the call. **Do not block the user-facing scoring on this save** — fire and forget, wrapped in a try/catch that logs but doesn't throw. Tag the log line `[debug-attempt] saved` or `[debug-attempt] save failed`.
 
-if (composite.kind === 'success') {
-  return await sendCompositeToGemini(composite.blob, /* metadata */);
-} else {
-  console.log('[gemini-client] composite failed, falling back to two-video', { reason: composite.reason });
-  return await sendTwoVideoToGemini(trimmedReference, trimmedAttempt, /* metadata */);
-}
-```
+Add a toggle: only save when `localStorage.getItem('groov_debug_capture') === 'true'`. Default OFF. The debug page provides a toggle UI to enable.
 
-### NEW: `app/api/score-gemini-composite/route.ts`
+### Phase 2.B — The debug page
 
-New endpoint for composite case. Same Zod schema. Different prompt. Reuses retry logic, failure classification, logging from `/api/score-gemini`.
+### NEW: `app/debug/scoring/page.tsx`
 
-### MODIFIED: `lib/scoring/gemini/prompt.ts`
+A simple client-rendered page. No auth (this is a dev tool). Layout:
 
-Add `buildCompositePrompt(args)`. Composite-specific framing:
+**Top bar:**
+- Title: "Scoring Debug"
+- Toggle: "Capture attempts" (writes to `localStorage.groov_debug_capture`)
+- Button: "Clear all" (with confirm)
+- Button: "Export all" (downloads a JSON file of all saved attempts, blobs as base64)
+- Button: "Import" (file picker, accepts the JSON from Export)
 
-```
-You are watching a single video that shows two performances side by side. The LEFT half shows the choreography reference. The RIGHT half shows the user's attempt. Both performances start at the same moment — the first beat of the choreography. You do not need to align them in time; alignment is built into the video.
+**Left column — Attempts list:**
+- List of saved attempts, newest first.
+- Each row shows: timestamp, dance ID + chunk index, displayed score, tier badge, latency, durationSource tag.
+- Click to select. Selected row highlighted.
 
-Compare the right half to the left half. Grade the user's attempt based on how closely the right half matches the left half throughout the video.
+**Right column — Detail panel for selected attempt:**
 
-Mirror state: {{mirror state}}. If mirror is enabled, the LEFT half (reference) has been horizontally flipped to match the user's selfie-camera orientation on the RIGHT half. Left and right body parts in both halves correspond directly.
-```
+Five tabs:
 
-Then existing canary, floor-35, tier-cap, conditional-positive-insight, DO-NOT-INCLUDE for hand details / execution sharpness, DEFAULTING ON UNCERTAINTY — all preserved, adapted to composite framing.
+1. **Video** — render the attempt blob as a `<video controls>`. Below it, a "Reference" video that loads the referenceUrl and seeks to chunkStartMs. Two players, side by side on desktop, stacked on mobile.
 
-### Acceptance
+2. **Inputs** — pretty-printed JSON of: chunk timestamps, motion-onset values, mirror, legsVisible, durationSource, authoritativeDurationSec.
 
-- `renderSideBySideVideo` returns success on happy-path mock, failure (no throw) on edge cases.
-- `/api/score-gemini-composite` returns valid `GeminiScore`.
-- Client falls back to two-video on failure.
-- `tests/composite.test.ts` with 3+ cases.
-- `tests/compositePrompt.test.ts` verifying new framing + preserved invariants.
-- All existing tests pass.
+3. **Request** — pretty-printed JSON of the request payload that went to the API (with the video base64 truncated to `<base64: X.X MB>` placeholders so the panel is readable).
 
-Commit message: `feat(composite): side-by-side video composition + new prompt branch`
+4. **Response** — three sub-sections:
+   - **Raw Gemini JSON** — the `responseRaw` object, pretty-printed.
+   - **Deterministic layer** — the `responseDeterministic` object showing displayedOverall, components, tier, trouble spots after the formula.
+   - **Latency** — `latencyMs`.
 
----
+5. **Notes** — a textarea bound to `updateNotes()`. User can write observations ("this attempt was sincere but Gemini scored it 10 — duration was wrong"). Autosaves on blur.
 
-## Group 5 — Spare-time pickup: callout-always-GROOVY diagnosis
+**Re-run button (top of detail panel):**
+- "Re-score with current code" — sends the saved request payload to the API again, displays the new response in a fourth tab "Re-score result" with a diff against the original response. This is the eval-harness primitive: change the prompt, re-score every saved attempt, see what moved.
 
-**Runs only if Groups 1–4 done and tests pass.**
+### Implementation notes
 
-The `[callout-engine]` 4-layer logging should produce mixed-tier output. Tonight's log showed mostly GROOVY/PERFECT with `windowMax` in 0.95–0.999. Question: is the similarity stream saturated or are thresholds wrong?
+- This is a single page. Don't over-architect. Inline most components.
+- Use only existing dependencies. If you need a JSON viewer, render with `<pre>{JSON.stringify(obj, null, 2)}</pre>`. If you need a diff, do a simple key-by-key comparison and highlight changed keys.
+- The "Re-score" button calls the same API endpoints the production flow uses. The point is to test the actual code path, not to mock anything.
+- The video players should support seek and looping. Use the native `<video controls>` for simplicity.
+- Mobile: the page is dev-only, optimize for desktop. But don't break on mobile — if width < 768px, stack the panels.
 
-You can't run the app overnight. Audit the logic.
+### Phase 2.C — Eval harness primitive
 
-### MODIFIED: `lib/scoring/callouts/calloutEngine.ts`
+### NEW: `app/debug/scoring/eval/page.tsx`
 
-Look at how `windowMax` is computed. Check:
+A second debug page: select multiple saved attempts (checkboxes), click "Re-score all," watch a progress bar, get a table of results showing per-attempt: old score, new score, delta, tier change.
 
-1. Per-frame similarity normalized to bias high? `1 - distance` with small distances saturates at 1.0.
-2. Window taking max of wide window, picking outliers?
-3. Tier thresholds (`>= 0.95 → GROOVY`) calibrated to actual range?
+This is the foundation for systematic scoring iteration. The user runs 5–10 sincere attempts once, saves them, then for every prompt change can re-score the whole set in 60 seconds and see what moved.
 
-Write findings to `/docs/callout-tier-diagnosis-overnight.md`. Three possible diagnoses:
+Same constraint: simple, inline, no new deps. The progress bar can be `<progress max={total} value={completed} />`.
 
-- **(A) Similarity saturated.** Investigate `lib/scoring/mediapipe/perFrame.ts` or `lib/scoring/poseSimilarity.ts`.
-- **(B) Window too generous.** Tighten to ±150ms, use median.
-- **(C) Thresholds too low.** Bump GROOVY to 0.97, PERFECT to 0.92, GREAT to 0.85.
+### Acceptance for Track 2
 
-**Do NOT change thresholds without writing diagnosis first.** Three rounds of guessing failed. Diagnosis is the deliverable; the fix is next-day's spec.
+- Capture toggle defaults to OFF. Turning it on causes the next attempt to be saved.
+- `/debug/scoring` page renders without errors. Lists saved attempts. Clicking one shows the detail tabs.
+- Re-score works against the live API.
+- Eval page processes multiple attempts and produces a results table.
+- All existing tests still pass.
+- Two new test files: `tests/attemptStore.test.ts` (the IndexedDB wrapper) and `tests/debugScoringPage.test.tsx` (basic render test — list + detail toggle).
 
-If you can confidently identify the cause from code alone, write the fix as a separate commit tagged `experimental(callout-tier):` so it can be reverted without losing diagnosis.
-
-### Acceptance
-
-- `/docs/callout-tier-diagnosis-overnight.md` identifies one of (A), (B), (C), or explains why none apply.
-- Any fix is in its own `experimental` commit.
-
-Commit message: `docs(callout-tier): overnight diagnosis of always-GROOVY behavior`
+Commit messages: `feat(debug-scoring): attempt capture store`, `feat(debug-scoring): debug page with re-score`, `feat(debug-scoring): eval harness page`.
 
 ---
 
 ## End-of-run report
 
-Write `/docs/overnight-status.md`:
+Write `/docs/overnight-polish-status.md`:
 
-1. **Shipped:** every group landed, with commit hash + one-line summary.
-2. **Skipped:** every group that didn't land, with why.
-3. **Surprises:** anything different from spec.
-4. **Needs human validation:** every acceptance requiring live camera + Gemini. Group 1 needs sincere attempt to confirm `durationSec: ~6.7`. Group 2 needs visual check of three surfaces. Group 4 needs sincere attempt to see if composite improves accuracy.
-5. **What I'd do next:** honest opinion.
+1. **Polish track summary:**
+   - Total findings in audit: X
+   - SAFE fixes shipped: X (broken down by category)
+   - FLAG items deferred: X (top 5 highlighted with reasons)
+   - Tests pass: yes/no
+2. **Debug track summary:**
+   - Files created
+   - Capture toggle status
+   - Re-score path verified against which endpoint
+3. **Surprises:** anything different from this spec.
+4. **What I'd do next:** honest opinion.
 
-Commit message: `docs(overnight): status report`
+Commit: `docs(overnight): polish + debug status report`.
 
 ---
 
@@ -411,14 +302,16 @@ Commit message: `docs(overnight): status report`
 
 You are working aggressively. That means:
 
-- If `fix-webm-duration` has a bug preventing Group 1: try monkey-patching, try inline EBML scan, try Group 3's server-side route as primary instead of fallback. Document.
-- If `@ffmpeg/ffmpeg` won't install or run: try `child_process.spawn`. If ffmpeg isn't on Vercel runtime: try a hosted service. Document.
-- If `renderSideBySideVideo` produces corrupted video: try different codec, dimensions, timeslice. Document.
-- If you genuinely can't progress on a group: skip to next. Don't get stuck.
-- If you finish everything: spare time → Group 5 first, then write tests for any gap, then `/docs/known-issues.md` rolling up everything currently fragile.
+- If a SAFE fix turns out to break something subtle when you run tests, revert it, re-tag FLAG, and move on. Don't get stuck on one fix.
+- If the audit pass surfaces 200+ findings, that's fine — but don't try to fix all 200 tonight. Fix the highest-leverage ones (a11y, dead code, consistency) and document the rest. Quality over volume.
+- If the debug page hits a structural problem (e.g., IndexedDB won't write base64 strings over a certain size), try a different approach (Blob URLs, chunked storage, smaller capture window). Document what you tried.
+- If you finish both tracks with time to spare:
+  1. Add JSDoc comments to `lib/scoring/gemini/` exported functions (READ-ONLY otherwise — don't change scoring logic).
+  2. Write `/docs/known-issues.md` rolling up everything currently fragile in the app.
+  3. Audit the `tailwind.config.ts` for unused color tokens, duplicated values, opportunities for new tokens that would reduce arbitrary values you found in the polish audit.
 
-The user values intellectual honesty. If something didn't work and you can't fix it, say so plainly. Don't invent a story about why it's fine.
+The user values intellectual honesty. If a fix didn't work and you can't make it work, say so plainly in the status report. Don't invent reasons it's actually fine.
 
-Branch state when you stop: commits on `overnight-data-rebuild`, working tree clean, tests passing on whichever groups landed. Do not push to main.
+Branch state when you stop: commits on `overnight-polish-and-debug`, working tree clean, all tests passing, nothing pushed to main.
 
 Good luck.
