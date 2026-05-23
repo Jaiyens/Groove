@@ -21,12 +21,18 @@ export function buildGeminiPrompt(args: {
   referenceChunkStartSec: number;
   referenceChunkEndSec: number;
   referenceMirrored?: boolean;
+  // SPECK round-3 §Group-2: when true, both videos arrive with their pre-roll
+  // physically trimmed to the first frame of dance movement. The prompt
+  // switches from "ignore the padding" (which Gemini was ignoring) to
+  // "there is no padding, grade from the first frame."
+  videosMotionOnsetTrimmed?: boolean;
 }): string {
   const {
     legsVisible,
     referenceChunkStartSec,
     referenceChunkEndSec,
     referenceMirrored = true,
+    videosMotionOnsetTrimmed = true,
   } = args;
 
   // SPECK round-3 §Group-1: when the client trim mirrors the reference, the
@@ -36,13 +42,17 @@ export function buildGeminiPrompt(args: {
     ? 'The REFERENCE video has been horizontally mirrored so that left/right correspond directly to the ATTEMPT video, which is captured from a front-facing camera. Grade left and right literally — when the reference\'s left arm goes up, the attempt\'s left arm should go up.'
     : 'The ATTEMPT is captured from a front-facing camera and is mirrored. The REFERENCE is in its source orientation (un-mirrored fallback). Grade as a mirror copy — when the reference dancer\'s left arm goes up, the attempt\'s right arm going up is CORRECT.';
 
-  return `You are a supportive dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance. Your job is to help the student improve, not to nitpick. Lead with what worked, then constructively note what to improve.
+  // SPECK round-3 §Group-2 prompt swap: motion-onset trim replaces the old
+  // padding-ignore language. The fallback branch (re-encode unavailable, or
+  // onset detection found nothing) keeps the legacy CHUNK CONTEXT + WHAT
+  // COUNTS clauses so the model still has something to anchor on.
+  const framingClause = videosMotionOnsetTrimmed
+    ? `CHUNK CONTEXT
+Both videos start exactly at the moment of first dance movement. There is no pre-roll padding. All trouble spots must reference timestamps within the dance, not before it. The choreography in the reference runs to ${referenceChunkEndSec.toFixed(2)}s — DO NOT report trouble spots past that point.
 
-VIDEOS
-You will receive two videos in order: REFERENCE, then ATTEMPT.
-${orientationClause}
-
-CHUNK CONTEXT
+WHAT COUNTS AS THE DANCE
+The dance is the deliberate, repeatable choreography — the hits, the arm patterns, the steps, the body movements that are clearly choreographed. Personal style and minor stylistic variation are not errors.`
+    : `CHUNK CONTEXT
 The reference is a short chunk of a longer dance, not a complete routine. The actual choreography to grade against is between ${referenceChunkStartSec.toFixed(2)}s and ${referenceChunkEndSec.toFixed(2)}s of the reference video. Anything before or after is padding — the dancer settling in or recovering. IGNORE THE PADDING.
 
 The attempt video may be longer than the choreography window — the user has natural lead-in (preparing to dance) and lead-out (finishing, walking back to camera). IGNORE THOSE TOO. Score only the user's attempt to perform the choreography in the reference window. DO NOT report trouble spots past the end of the reference choreography.
@@ -56,7 +66,15 @@ IGNORE incidental motion in the reference:
 - Drifting toward or away from the camera between moves
 - Settling into position or relaxing after the final hit
 - Natural body micro-movements between choreographed counts
-These are setup and recovery, NOT choreography. Do NOT penalize the user for not replicating them.
+These are setup and recovery, NOT choreography. Do NOT penalize the user for not replicating them.`;
+
+  return `You are a supportive dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance. Your job is to help the student improve, not to nitpick. Lead with what worked, then constructively note what to improve.
+
+VIDEOS
+You will receive two videos in order: REFERENCE, then ATTEMPT.
+${orientationClause}
+
+${framingClause}
 
 PERSONAL STYLE IS NOT AN ERROR
 The user may execute the choreography with their own angle, energy, or flourish. If the core move is recognizable, that is SUCCESS. Score down only for missing or incorrect choreography — not for stylistic variation. Smaller motion executed correctly beats bigger motion executed incorrectly.

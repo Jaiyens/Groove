@@ -14,6 +14,16 @@
 // Fallback path (un-trimmed full reference) sends `referenceMirrored: false`
 // — that path is rare and known-degraded.
 //
+// Motion-onset trim (SPECK round-3 §Group-2): the chunk window can include
+// the source dancer's "walking back to camera" pre-roll. Telling the model
+// "ignore those seconds" while showing them anyway did not work. Instead,
+// we scan the leading region of each video for the first frame whose pixel
+// diff exceeds 3× the rolling baseline, then start the recorded slice at
+// that frame. The same scan runs on the attempt (no flip) so both videos
+// land in Gemini's payload with t=0 == first dance movement. Both onset
+// offsets are forwarded as `referenceMotionOnsetSec` / `attemptMotionOnsetSec`
+// for diagnostic logging.
+//
 // Timeout: 30s (SPECK §Hard rule 7) — past that, callers should treat it
 // as a Gemini failure and fall back to MediaPipe silently. We DON'T retry
 // — Gemini latency is the same order of magnitude as the retry budget, and
@@ -27,6 +37,7 @@
 // more for Gemini to chew on) but the user still gets a valid score.
 
 import { GeminiScoreSchema, type GeminiScore } from './types';
+import { detectMotionOnsetIndex } from './motionOnset';
 
 export type GeminiResult =
   | { kind: 'success'; score: GeminiScore; latencyMs: number }
@@ -43,6 +54,18 @@ export type ScoreWithGeminiArgs = {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const REFERENCE_PADDING_MS = 500;
+// How far past the leading edge of the trim window we scan looking for the
+// first frame of dance movement. 3s is the practical upper bound for a
+// "dancer walks back to camera" pre-roll; beyond that the chunker is broken
+// upstream and motion-onset can't paper over it.
+const MOTION_ONSET_SCAN_LIMIT_MS = 3_000;
+// Sampling interval for the motion-onset scan. ~12 fps is dense enough to
+// catch a first-beat hit without making the seek chain take forever on
+// mobile Safari (seek-then-paint is ~30-50ms per step).
+const MOTION_ONSET_SAMPLE_INTERVAL_MS = 80;
+// Tiny image used for frame-diff. 64×64 is the spec value; trades resolution
+// for a cheap O(4096) per-frame math op.
+const MOTION_ONSET_TILE = 64;
 
 async function blobToBase64(blob: Blob): Promise<string> {
   // FileReader gives us a data URL; strip the `data:...;base64,` prefix.
@@ -68,44 +91,42 @@ async function fetchReferenceAsBlob(url: string, signal?: AbortSignal): Promise<
   return res.blob();
 }
 
-interface TrimResult {
-  blob: Blob;
-  mimeType: string;
-  // Where (in seconds) the actual choreography begins inside the trimmed
-  // clip. Equals REFERENCE_PADDING_MS/1000 when the chunk has room for
-  // full padding on the leading side; less when the chunk starts near 0.
-  referenceChunkStartSec: number;
-  referenceChunkEndSec: number;
-}
-
-// Client-side reference trimming via hidden <video> + canvas +
-// MediaRecorder. Plays the reference in realtime from the padded
-// start to the padded end while a canvas captures frames; the
-// resulting Blob is the encoded trimmed clip. Throws on any failure
-// so callers can fall back to the un-trimmed path.
-async function trimReferenceClientSide(
-  url: string,
-  chunkStartMs: number,
-  chunkEndMs: number,
-): Promise<TrimResult> {
-  if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
-    throw new Error('trim: DOM or MediaRecorder unavailable');
+// Load a video URL into a hidden DOM element and wait for metadata. Caller
+// must call the returned `dispose` when done so the element is removed and
+// the source revoked. Throws if DOM is unavailable (SSR or a stripped JSDOM).
+async function openHiddenVideo(url: string): Promise<{ video: HTMLVideoElement; dispose: () => void }> {
+  if (typeof document === 'undefined') {
+    throw new Error('video: DOM unavailable');
   }
-
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous';
   video.muted = true;
   video.playsInline = true;
   video.preload = 'auto';
-  // Off-screen but in the DOM so iOS doesn't refuse to play it.
   video.style.position = 'fixed';
   video.style.left = '-10000px';
   video.style.top = '-10000px';
   video.style.width = '1px';
   video.style.height = '1px';
   document.body.appendChild(video);
+  video.src = url;
 
-  const cleanup = () => {
+  await new Promise<void>((resolve, reject) => {
+    const onLoaded = () => {
+      video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('error', onError);
+      reject(new Error('video failed to load metadata'));
+    };
+    video.addEventListener('loadedmetadata', onLoaded);
+    video.addEventListener('error', onError);
+  });
+
+  const dispose = () => {
     try {
       video.pause();
       video.removeAttribute('src');
@@ -116,24 +137,213 @@ async function trimReferenceClientSide(
     if (video.parentNode) video.parentNode.removeChild(video);
   };
 
-  try {
-    video.src = url;
+  return { video, dispose };
+}
 
-    await new Promise<void>((resolve, reject) => {
-      const onLoaded = () => {
-        video.removeEventListener('loadedmetadata', onLoaded);
-        video.removeEventListener('error', onError);
+async function seekVideo(video: HTMLVideoElement, sec: number): Promise<void> {
+  video.currentTime = sec;
+  await new Promise<void>((resolve, reject) => {
+    const onSeeked = () => {
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      reject(new Error('video seek failed'));
+    };
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('error', onError);
+  });
+}
+
+// Scan a video for the first frame where motion clears the rolling-baseline
+// threshold. Returns an absolute time in seconds within the source video, or
+// null if no onset is detected within the scan window.
+//
+// Cost: ~scanWindowSec / sampleIntervalSec seeks. Each seek + draw is ~30-
+// 50ms on mobile Safari, so a 3s scan @ 80ms = ~37 samples = ~1.5s wall time.
+async function detectMotionOnsetInVideo(
+  video: HTMLVideoElement,
+  scanStartSec: number,
+  scanEndSec: number,
+): Promise<number | null> {
+  if (typeof document === 'undefined') return null;
+
+  const tile = MOTION_ONSET_TILE;
+  const canvas = document.createElement('canvas');
+  canvas.width = tile;
+  canvas.height = tile;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const samples: number[] = [];
+  const sampleTimes: number[] = [];
+  let prev: Uint8ClampedArray | null = null;
+
+  const intervalSec = MOTION_ONSET_SAMPLE_INTERVAL_MS / 1000;
+  for (let t = scanStartSec; t <= scanEndSec; t += intervalSec) {
+    try {
+      await seekVideo(video, t);
+      ctx.drawImage(video, 0, 0, tile, tile);
+      const data = ctx.getImageData(0, 0, tile, tile).data;
+
+      if (prev) {
+        let sum = 0;
+        // Luminance-weighted diff. Step by 4 (RGBA) and skip alpha.
+        for (let i = 0; i < data.length; i += 4) {
+          const lumCur = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          const lumPrev = prev[i] * 0.299 + prev[i + 1] * 0.587 + prev[i + 2] * 0.114;
+          sum += Math.abs(lumCur - lumPrev);
+        }
+        const meanDiff = sum / (data.length / 4);
+        samples.push(meanDiff);
+        sampleTimes.push(t);
+      } else {
+        // First frame: nothing to diff against; record baseline 0 so
+        // detectMotionOnsetIndex's leading-edge rule still applies.
+        samples.push(0);
+        sampleTimes.push(t);
+      }
+      prev = new Uint8ClampedArray(data);
+    } catch {
+      // CORS-tainted canvas or seek error — bail and let the caller pick
+      // a sensible default.
+      return null;
+    }
+  }
+
+  const onsetIdx = detectMotionOnsetIndex(samples);
+  if (onsetIdx === null) return null;
+  return sampleTimes[onsetIdx];
+}
+
+// Record a slice of an already-loaded video to a Blob via canvas + MediaRecorder.
+// `flipHorizontally` mirrors the reference to match the front-camera-mirrored
+// attempt (SPECK round-3 §Group-1).
+async function captureVideoSlice(
+  video: HTMLVideoElement,
+  startSec: number,
+  endSec: number,
+  flipHorizontally: boolean,
+): Promise<{ blob: Blob; mimeType: string }> {
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('capture: MediaRecorder unavailable');
+  }
+  if (endSec <= startSec) {
+    throw new Error(`capture: invalid window start=${startSec}s end=${endSec}s`);
+  }
+
+  await seekVideo(video, startSec);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth || 720;
+  canvas.height = video.videoHeight || 1280;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('capture: canvas 2d context unavailable');
+
+  if (flipHorizontally) {
+    // Horizontal flip set once: every subsequent drawImage emits a mirrored
+    // frame without a per-frame save/restore.
+    ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
+  }
+
+  // Draw one frame so the captureStream has content from t=0.
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  type CapturableCanvas = HTMLCanvasElement & {
+    captureStream?: (frameRate?: number) => MediaStream;
+  };
+  const capturable = canvas as CapturableCanvas;
+  if (typeof capturable.captureStream !== 'function') {
+    throw new Error('capture: canvas.captureStream unavailable');
+  }
+  const stream = capturable.captureStream(30);
+
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9'
+    : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+      ? 'video/webm;codecs=vp8'
+      : 'video/webm';
+  const recorder = new MediaRecorder(stream, { mimeType });
+  const recordedChunks: Blob[] = [];
+  recorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+  };
+
+  const durationMs = (endSec - startSec) * 1000;
+  recorder.start();
+  await video.play();
+  const playStartedAt = performance.now();
+
+  await new Promise<void>((resolve, reject) => {
+    const tick = () => {
+      const elapsed = performance.now() - playStartedAt;
+      try {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      if (elapsed >= durationMs || video.ended) {
         resolve();
-      };
-      const onError = () => {
-        video.removeEventListener('loadedmetadata', onLoaded);
-        video.removeEventListener('error', onError);
-        reject(new Error('reference video failed to load metadata'));
-      };
-      video.addEventListener('loadedmetadata', onLoaded);
-      video.addEventListener('error', onError);
-    });
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
 
+  try {
+    recorder.requestData();
+  } catch {
+    // ignore — older browsers don't support mid-flight requestData
+  }
+  await new Promise<void>((resolve, reject) => {
+    recorder.onstop = () => resolve();
+    recorder.onerror = (ev) => reject(new Error(`MediaRecorder error: ${String(ev)}`));
+    try {
+      recorder.stop();
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+
+  stream.getTracks().forEach((t) => t.stop());
+
+  const blob = new Blob(recordedChunks, { type: mimeType });
+  if (blob.size === 0) {
+    throw new Error('capture: empty output blob');
+  }
+  return { blob, mimeType };
+}
+
+interface TrimReferenceResult {
+  blob: Blob;
+  mimeType: string;
+  // Where (in seconds) the chunk choreography starts and ends inside the
+  // trimmed clip. With motion-onset trim, the chunk starts at 0 because the
+  // first frame of the trimmed clip IS the first dance movement.
+  referenceChunkStartSec: number;
+  referenceChunkEndSec: number;
+  // Absolute seconds in the SOURCE reference where motion onset was
+  // detected. null when no onset detected within scan window (kept the
+  // legacy padded-trim semantics).
+  motionOnsetSec: number | null;
+}
+
+async function trimReferenceClientSide(
+  url: string,
+  chunkStartMs: number,
+  chunkEndMs: number,
+): Promise<TrimReferenceResult> {
+  if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
+    throw new Error('trim: DOM or MediaRecorder unavailable');
+  }
+
+  const { video, dispose } = await openHiddenVideo(url);
+  try {
     const durationSec = video.duration;
     if (!Number.isFinite(durationSec) || durationSec <= 0) {
       throw new Error(`reference video duration unknown (${durationSec})`);
@@ -144,119 +354,107 @@ async function trimReferenceClientSide(
     if (trimEndMs <= trimStartMs) {
       throw new Error(`invalid trim window: start=${trimStartMs}ms end=${trimEndMs}ms`);
     }
-    const trimDurationMs = trimEndMs - trimStartMs;
-    const referenceChunkStartSec = (chunkStartMs - trimStartMs) / 1000;
-    const referenceChunkEndSec = referenceChunkStartSec + (chunkEndMs - chunkStartMs) / 1000;
 
-    // Seek to the padded start.
-    video.currentTime = trimStartMs / 1000;
-    await new Promise<void>((resolve, reject) => {
-      const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
-        video.removeEventListener('error', onError);
-        resolve();
-      };
-      const onError = () => {
-        video.removeEventListener('seeked', onSeeked);
-        video.removeEventListener('error', onError);
-        reject(new Error('reference seek failed'));
-      };
-      video.addEventListener('seeked', onSeeked);
-      video.addEventListener('error', onError);
-    });
+    // Motion-onset scan covers the leading padding region plus some of the
+    // chunk interior — the chunker can place the choreography start well
+    // past `chunkStartMs` when the source has long pre-roll.
+    const scanStartSec = trimStartMs / 1000;
+    const scanEndSec = Math.min(
+      trimEndMs / 1000,
+      scanStartSec + MOTION_ONSET_SCAN_LIMIT_MS / 1000,
+    );
+    const onsetAbsSec = await detectMotionOnsetInVideo(video, scanStartSec, scanEndSec);
 
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 720;
-    canvas.height = video.videoHeight || 1280;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('trim: canvas 2d context unavailable');
+    // Effective start of the recorded slice. If onset was detected, start
+    // ~50ms before it so the very first hit isn't clipped; else fall back
+    // to the legacy padded start.
+    const effectiveStartSec = onsetAbsSec !== null
+      ? Math.max(trimStartMs / 1000, onsetAbsSec - 0.05)
+      : trimStartMs / 1000;
+    const effectiveEndSec = trimEndMs / 1000;
 
-    // Horizontal flip set once: every subsequent drawImage emits a mirrored
-    // frame without a per-frame save/restore. Match the attempt's mirrored
-    // orientation so Gemini compares same-handed motion.
-    ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
+    const { blob, mimeType } = await captureVideoSlice(
+      video,
+      effectiveStartSec,
+      effectiveEndSec,
+      /* flipHorizontally */ true,
+    );
 
-    // Draw one frame so the captureStream has content from t=0.
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    type CapturableCanvas = HTMLCanvasElement & {
-      captureStream?: (frameRate?: number) => MediaStream;
-    };
-    const capturable = canvas as CapturableCanvas;
-    if (typeof capturable.captureStream !== 'function') {
-      throw new Error('trim: canvas.captureStream unavailable');
-    }
-    const stream = capturable.captureStream(30);
-
-    // Prefer VP9 → VP8 → whatever the browser defaults to.
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-      ? 'video/webm;codecs=vp9'
-      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
-        ? 'video/webm;codecs=vp8'
-        : 'video/webm';
-    const recorder = new MediaRecorder(stream, { mimeType });
-    const recordedChunks: Blob[] = [];
-    recorder.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
-    };
-
-    recorder.start();
-    await video.play();
-    const playStartedAt = performance.now();
-
-    // Frame pump until elapsed playback ≥ trim duration. Use rAF so we
-    // pace with the browser's refresh; the canvas captureStream samples
-    // the canvas on each redraw.
-    await new Promise<void>((resolve, reject) => {
-      const tick = () => {
-        const elapsed = performance.now() - playStartedAt;
-        try {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        } catch (err) {
-          // Likely a tainted canvas if the reference URL doesn't return
-          // permissive CORS headers. Bail so the caller can fall back.
-          reject(err instanceof Error ? err : new Error(String(err)));
-          return;
-        }
-        if (elapsed >= trimDurationMs || video.ended) {
-          resolve();
-        } else {
-          requestAnimationFrame(tick);
-        }
-      };
-      requestAnimationFrame(tick);
-    });
-
-    try {
-      recorder.requestData();
-    } catch {
-      // ignore — older browsers don't support mid-flight requestData
-    }
-    await new Promise<void>((resolve, reject) => {
-      recorder.onstop = () => resolve();
-      recorder.onerror = (ev) => reject(new Error(`MediaRecorder error: ${String(ev)}`));
-      try {
-        recorder.stop();
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-
-    stream.getTracks().forEach((t) => t.stop());
-
-    const blob = new Blob(recordedChunks, { type: mimeType });
-    if (blob.size === 0) {
-      throw new Error('trim: empty output blob');
-    }
+    // Chunk position within the trimmed slice. With motion-onset trim, the
+    // dance starts at 0; without, it starts at (chunkStartMs - trimStartMs).
+    const referenceChunkStartSec =
+      onsetAbsSec !== null ? 0 : (chunkStartMs - trimStartMs) / 1000;
+    const referenceChunkEndSec =
+      referenceChunkStartSec + (chunkEndMs - chunkStartMs) / 1000;
 
     return {
       blob,
       mimeType,
       referenceChunkStartSec,
       referenceChunkEndSec,
+      motionOnsetSec: onsetAbsSec,
     };
   } finally {
-    cleanup();
+    dispose();
+  }
+}
+
+interface TrimAttemptResult {
+  blob: Blob;
+  mimeType: string;
+  motionOnsetSec: number | null;
+}
+
+// Re-record the attempt starting at its motion-onset moment so that both
+// videos arrive at Gemini with t=0 == first dance movement. If detection
+// fails (no onset, DOM unavailable, CORS taint), we pass the original blob
+// through unchanged with motionOnsetSec=null — caller treats it as the
+// degraded fallback path.
+async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult> {
+  if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
+    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+  }
+
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+  }
+
+  const objectUrl = URL.createObjectURL(attemptBlob);
+  try {
+    const { video, dispose } = await openHiddenVideo(objectUrl);
+    try {
+      const durationSec = video.duration;
+      if (!Number.isFinite(durationSec) || durationSec <= 0) {
+        // Some MediaRecorder outputs don't surface a valid duration. Fall
+        // back to passing the blob through.
+        return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+      }
+
+      const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
+      const onsetAbsSec = await detectMotionOnsetInVideo(video, 0, scanEndSec);
+
+      if (onsetAbsSec === null) {
+        return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+      }
+
+      // Start slightly before onset to keep the first hit intact.
+      const effectiveStartSec = Math.max(0, onsetAbsSec - 0.05);
+      const effectiveEndSec = durationSec;
+      const { blob, mimeType } = await captureVideoSlice(
+        video,
+        effectiveStartSec,
+        effectiveEndSec,
+        /* flipHorizontally */ false,
+      );
+      return { blob, mimeType, motionOnsetSec: onsetAbsSec };
+    } finally {
+      dispose();
+    }
+  } catch {
+    // Anything went wrong with the attempt re-encode — degrade silently.
+    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -281,6 +479,7 @@ export async function scoreWithGemini(
     let referenceChunkEndSec: number;
     let trimMode: 'trimmed' | 'full-fallback';
     let referenceMirrored: boolean;
+    let referenceMotionOnsetSec: number | null = null;
     try {
       const trim = await trimReferenceClientSide(
         referenceVideoUrl,
@@ -291,6 +490,7 @@ export async function scoreWithGemini(
       referenceMimeType = trim.mimeType;
       referenceChunkStartSec = trim.referenceChunkStartSec;
       referenceChunkEndSec = trim.referenceChunkEndSec;
+      referenceMotionOnsetSec = trim.motionOnsetSec;
       trimMode = 'trimmed';
       referenceMirrored = true;
     } catch (err) {
@@ -309,15 +509,34 @@ export async function scoreWithGemini(
       referenceMirrored = false;
     }
 
+    // Motion-onset trim the attempt (no flip). Always best-effort: if the
+    // re-encode fails, we send the original blob with onset=null.
+    const attemptTrim = await trimAttemptForOnset(attemptBlob);
+    const attemptMotionOnsetSec = attemptTrim.motionOnsetSec;
+    const attemptToSend = attemptTrim.blob;
+    const attemptMimeTypeToSend = attemptTrim.mimeType;
+
     const [attemptBase64, referenceBase64] = await Promise.all([
-      blobToBase64(attemptBlob),
+      blobToBase64(attemptToSend),
       blobToBase64(referenceBlob),
     ]);
+
+    // Both videos motion-onset trimmed when BOTH detected an onset and the
+    // reference path didn't degrade to the full-fallback. The prompt's
+    // "videos start at first movement" clause only fires when both legs of
+    // the pipeline produced an aligned slice.
+    const videosMotionOnsetTrimmed =
+      trimMode === 'trimmed' &&
+      referenceMotionOnsetSec !== null &&
+      attemptMotionOnsetSec !== null;
 
     // eslint-disable-next-line no-console
     console.log('[gemini-client] sending', {
       trimMode,
       referenceMirrored,
+      referenceMotionOnsetSec,
+      attemptMotionOnsetSec,
+      videosMotionOnsetTrimmed,
       referenceBytes: referenceBase64.length,
       attemptBytes: attemptBase64.length,
       chunkStartMs,
@@ -335,11 +554,14 @@ export async function scoreWithGemini(
         referenceVideoBase64: referenceBase64,
         attemptVideoBase64: attemptBase64,
         referenceMimeType,
-        attemptMimeType: attemptBlob.type || 'video/webm',
+        attemptMimeType: attemptMimeTypeToSend || 'video/webm',
         legsVisible,
         referenceChunkStartSec,
         referenceChunkEndSec,
         referenceMirrored,
+        referenceMotionOnsetSec,
+        attemptMotionOnsetSec,
+        videosMotionOnsetTrimmed,
       }),
     });
 

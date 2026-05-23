@@ -63,6 +63,15 @@ interface RequestBody {
   // (no trim) sends false and the prompt switches back to the mirror-copy
   // safety clause.
   referenceMirrored?: boolean;
+  // SPECK round-3 §Group-2: client detected the first frame of dance
+  // movement and re-recorded each video starting at that frame. The two
+  // onset values are the absolute seconds in the SOURCE videos where motion
+  // started (diagnostic only). `videosMotionOnsetTrimmed` is the flag the
+  // prompt branches on — true means both videos arrive starting at the
+  // dance, no padding to ignore.
+  referenceMotionOnsetSec?: number | null;
+  attemptMotionOnsetSec?: number | null;
+  videosMotionOnsetTrimmed?: boolean;
 }
 
 // Distinct failure reasons surfaced in logs and the response body so we can
@@ -216,6 +225,9 @@ export async function POST(req: NextRequest) {
     referenceChunkStartSec = 0,
     referenceChunkEndSec,
     referenceMirrored = true,
+    referenceMotionOnsetSec = null,
+    attemptMotionOnsetSec = null,
+    videosMotionOnsetTrimmed = false,
   } = body;
 
   console.log('[gemini-score] referenceVideoBase64 length:', referenceVideoBase64?.length ?? 'MISSING');
@@ -226,6 +238,9 @@ export async function POST(req: NextRequest) {
   console.log('[gemini-score] referenceChunkStartSec:', referenceChunkStartSec);
   console.log('[gemini-score] referenceChunkEndSec:', referenceChunkEndSec);
   console.log('[gemini-score] referenceMirrored:', referenceMirrored);
+  console.log('[gemini-score] referenceMotionOnsetSec:', referenceMotionOnsetSec);
+  console.log('[gemini-score] attemptMotionOnsetSec:', attemptMotionOnsetSec);
+  console.log('[gemini-score] videosMotionOnsetTrimmed:', videosMotionOnsetTrimmed);
 
   if (!referenceVideoBase64 || !attemptVideoBase64) {
     return NextResponse.json(
@@ -257,6 +272,7 @@ export async function POST(req: NextRequest) {
     referenceChunkStartSec,
     referenceChunkEndSec: resolvedChunkEndSec,
     referenceMirrored,
+    videosMotionOnsetTrimmed,
   });
 
   const callArgs = {

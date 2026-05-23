@@ -8,49 +8,115 @@ import { buildGeminiPrompt } from '../lib/scoring/gemini/prompt.ts';
 // future edit accidentally drops one of these clauses, the failing test
 // names the missing guarantee instead of just shipping a regression.
 
-describe('buildGeminiPrompt — chunk windowing', () => {
-  it('interpolates referenceChunkStartSec / referenceChunkEndSec with 2 decimals', () => {
+describe('buildGeminiPrompt — chunk windowing (motion-onset trimmed default)', () => {
+  // SPECK round-3 §Group-2: with both videos pre-trimmed to their motion
+  // onset, the prompt drops the padding-ignore language and tells the model
+  // both videos START at the first dance frame.
+
+  it('interpolates the choreography end time with 2 decimals (single value, no start)', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
-      referenceChunkStartSec: 0.5,
+      referenceChunkStartSec: 0,
       referenceChunkEndSec: 2.0,
     });
-    assert.ok(out.includes('0.50s'), 'expected start interpolation "0.50s"');
     assert.ok(out.includes('2.00s'), 'expected end interpolation "2.00s"');
   });
 
-  it('frames the reference as a SHORT CHUNK with padding to ignore', () => {
+  it('asserts "first dance movement" and no pre-roll padding', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
-    assert.ok(out.includes('SINGLE CHUNK'), 'must call the reference a single chunk');
     assert.ok(out.includes('CHUNK CONTEXT'), 'must include CHUNK CONTEXT section');
-    assert.ok(out.match(/padding/i), 'must mention padding seconds to ignore');
+    assert.ok(
+      out.includes('start exactly at the moment of first dance movement'),
+      'must announce both videos start at first movement',
+    );
+    assert.ok(
+      out.includes('There is no pre-roll padding'),
+      'must state there is no pre-roll padding',
+    );
+    assert.ok(
+      out.includes('All trouble spots must reference timestamps within the dance, not before it'),
+      'must require trouble spots to fall inside the dance',
+    );
   });
 
-  it('instructs the model not to report trouble spots past the choreography end', () => {
+  it('caps trouble spots at the choreography end (motion-onset branch)', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
     assert.ok(
-      out.includes('DO NOT report trouble spots past the end of the reference choreography'),
-      'must keep the no-past-the-end clause',
+      out.includes('DO NOT report trouble spots past that point'),
+      'must keep an end-cap clause referring to the choreography end',
     );
   });
 
-  it('keeps the attempt-padding-ignore clauses (lead-in / lead-out)', () => {
+  it('drops the legacy padding-ignore clauses on the default (trimmed) branch', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
+    assert.ok(
+      !out.includes('IGNORE THE PADDING'),
+      'IGNORE THE PADDING must NOT appear in the trimmed branch',
+    );
+    assert.ok(
+      !out.match(/\blead-in\b/),
+      'attempt lead-in clause must NOT appear in the trimmed branch',
+    );
+    assert.ok(
+      !out.match(/\blead-out\b/),
+      'attempt lead-out clause must NOT appear in the trimmed branch',
+    );
+  });
+});
+
+describe('buildGeminiPrompt — chunk windowing (videosMotionOnsetTrimmed=false fallback)', () => {
+  // When the client couldn't motion-onset-trim either video, the prompt has
+  // to keep the older padding-ignore language so the model still has guidance.
+
+  it('keeps the SHORT CHUNK / padding language', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0.5,
+      referenceChunkEndSec: 2.0,
+      videosMotionOnsetTrimmed: false,
+    });
+    assert.ok(out.includes('SINGLE CHUNK'), 'must call the reference a single chunk');
+    assert.ok(out.includes('CHUNK CONTEXT'), 'must include CHUNK CONTEXT section');
+    assert.ok(out.match(/padding/i), 'must mention padding seconds to ignore');
+    assert.ok(out.includes('0.50s'), 'must interpolate the chunk start in fallback');
+    assert.ok(out.includes('2.00s'), 'must interpolate the chunk end in fallback');
+  });
+
+  it('keeps the attempt lead-in / lead-out clauses in fallback', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+      videosMotionOnsetTrimmed: false,
+    });
     assert.ok(out.includes('lead-in'), 'must instruct ignore of attempt lead-in');
     assert.ok(out.includes('lead-out'), 'must instruct ignore of attempt lead-out');
     assert.ok(out.includes('IGNORE THE PADDING'), 'must explicitly tell model to ignore reference padding');
+  });
+
+  it('keeps the no-past-the-end clause in fallback', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+      videosMotionOnsetTrimmed: false,
+    });
+    assert.ok(
+      out.includes('DO NOT report trouble spots past the end of the reference choreography'),
+      'must keep the legacy no-past-the-end clause in fallback',
+    );
   });
 });
 
