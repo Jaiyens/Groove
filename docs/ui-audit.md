@@ -1,6 +1,28 @@
 # UI / UX audit — overnight polish pass
 
-Catalogued before the polish pass. Findings split into SAFE (will be auto-fixed in this branch) and FLAG (deferred for human review). Off-limits per SPECK: `lib/scoring/`, `app/api/score-gemini*`, `app/api/repair-webm`, `lib/scoring/gemini/`, callout overlay drawing, dual-skeleton drawing.
+## Flagged for human review
+
+The polish pass shipped 7 SAFE commits. The items below were deliberately deferred — they each require a layout, contract, or design call that needs you. The detailed catalogue follows.
+
+1. **FramingToast / frame-check pink (`#FF3E7F`)** — three call sites; deliberate "framing accent" or coral drift? Either way, give it a token. (See findings under CONSISTENCY.)
+2. **Touch targets below 44 px on back buttons + VolumeControl** — fixing requires header-row layout retune (h-9/h-10 → h-11 cascades through positioning offsets).
+3. **Modal focus trap + Escape-to-close (SubmitModal, StartOverlay)** — proper a11y modal contract; non-trivial.
+4. **Disabled link pattern in ChunkProgression / ChunkPath** — convert to `<button disabled>` to match WCAG; cascades through styling.
+5. **Header height drift across drill/test/copy pages (50 / 56 / 88 px)** — pick one; affects vertical rhythm.
+
+SAFE fixes shipped on this branch:
+- `polish(a11y)`: light-theme text on error/not-found + drill/full loading branches (4 sites; dark-theme grey was rendering on cream).
+- `polish(a11y)`: aria-live + aria-atomic on StartOverlay countdown.
+- `polish(dead-code)`: dropped redundant `focusable="false"` on aria-hidden decorative SVGs.
+- `polish(consistency)`: SubmitFab inline `#FF1F8E` → `bg-coral` token.
+- `polish(consistency)`: HeroCard `text-gray-500` (not in palette) → `text-ink-muted`.
+- `polish(typography)`: SectionHeader title `leading-none` → `leading-tight` so wrapping isn't cramped.
+
+311 → 326 tests after Track 2 added the attempt-store suite (15 new tests). All passing.
+
+---
+
+Catalogued before the polish pass. Findings split into SAFE (auto-fixed in this branch) and FLAG (deferred for human review). Off-limits per SPECK: `lib/scoring/`, `app/api/score-gemini*`, `app/api/repair-webm`, `lib/scoring/gemini/`, callout overlay drawing, dual-skeleton drawing.
 
 Token reference: palette tokens live in `tailwind.config.ts`. Notable ones — `coral` = `#FF1F8E`, `ink` = `#0A0A0A`, `ink-muted` = `#6B6B6B`, `ink-dim` = `#A8A8A6`, `cream` = `#F8F8F6`, `cream-card` = `#FFFFFF`, `accent-amber` = `#FFB800`, `accent-red` = `#FF3E3E`, `accent-green` = `#00C26B`. The dark-theme `text-text-muted` (= `#9b9ba1`) is only legible on dark backgrounds.
 
@@ -181,12 +203,4 @@ Safety: N/A
 
 ---
 
-## Flagged for human review (top 5)
-
-These are the highest-leverage findings that need a human eye:
-
-1. **FramingToast / frame-check pink (`#FF3E7F`)** — three call sites; is this a deliberate "framing accent" or a coral drift? Either way, give it a token.
-2. **Touch targets below 44px on back buttons + VolumeControl** — fixing requires header-row layout retune.
-3. **Modal focus trap + Escape-to-close (SubmitModal, StartOverlay)** — proper a11y modal contract.
-4. **Disabled link pattern in ChunkProgression / ChunkPath** — convert to `<button disabled>` to match WCAG.
-5. **Header height drift across drill/test/copy pages (50 / 56 / 88 px)** — pick one.
+## (top-5 deferred items moved to the summary at the top of this file)
