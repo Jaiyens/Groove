@@ -18,6 +18,8 @@ import ResultsCard from '@/components/ResultsCard';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
 import VolumeControl from '@/components/VolumeControl';
+import CalloutOverlay from '@/components/scoring/CalloutOverlay';
+import HoldingScreen from '@/components/scoring/HoldingScreen';
 import { useDanceAudio } from '@/lib/audio/danceAudio';
 import { useDance } from '@/lib/dances/useDance';
 import { recordChunkScore } from '@/lib/mastery/chunkProgress';
@@ -30,6 +32,13 @@ import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
 import type { FrameSample, LandmarkFrame, PoseLandmark } from '@/lib/pose/types';
 import { BeatTracker } from '@/lib/scoring/beatTracker';
+import {
+  createCalloutEngine,
+  deriveAccentBeatsFromBpm,
+} from '@/lib/scoring/callouts/calloutEngine';
+import type { CalloutEvent } from '@/lib/scoring/callouts/types';
+import { scoreWithGemini } from '@/lib/scoring/gemini/client';
+import { buildFinalScoreView, type FinalScoreView } from '@/lib/scoring/finalScore';
 import {
   buildReferenceLandmarkSequence,
   buildReferenceSequence,
@@ -62,6 +71,55 @@ interface PageProps {
   params: { danceId: string; chunkIndex: string };
 }
 
+// Wraps the recorder.stop()/'stop' event so the caller gets the final Blob
+// in a promise. Returns null if no recorder or no chunks (e.g. browser
+// without MediaRecorder support).
+function stopRecorderAndGetBlob(
+  rec: MediaRecorder | null,
+): Promise<Blob | null> {
+  if (!rec) return Promise.resolve(null);
+  return new Promise<Blob | null>((resolve) => {
+    const settle = (blob: Blob | null) => resolve(blob);
+    rec.onstop = () => {
+      // recordedChunksRef is populated by ondataavailable on the page.
+      // We can't reach that ref from here, so callers should swap blobs
+      // out of recordedChunksRef.current after stop resolves. For ergonomic
+      // call sites we read chunks via a closure over the recorder's
+      // ondataavailable accumulator below.
+      const blob = new Blob(recorderChunks(rec), { type: rec.mimeType || 'video/webm' });
+      settle(blob.size > 0 ? blob : null);
+    };
+    if (rec.state === 'inactive') {
+      // Already stopped — resolve with whatever chunks landed.
+      const blob = new Blob(recorderChunks(rec), { type: rec.mimeType || 'video/webm' });
+      settle(blob.size > 0 ? blob : null);
+      return;
+    }
+    try {
+      rec.requestData();
+    } catch {
+      // ignore — some browsers don't support requestData mid-flight
+    }
+    try {
+      rec.stop();
+    } catch {
+      settle(null);
+    }
+  });
+}
+
+// MediaRecorder doesn't expose recorded chunks directly, so we stash the
+// array on the recorder object via a WeakMap so the helper above can pull
+// them out without the page passing the ref through. This is a tiny bit of
+// indirection that keeps the page code clean.
+const recorderChunksMap = new WeakMap<MediaRecorder, Blob[]>();
+function recorderChunks(rec: MediaRecorder): Blob[] {
+  return recorderChunksMap.get(rec) ?? [];
+}
+function attachRecorderChunks(rec: MediaRecorder, chunks: Blob[]): void {
+  recorderChunksMap.set(rec, chunks);
+}
+
 export default function TestPage({ params }: PageProps) {
   const router = useRouter();
   const chunkIndex = Number(params.chunkIndex);
@@ -73,6 +131,17 @@ export default function TestPage({ params }: PageProps) {
   const extractorRef = useRef<PoseExtractor | null>(null);
   const rafRef = useRef<number | null>(null);
   const userFramesRef = useRef<FrameSample[]>([]);
+  // MediaRecorder for the camera-only attempt video that Gemini scores
+  // against. We record video tracks only (audio is the reference dance
+  // played through the speaker, capturing it would create echo).
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const attemptBlobUrlRef = useRef<string | null>(null);
+  // Callout engine + latest CalloutEvent for the overlay to react to.
+  // The event is stored in state (not a ref) because the overlay needs
+  // a re-render to pick up the new event; identity-equality drives
+  // the animation retrigger.
+  const calloutEngineRef = useRef<ReturnType<typeof createCalloutEngine> | null>(null);
   // Stage 4: parallel landmark-frame collection so the scorer can run
   // the canonical-angle pipeline. The legacy vector-frame collection
   // above is kept so the live readout's cosineSimilarity (which still
@@ -98,6 +167,16 @@ export default function TestPage({ params }: PageProps) {
   const [finalScore, setFinalScore] = useState<number | null>(null);
   const [sessionScore, setSessionScore] = useState<SessionScore | null>(null);
   const [unlockedNext, setUnlockedNext] = useState(false);
+  // Latest live-callout event for CalloutOverlay. New event identity =
+  // re-trigger the animation.
+  const [latestCallout, setLatestCallout] = useState<CalloutEvent | null>(null);
+  // Captured attempt video URL for HoldingScreen + Gemini.
+  const [attemptBlobUrl, setAttemptBlobUrl] = useState<string | null>(null);
+  // Post-attempt flow:
+  //   running → finished + (HoldingScreen) → holdingDone + finalView → ResultsCard
+  // Holding screen sits at least 3s even if Gemini is fast.
+  const [holdingDone, setHoldingDone] = useState(false);
+  const [finalView, setFinalView] = useState<FinalScoreView | null>(null);
   const [volume, setVolume] = useState(1);
   const [showDual, setShowDual] = useState<boolean>(() => isDualOverlayEnabled());
 
@@ -299,6 +378,68 @@ export default function TestPage({ params }: PageProps) {
     startMsRef.current = performance.now();
     userFramesRef.current = [];
     userLandmarkFramesRef.current = [];
+    setLatestCallout(null);
+    setAttemptBlobUrl(null);
+    setHoldingDone(false);
+    setFinalView(null);
+    if (attemptBlobUrlRef.current) {
+      URL.revokeObjectURL(attemptBlobUrlRef.current);
+      attemptBlobUrlRef.current = null;
+    }
+
+    // Callout engine: derive accent beats every-2nd-beat from BPM, no
+    // separate beat detector needed (audio is reference dance audio
+    // and the BPM is already known). Timestamps are session-relative
+    // (ms since GO) so they match the ingestFrame timestamps we feed
+    // it from the detection loop. SPECK §working-agreement: if accent
+    // beats aren't reliable, fall back to every-800ms — handled inside
+    // deriveAccentBeatsFromBpm.
+    const sessionDurationMs = chunk.endMs - chunk.startMs;
+    const accentBeats = deriveAccentBeatsFromBpm(0, sessionDurationMs, dance.bpm);
+    calloutEngineRef.current = createCalloutEngine({
+      accentBeatTimestamps: accentBeats,
+      onCallout: (event) => setLatestCallout(event),
+    });
+
+    // MediaRecorder: capture the camera-only stream so the post-
+    // attempt grader (Gemini) gets a real attempt video. We record
+    // video only — audio is the reference dance being played out the
+    // speaker, capturing it would echo into Gemini's input.
+    recordedChunksRef.current = [];
+    try {
+      const liveStream = streamRef.current;
+      if (liveStream) {
+        const videoOnly = new MediaStream(liveStream.getVideoTracks());
+        // Prefer webm/vp9, but fall back to whatever the browser ships.
+        const mimeType =
+          typeof MediaRecorder !== 'undefined' &&
+          MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+            ? 'video/webm;codecs=vp9'
+            : typeof MediaRecorder !== 'undefined' &&
+                MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+              ? 'video/webm;codecs=vp8'
+              : 'video/webm';
+        const rec = new MediaRecorder(videoOnly, { mimeType });
+        const chunks: Blob[] = [];
+        recordedChunksRef.current = chunks;
+        attachRecorderChunks(rec, chunks);
+        rec.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+        };
+        recorderRef.current = rec;
+        rec.start();
+        // eslint-disable-next-line no-console
+        console.log('[mode-b] MediaRecorder started', { mimeType });
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn('[mode-b] no live stream to record — Gemini will be skipped');
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[mode-b] MediaRecorder init failed', err);
+      recorderRef.current = null;
+    }
+
     audio.seekMs(chunk.startMs);
     void audio.play().then((ok) => {
       // eslint-disable-next-line no-console
@@ -393,6 +534,14 @@ export default function TestPage({ params }: PageProps) {
             const sim = cosineSimilarity(vec, ref);
             const s = frameScoreFromSimilarity(Math.max(0, sim));
             setLiveScore((prev) => prev * 0.7 + s * 0.3);
+            // Live callout engine: similarity is the SAME score the
+            // existing pipeline computes (cosine over joint angles, range
+            // -1..1 but in practice ~0..1 for similar poses). Per SPECK
+            // §Hard rule 3 we feed the existing stream, do not recompute.
+            calloutEngineRef.current?.ingestFrame({
+              timestamp: sessionT,
+              similarity: Math.max(0, sim),
+            });
             if (sessionT - lastHintAtRef.current >= 200) {
               lastHintAtRef.current = sessionT;
               setHint(correctionHint(vec, ref));
@@ -423,66 +572,106 @@ export default function TestPage({ params }: PageProps) {
     };
   }, [runState, dance, chunk, poseStatus]);
 
-  // On finish: compute final score, persist chunk progress.
+  // On finish: stop the recorder, kick off MediaPipe final + Gemini in
+  // parallel, then assemble the unified FinalScoreView once both
+  // resolve. Holding screen owns the "wait" UI in the meantime.
+  // spec.md §Mode-B-countdown-loop fix: `audio` omitted from deps —
+  // audio.stop is a stable useCallback([]) so the closure call hits
+  // the live element. Pulling `audio` in would re-fire on every audio
+  // state change (new outer ref) and re-trigger the whole finish flow.
   useEffect(() => {
     if (runState !== 'finished' || !dance || !chunk) return;
     audio.stop();
-    // Prefer the worker's real reference pose data; fall back to the
-    // synthetic neutral-pose sequence only when the dance row has no
-    // pose_data_url (legacy fixtures, early test rows). The synthetic
-    // path is a known-bad scoring source — see docs/scoring-diagnosis.md
-    // — but is kept as a graceful fallback so legacy dances still finish
-    // a run instead of erroring out.
-    const refSeq = poseData
-      ? buildReferenceSequence(poseData, chunk.startMs, chunk.endMs)
-      : generateReferenceSequence(dance.duration_seconds, dance.bpm).filter(
-          (f) => f.timestampMs >= chunk.startMs && f.timestampMs < chunk.endMs,
-        );
-    // Stage 4 canonical-angle path: when we have real reference pose
-    // data we score on landmark frames (canonicalize → joint angles →
-    // body-invariant score). Falls back to the legacy vector path for
-    // dance rows that have no pose_data_url (synthetic reference is the
-    // only option in that case, and the legacy path tolerates it).
-    const refLandmarkSeq = poseData
-      ? buildReferenceLandmarkSequence(poseData, chunk.startMs, chunk.endMs)
-      : null;
-    const beatGrid = new BeatTracker(dance.bpm, chunk.startMs).asGrid();
-    const result = refLandmarkSeq && refLandmarkSeq.length > 0
-      ? scoreSession({
-          userLandmarkFrames: userLandmarkFramesRef.current,
-          referenceLandmarkFrames: refLandmarkSeq,
-          beatGrid,
-          skillIds: chunk.skills,
-        })
-      : scoreSession({
-          userFrames: userFramesRef.current,
-          referenceFrames: refSeq,
-          beatGrid,
-          skillIds: chunk.skills,
+
+    // Pull the recorded video off MediaRecorder. requestData() flushes
+    // the current chunk; the actual Blob is assembled after 'stop' fires.
+    // We capture inside an async IIFE so the parallel scoring can start
+    // without blocking the effect's render commit.
+    const finalize = async () => {
+      const attemptBlob = await stopRecorderAndGetBlob(recorderRef.current);
+      recorderRef.current = null;
+      let blobUrl: string | null = null;
+      if (attemptBlob) {
+        blobUrl = URL.createObjectURL(attemptBlob);
+        attemptBlobUrlRef.current = blobUrl;
+        setAttemptBlobUrl(blobUrl);
+      }
+
+      // MediaPipe final scoring — same code path the rebuilt scorer
+      // already uses (SPECK §Hard rule 3: do not modify MediaPipe
+      // scoring; add to it).
+      const refSeq = poseData
+        ? buildReferenceSequence(poseData, chunk.startMs, chunk.endMs)
+        : generateReferenceSequence(dance.duration_seconds, dance.bpm).filter(
+            (f) => f.timestampMs >= chunk.startMs && f.timestampMs < chunk.endMs,
+          );
+      const refLandmarkSeq = poseData
+        ? buildReferenceLandmarkSequence(poseData, chunk.startMs, chunk.endMs)
+        : null;
+      const beatGrid = new BeatTracker(dance.bpm, chunk.startMs).asGrid();
+      const mediapipeFinal =
+        refLandmarkSeq && refLandmarkSeq.length > 0
+          ? scoreSession({
+              userLandmarkFrames: userLandmarkFramesRef.current,
+              referenceLandmarkFrames: refLandmarkSeq,
+              beatGrid,
+              skillIds: chunk.skills,
+            })
+          : scoreSession({
+              userFrames: userFramesRef.current,
+              referenceFrames: refSeq,
+              beatGrid,
+              skillIds: chunk.skills,
+            });
+
+      // Parallel Gemini scoring. Only run if we have both a recorded
+      // attempt and a reference video URL. On failure the client returns
+      // a tagged error — never throws — so the silent-fallback path is
+      // built in.
+      const geminiPromise =
+        attemptBlob && dance.video_url
+          ? scoreWithGemini(attemptBlob, dance.video_url)
+          : Promise.resolve({
+              kind: 'error' as const,
+              reason: attemptBlob ? 'no reference video' : 'no attempt recorded',
+            });
+
+      const geminiResult = await geminiPromise;
+      if (geminiResult.kind === 'error') {
+        // eslint-disable-next-line no-console
+        console.warn('[mode-b] gemini failed → falling back to MediaPipe', geminiResult.reason);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log('[mode-b] gemini scored', {
+          overall: geminiResult.score.overall_score,
+          tier: geminiResult.score.tier,
+          latencyMs: geminiResult.latencyMs,
         });
-    setSessionScore(result);
-    const overall = Math.round(result.overall);
-    setFinalScore(overall);
-    const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, overall);
-    recordContinueLearning({
-      danceId: dance.id,
-      title: dance.name,
-      displayName: dance.name,
-      creatorHandle: dance.artist,
-      thumbnailUrl: dance.thumbnail_url,
-      totalChunks: chunks.length,
-      currentChunkIndex: unlockedNext
-        ? Math.min(chunkIndex + 1, chunks.length - 1)
-        : chunkIndex,
-    });
-    setUnlockedNext(unlockedNext);
-    // spec.md §Mode-B-countdown-loop fix: `audio` omitted from deps.
-    // audio.stop() inside fires a 'pause' event → setState in the
-    // hook → new audio ref → effect would re-fire → audio.stop()
-    // again → infinite loop. audio.stop is a stable useCallback([])
-    // operating on audioRef.current, so the closure call is safe.
+      }
+
+      const view = buildFinalScoreView(geminiResult, mediapipeFinal, chunk.startMs);
+      setSessionScore(mediapipeFinal);
+      setFinalView(view);
+      const overall = view.primary.overall_score;
+      setFinalScore(overall);
+      const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, overall);
+      recordContinueLearning({
+        danceId: dance.id,
+        title: dance.name,
+        displayName: dance.name,
+        creatorHandle: dance.artist,
+        thumbnailUrl: dance.thumbnail_url,
+        totalChunks: chunks.length,
+        currentChunkIndex: unlockedNext
+          ? Math.min(chunkIndex + 1, chunks.length - 1)
+          : chunkIndex,
+      });
+      setUnlockedNext(unlockedNext);
+    };
+
+    void finalize();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runState, dance, chunk, chunkIndex, chunks.length]);
+  }, [runState, dance, chunk, chunkIndex, chunks.length, poseData]);
 
   // spec.md §Mode-B-countdown-loop fix: ACTIVE loop driver before this
   // patch. `[audio]` made this cleanup re-fire every audio ref change.
@@ -500,6 +689,17 @@ export default function TestPage({ params }: PageProps) {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       audio.stop();
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        try {
+          recorderRef.current.stop();
+        } catch {
+          // ignore — best-effort teardown
+        }
+      }
+      if (attemptBlobUrlRef.current) {
+        URL.revokeObjectURL(attemptBlobUrlRef.current);
+        attemptBlobUrlRef.current = null;
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -563,6 +763,13 @@ export default function TestPage({ params }: PageProps) {
         )}
 
         {runState === 'running' && <FramingToast landmarks={landmarks} />}
+
+        {/* Live-callout overlay: GROOVY / PERFECT / GREAT / ALMOST flash
+            on accent beats during the run. Vibe layer only — does not
+            influence final scoring (SPECK §Hard rule 1). Z-index 20 inside
+            the overlay; sits above the dual-skeleton overlay (z-10) but
+            below the results card (z-40). */}
+        {runState === 'running' && <CalloutOverlay event={latestCallout} />}
 
         {/* Chunk progress dots — moved below the safe-top inset so the
             iOS status bar / notch doesn't clip them on a 390px viewport. */}
@@ -677,26 +884,51 @@ export default function TestPage({ params }: PageProps) {
             />
           )}
 
-        {/* Final score card. Replaces the old "Almost there / 18 /
-            threshold 70" popup with a component-aware results screen.
-            See components/ResultsCard.tsx and SPECK Stage 5. */}
-        {runState === 'finished' && finalScore !== null && (
-          <ResultsCard
-            danceId={dance.id}
-            chunkIndex={chunkIndex}
-            totalChunks={chunks.length}
-            finalScore={finalScore}
-            sessionScore={sessionScore}
-            unlockedNext={unlockedNext}
-            onRetry={() => {
-              setRunState('ready');
-              setFinalScore(null);
-              setSessionScore(null);
-              setLiveScore(0);
-              setProgress(0);
-            }}
+        {/* Holding screen: shown immediately after the attempt ends, sits
+            for at least 3s while MediaPipe final + Gemini run in parallel.
+            Plays back the recorded attempt with the dual-skeleton overlay
+            so the user has something to watch while we score. */}
+        {runState === 'finished' && !holdingDone && attemptBlobUrl && chunk && (
+          <HoldingScreen
+            attemptBlobUrl={attemptBlobUrl}
+            userLandmarkFrames={userLandmarkFramesRef.current}
+            referencePoseData={poseData ?? null}
+            chunkStartMs={chunk.startMs}
+            geminiResolved={finalView !== null}
+            onReady={() => setHoldingDone(true)}
           />
         )}
+
+        {/* Final score card. Gemini's score is the headline (or, when
+            Gemini failed, MediaPipe in Gemini-shape via the adapter).
+            See components/ResultsCard.tsx and SPECK §results. */}
+        {runState === 'finished' &&
+          finalScore !== null &&
+          finalView !== null &&
+          (holdingDone || !attemptBlobUrl) && (
+            <ResultsCard
+              danceId={dance.id}
+              chunkIndex={chunkIndex}
+              totalChunks={chunks.length}
+              finalScore={finalScore}
+              sessionScore={sessionScore}
+              unlockedNext={unlockedNext}
+              onRetry={() => {
+                setRunState('ready');
+                setFinalScore(null);
+                setSessionScore(null);
+                setFinalView(null);
+                setHoldingDone(false);
+                setAttemptBlobUrl(null);
+                if (attemptBlobUrlRef.current) {
+                  URL.revokeObjectURL(attemptBlobUrlRef.current);
+                  attemptBlobUrlRef.current = null;
+                }
+                setLiveScore(0);
+                setProgress(0);
+              }}
+            />
+          )}
       </div>
 
       {/* SPECK polish §Fix 7: bottom bar has explicit safe-bottom + a
