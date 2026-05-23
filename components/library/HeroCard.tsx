@@ -21,7 +21,7 @@ export default function HeroCard({ dance }: HeroCardProps) {
         className="aspect-[4/3] w-full rounded-none"
       />
       <div className="px-5 pt-3 pb-4">
-        <div className="text-[11px] font-normal uppercase tracking-[0.18em] text-gray-500">
+        <div className="text-[11px] font-normal uppercase tracking-[0.18em] text-ink-muted">
           featured
         </div>
         <h3 className="mt-1 text-[26px] font-medium leading-tight text-ink">
