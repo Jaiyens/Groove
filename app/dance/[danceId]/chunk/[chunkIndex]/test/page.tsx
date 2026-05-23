@@ -38,6 +38,7 @@ import {
 } from '@/lib/scoring/callouts/calloutEngine';
 import type { CalloutEvent } from '@/lib/scoring/callouts/types';
 import { scoreWithGemini } from '@/lib/scoring/gemini/client';
+import { detectLegsVisible } from '@/lib/scoring/legVisibility';
 import { buildFinalScoreView, type FinalScoreView } from '@/lib/scoring/finalScore';
 import {
   buildReferenceLandmarkSequence,
@@ -627,10 +628,24 @@ export default function TestPage({ params }: PageProps) {
       // Parallel Gemini scoring. Only run if we have both a recorded
       // attempt and a reference video URL. On failure the client returns
       // a tagged error — never throws — so the silent-fallback path is
-      // built in.
+      // built in. Pass the chunk window so the client can trim the
+      // reference (SPECK §windowing-fix) and the inferred leg-visibility
+      // flag so Gemini downweights legs when the user filmed upper body
+      // only.
+      const legsVisible = detectLegsVisible(userLandmarkFramesRef.current);
+      // eslint-disable-next-line no-console
+      console.log('[mode-b] legsVisible →', legsVisible, {
+        landmarkFrames: userLandmarkFramesRef.current.length,
+      });
       const geminiPromise =
         attemptBlob && dance.video_url
-          ? scoreWithGemini(attemptBlob, dance.video_url)
+          ? scoreWithGemini({
+              attemptBlob,
+              referenceVideoUrl: dance.video_url,
+              chunkStartMs: chunk.startMs,
+              chunkEndMs: chunk.endMs,
+              legsVisible,
+            })
           : Promise.resolve({
               kind: 'error' as const,
               reason: attemptBlob ? 'no reference video' : 'no attempt recorded',
