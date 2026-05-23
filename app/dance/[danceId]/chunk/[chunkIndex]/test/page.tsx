@@ -664,6 +664,11 @@ export default function TestPage({ params }: PageProps) {
               chunkStartMs: chunk.startMs,
               chunkEndMs: chunk.endMs,
               legsVisible,
+              // SPECK overnight Track 2 §debug-scoring: pass-through so
+              // the optional capture store records which dance/chunk the
+              // attempt came from when the debug toggle is on.
+              danceId: dance.id,
+              chunkIndex,
             })
           : Promise.resolve({
               kind: 'error' as const,

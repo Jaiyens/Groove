@@ -42,6 +42,12 @@ import { finalizeWebmDuration } from './webmDuration';
 import { repairWebmDuration } from './webmFix';
 import { renderSideBySideVideo } from './composite';
 import { getMirrorEnabled } from '@/lib/preferences/mirror';
+import {
+  isCaptureEnabled,
+  saveAttempt,
+  blobToBase64Safe,
+  type SavedAttempt,
+} from '@/lib/debug/attemptStore';
 
 export type GeminiResult =
   | { kind: 'success'; score: GeminiScore; latencyMs: number }
@@ -54,6 +60,11 @@ export type ScoreWithGeminiArgs = {
   chunkEndMs: number;
   legsVisible: boolean;
   signal?: AbortSignal;
+  // SPECK overnight Track 2 §debug-scoring: optional context for the
+  // debug capture store. Without these the saved record still works,
+  // but the list view shows '<unknown>' for dance/chunk.
+  danceId?: string;
+  chunkIndex?: number;
 };
 
 // Client-side timeout for the /api/score-gemini round trip. Must be > the
@@ -671,6 +682,11 @@ interface TrimAttemptResult {
   blob: Blob;
   mimeType: string;
   motionOnsetSec: number | null;
+  // SPECK overnight Track 2 §debug-scoring: surfaced so the caller can
+  // log them into the debug capture record. They were already computed
+  // inside the function; just propagating them out.
+  durationSource: DurationSource | null;
+  authoritativeDurationSec: number;
 }
 
 // Below this threshold a duration is implausibly short — the attempt is at
@@ -758,7 +774,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
       hasDocument: typeof document !== 'undefined',
       hasMediaRecorder: typeof MediaRecorder !== 'undefined',
     });
-    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+    return {
+      blob: attemptBlob,
+      mimeType: attemptBlob.type || 'video/webm',
+      motionOnsetSec: null,
+      durationSource: null,
+      authoritativeDurationSec: 0,
+    };
   }
 
   if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
@@ -766,7 +788,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     console.warn('[gemini-client] motion-onset trimAttempt early-return: URL.createObjectURL unavailable', {
       hasURL: typeof URL !== 'undefined',
     });
-    return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
+    return {
+      blob: attemptBlob,
+      mimeType: attemptBlob.type || 'video/webm',
+      motionOnsetSec: null,
+      durationSource: null,
+      authoritativeDurationSec: 0,
+    };
   }
 
   // Round-5 Fix 2 (SPECK): rewrite the EBML metadata before the blob
@@ -906,7 +934,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
           blobBytes: workingBlob.size,
           blobType: workingBlob.type,
         });
-        return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
+        return {
+          blob: workingBlob,
+          mimeType: workingBlob.type || 'video/webm',
+          motionOnsetSec: null,
+          durationSource: decision.source,
+          authoritativeDurationSec: decision.authoritativeDurationSec,
+        };
       }
 
       const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
@@ -925,7 +959,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
           durationSec,
           scanEndSec,
         });
-        return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
+        return {
+          blob: workingBlob,
+          mimeType: workingBlob.type || 'video/webm',
+          motionOnsetSec: null,
+          durationSource: decision.source,
+          authoritativeDurationSec: decision.authoritativeDurationSec,
+        };
       }
 
       // Start slightly before onset to keep the first hit intact. End at
@@ -954,7 +994,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         mimeType,
         durationSource: decision.source,
       });
-      return { blob, mimeType, motionOnsetSec: onsetAbsSec };
+      return {
+        blob,
+        mimeType,
+        motionOnsetSec: onsetAbsSec,
+        durationSource: decision.source,
+        authoritativeDurationSec: decision.authoritativeDurationSec,
+      };
     } finally {
       disposeVideo();
     }
@@ -966,7 +1012,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     console.warn('[gemini-client] motion-onset trimAttempt early-return: outer threw', {
       errorMessage: err instanceof Error ? err.message : String(err),
     });
-    return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
+    return {
+      blob: workingBlob,
+      mimeType: workingBlob.type || 'video/webm',
+      motionOnsetSec: null,
+      durationSource: null,
+      authoritativeDurationSec: 0,
+    };
   } finally {
     if (workingObjectUrl) URL.revokeObjectURL(workingObjectUrl);
   }
@@ -1039,7 +1091,16 @@ async function runServerRepair(blob: Blob): Promise<ServerRepairResult> {
 export async function scoreWithGemini(
   args: ScoreWithGeminiArgs,
 ): Promise<GeminiResult> {
-  const { attemptBlob, referenceVideoUrl, chunkStartMs, chunkEndMs, legsVisible, signal } = args;
+  const {
+    attemptBlob,
+    referenceVideoUrl,
+    chunkStartMs,
+    chunkEndMs,
+    legsVisible,
+    signal,
+    danceId,
+    chunkIndex,
+  } = args;
 
   const controller = new AbortController();
   const composedSignal = signal
@@ -1047,6 +1108,28 @@ export async function scoreWithGemini(
     : controller.signal;
   const callStartedAt = performance.now();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  // SPECK overnight Track 2 §debug-scoring: in-flight accumulator for the
+  // capture store. Populated as the function progresses; fired-and-forgotten
+  // at the end inside captureIfEnabled(). Never blocks the user-facing
+  // scoring path — every failure mode resolves silently (logged only).
+  const captureTrace: {
+    requestPayload: unknown;
+    responseRaw: unknown;
+    motionOnsetRefSec: number | null;
+    motionOnsetAttemptSec: number | null;
+    mirror: boolean;
+    durationSource: SavedAttempt['durationSource'];
+    authoritativeDurationSec: number;
+  } = {
+    requestPayload: null,
+    responseRaw: null,
+    motionOnsetRefSec: null,
+    motionOnsetAttemptSec: null,
+    mirror: false,
+    durationSource: null,
+    authoritativeDurationSec: 0,
+  };
 
   try {
     // Try the client-side trim first. If it throws, fall back to the
@@ -1070,6 +1153,8 @@ export async function scoreWithGemini(
       referenceChunkStartSec = trim.referenceChunkStartSec;
       referenceChunkEndSec = trim.referenceChunkEndSec;
       referenceMotionOnsetSec = trim.motionOnsetSec;
+      captureTrace.motionOnsetRefSec = trim.motionOnsetSec;
+      captureTrace.mirror = trim.mirror;
       trimMode = 'trimmed';
       // SPECK overnight Group 2 §mirror-unification: trim.mirror reflects
       // the user's persisted preference at call time. The previous code
@@ -1098,6 +1183,9 @@ export async function scoreWithGemini(
     const attemptMotionOnsetSec = attemptTrim.motionOnsetSec;
     const attemptToSend = attemptTrim.blob;
     const attemptMimeTypeToSend = attemptTrim.mimeType;
+    captureTrace.motionOnsetAttemptSec = attemptMotionOnsetSec;
+    captureTrace.durationSource = attemptTrim.durationSource;
+    captureTrace.authoritativeDurationSec = attemptTrim.authoritativeDurationSec;
 
     // Both videos motion-onset trimmed when BOTH detected an onset and the
     // reference path didn't degrade to the full-fallback. The prompt's
@@ -1142,6 +1230,15 @@ export async function scoreWithGemini(
           mimeType: composite.mimeType,
           durationSec: composite.durationSec,
         });
+        const compositeRequestPayload = {
+          endpoint: '/api/score-gemini-composite',
+          compositeMimeType: composite.mimeType,
+          compositeDurationSec: composite.durationSec,
+          compositeBytes: compositeBase64.length,
+          legsVisible,
+          mirror: referenceMirrored,
+        };
+        captureTrace.requestPayload = compositeRequestPayload;
         const compRes = await fetch('/api/score-gemini-composite', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1155,9 +1252,19 @@ export async function scoreWithGemini(
         });
         if (compRes.ok) {
           const cJson = (await compRes.json()) as { score?: unknown; latencyMs?: unknown };
+          captureTrace.responseRaw = cJson;
           const cParsed = GeminiScoreSchema.safeParse(cJson.score);
           if (cParsed.success) {
             const latencyMs = typeof cJson.latencyMs === 'number' ? cJson.latencyMs : 0;
+            await captureIfEnabled({
+              args,
+              attemptToSend,
+              attemptMimeTypeToSend,
+              latencyMs,
+              danceId,
+              chunkIndex,
+              trace: captureTrace,
+            });
             return { kind: 'success', score: cParsed.data, latencyMs };
           }
           // eslint-disable-next-line no-console
@@ -1203,6 +1310,23 @@ export async function scoreWithGemini(
       referenceChunkEndSec,
       legsVisible,
     });
+
+    const twoVideoRequestPayload = {
+      endpoint: '/api/score-gemini',
+      referenceMimeType,
+      attemptMimeType: attemptMimeTypeToSend || 'video/webm',
+      legsVisible,
+      referenceChunkStartSec,
+      referenceChunkEndSec,
+      referenceMirrored,
+      referenceMotionOnsetSec,
+      attemptMotionOnsetSec,
+      videosMotionOnsetTrimmed,
+      referenceBytes: referenceBase64.length,
+      attemptBytes: attemptBase64.length,
+    };
+    captureTrace.requestPayload = twoVideoRequestPayload;
+    captureTrace.mirror = referenceMirrored;
 
     const res = await fetch('/api/score-gemini', {
       method: 'POST',
@@ -1252,11 +1376,21 @@ export async function scoreWithGemini(
     }
 
     const json = (await res.json()) as { score?: unknown; latencyMs?: unknown };
+    captureTrace.responseRaw = json;
     const parsed = GeminiScoreSchema.safeParse(json.score);
     if (!parsed.success) {
       return { kind: 'error', reason: 'response failed schema validation' };
     }
     const latencyMs = typeof json.latencyMs === 'number' ? json.latencyMs : 0;
+    await captureIfEnabled({
+      args,
+      attemptToSend,
+      attemptMimeTypeToSend,
+      latencyMs,
+      danceId,
+      chunkIndex,
+      trace: captureTrace,
+    });
     return { kind: 'success', score: parsed.data, latencyMs };
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -1294,4 +1428,66 @@ function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   if (b.aborted) ctrl.abort();
   else b.addEventListener('abort', onAbort, { once: true });
   return ctrl.signal;
+}
+
+// SPECK overnight Track 2 §debug-scoring: fire-and-forget capture into the
+// debug attempt store. Pure best-effort — every failure mode (storage
+// quota, IDB blocked, base64 fault) is logged and swallowed. The
+// user-facing scoring path never observes a failure here.
+//
+// Gated by the `groov_debug_capture` localStorage flag. When the flag is
+// off this function returns immediately without touching the blob.
+async function captureIfEnabled(input: {
+  args: ScoreWithGeminiArgs;
+  attemptToSend: Blob;
+  attemptMimeTypeToSend: string;
+  latencyMs: number;
+  danceId: string | undefined;
+  chunkIndex: number | undefined;
+  trace: {
+    requestPayload: unknown;
+    responseRaw: unknown;
+    motionOnsetRefSec: number | null;
+    motionOnsetAttemptSec: number | null;
+    mirror: boolean;
+    durationSource: SavedAttempt['durationSource'];
+    authoritativeDurationSec: number;
+  };
+}): Promise<void> {
+  if (!isCaptureEnabled()) return;
+  try {
+    const base64 = await blobToBase64Safe(input.attemptToSend);
+    const res = await saveAttempt({
+      danceId: input.danceId ?? '<unknown>',
+      chunkIndex: input.chunkIndex ?? -1,
+      referenceUrl: input.args.referenceVideoUrl,
+      attemptBlobBase64: base64,
+      attemptMimeType: input.attemptMimeTypeToSend || 'video/webm',
+      chunkStartMs: input.args.chunkStartMs,
+      chunkEndMs: input.args.chunkEndMs,
+      motionOnsetRefSec: input.trace.motionOnsetRefSec,
+      motionOnsetAttemptSec: input.trace.motionOnsetAttemptSec,
+      mirror: input.trace.mirror,
+      legsVisible: input.args.legsVisible,
+      requestPayload: input.trace.requestPayload,
+      responseRaw: input.trace.responseRaw,
+      // The deterministic-layer transformation happens upstream in the
+      // page (buildFinalScoreView). client.ts doesn't see it; debug page
+      // can re-render the transformation against responseRaw + the
+      // MediaPipe inputs the user supplies via Re-score.
+      responseDeterministic: null,
+      latencyMs: input.latencyMs,
+      durationSource: input.trace.durationSource ?? null,
+      authoritativeDurationSec: input.trace.authoritativeDurationSec,
+    });
+    // eslint-disable-next-line no-console
+    if (res.ok) console.log('[debug-attempt] saved', { id: res.id, backend: res.backend });
+    // eslint-disable-next-line no-console
+    else console.warn('[debug-attempt] save failed', { reason: res.reason });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[debug-attempt] save failed', {
+      reason: err instanceof Error ? err.message : 'unknown',
+    });
+  }
 }
