@@ -98,11 +98,66 @@ function classifyError(err: unknown): { reason: FailureReason; message: string; 
   return { reason: 'unknown', message, retryable: true };
 }
 
+// Surface every field a Gemini SDK error might carry so a field log line
+// includes BOTH the human message and any upstream HTTP status / body. The
+// SDK's error class shape is not documented as stable, so we read defensively
+// through `any` and serialize whatever's there.
+function logRawSdkError(label: string, err: unknown): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any;
+  // eslint-disable-next-line no-console
+  console.error(`[composite-route-error] ${label}: typeof=${typeof err} constructor=${err?.constructor?.name ?? '<none>'}`);
+  // eslint-disable-next-line no-console
+  console.error(`[composite-route-error] ${label}: message=${e?.message ?? '<none>'}`);
+  // eslint-disable-next-line no-console
+  console.error(`[composite-route-error] ${label}: stack=${e?.stack ?? '<none>'}`);
+  // SDK-specific fields when present. None of these are guaranteed.
+  if (e?.status !== undefined) console.error(`[composite-route-error] ${label}: status=${e.status}`);
+  if (e?.statusText !== undefined) console.error(`[composite-route-error] ${label}: statusText=${e.statusText}`);
+  if (e?.code !== undefined) console.error(`[composite-route-error] ${label}: code=${e.code}`);
+  if (e?.name !== undefined) console.error(`[composite-route-error] ${label}: name=${e.name}`);
+  if (e?.response !== undefined) {
+    try {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${label}: response=${JSON.stringify(e.response, null, 2)}`);
+    } catch {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${label}: response=<unserializable>`);
+    }
+  }
+  if (e?.cause !== undefined) {
+    try {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${label}: cause=${JSON.stringify(e.cause, null, 2)}`);
+    } catch {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${label}: cause=${String(e.cause)}`);
+    }
+  }
+  // Last resort: dump enumerable own-properties so an unknown SDK field still
+  // shows up. JSON.stringify on Error instances skips message/stack, so this
+  // is additive to the explicit lines above.
+  try {
+    const own = Object.getOwnPropertyNames(e ?? {}).filter(
+      (k) => !['message', 'stack', 'response', 'cause'].includes(k),
+    );
+    if (own.length > 0) {
+      const dump: Record<string, unknown> = {};
+      for (const k of own) dump[k] = e[k];
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${label}: ownProps=${JSON.stringify(dump, null, 2)}`);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 async function callGeminiOnce(args: {
   ai: GoogleGenAI;
   prompt: string;
   compositeVideoBase64: string;
   compositeMimeType: string;
+  attemptLabel: string;
 }): Promise<AttemptResult> {
   const startTime = Date.now();
   try {
@@ -131,8 +186,20 @@ async function callGeminiOnce(args: {
     });
     const latencyMs = Date.now() - startTime;
     const text = response.text;
-    console.log('[gemini-response]', text);
-    console.log('[gemini-score-composite] latencyMs:', latencyMs);
+    // eslint-disable-next-line no-console
+    console.log(`[composite-route-response] ${args.attemptLabel}: raw text=`, text);
+    // Dump the full response object too — promptFeedback / safetyRatings /
+    // finishReason live on it and are how we'd see a content-filter trip
+    // (Gemini can return a 200 with empty text when safety blocks fire).
+    try {
+      // eslint-disable-next-line no-console
+      console.log(`[composite-route-response] ${args.attemptLabel}: full=`, JSON.stringify(response, null, 2));
+    } catch {
+      // eslint-disable-next-line no-console
+      console.log(`[composite-route-response] ${args.attemptLabel}: full=<unserializable>`);
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[composite-route-response] ${args.attemptLabel}: latencyMs=${latencyMs}`);
 
     if (!text) {
       return { ok: false, reason: 'empty_response', message: 'Gemini returned empty response', retryable: true };
@@ -141,6 +208,9 @@ async function callGeminiOnce(args: {
     try {
       parsedJson = JSON.parse(text);
     } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${args.attemptLabel}: JSON.parse threw on Gemini text`);
+      logRawSdkError(args.attemptLabel, err);
       return {
         ok: false,
         reason: 'json_parse',
@@ -150,6 +220,10 @@ async function callGeminiOnce(args: {
     }
     const parsed = GeminiSpecScoreSchema.safeParse(parsedJson);
     if (!parsed.success) {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${args.attemptLabel}: spec schema rejected response`);
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-error] ${args.attemptLabel}: schema errors=`, JSON.stringify(parsed.error.flatten(), null, 2));
       return {
         ok: false,
         reason: 'schema_validation',
@@ -159,86 +233,142 @@ async function callGeminiOnce(args: {
     }
     return { ok: true, score: parsed.data, latencyMs };
   } catch (err) {
+    // Log everything we can extract BEFORE classification so the field log
+    // shows the raw upstream signature even when classifyError buckets it
+    // into a vague reason like 'unknown' or 'upstream_5xx'.
+    const elapsedMs = Date.now() - startTime;
+    // eslint-disable-next-line no-console
+    console.error(`[composite-route-error] ${args.attemptLabel}: Gemini SDK call threw after ${elapsedMs}ms`);
+    logRawSdkError(args.attemptLabel, err);
     const { reason, message, retryable } = classifyError(err);
+    // eslint-disable-next-line no-console
+    console.error(`[composite-route-error] ${args.attemptLabel}: classified reason=${reason} retryable=${retryable}`);
     return { ok: false, reason, message, retryable };
   }
 }
 
 export async function POST(req: NextRequest) {
-  let body: RequestBody;
+  // Outer try/catch: anything that escapes the inner flow (JSON.parse on the
+  // request body, an SDK constructor throwing, an unexpected sync throw in
+  // callGeminiOnce, NextResponse.json serialization) lands here and gets
+  // logged with the full error signature before returning 500. Previously
+  // these failed silently with an opaque 502 from the global Next.js error
+  // handler. SPEC: score-restoration diagnostic add.
   try {
-    body = (await req.json()) as RequestBody;
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
-  }
+    let body: RequestBody;
+    try {
+      body = (await req.json()) as RequestBody;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[composite-route-error] request body JSON.parse failed');
+      logRawSdkError('request-body', err);
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
 
-  const {
-    compositeVideoBase64,
-    compositeMimeType,
-    legsVisible = true,
-    mirror = true,
-    motionOnsetSec = 0,
-  } = body;
+    const {
+      compositeVideoBase64,
+      compositeMimeType,
+      legsVisible = true,
+      mirror = true,
+      motionOnsetSec = 0,
+    } = body;
 
-  console.log('[gemini-score-composite] compositeVideoBase64 length:', compositeVideoBase64?.length ?? 'MISSING');
-  console.log('[gemini-score-composite] compositeMimeType:', compositeMimeType);
-  console.log('[gemini-score-composite] legsVisible:', legsVisible);
-  console.log('[gemini-score-composite] mirror:', mirror);
-  console.log('[gemini-score-composite] motionOnsetSec:', motionOnsetSec);
+    // Per spec: log the inputs BEFORE the Gemini call so a hung/erroring
+    // call still leaves a trail of what was sent. Prefix [composite-route-
+    // input] groups them in `grep` together with the prompt + schema logs
+    // below.
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-input] compositeVideoBase64 length:', compositeVideoBase64?.length ?? 'MISSING');
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-input] compositeMimeType:', compositeMimeType);
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-input] legsVisible:', legsVisible);
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-input] mirror:', mirror);
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-input] motionOnsetSec:', motionOnsetSec);
 
-  if (!compositeVideoBase64) {
-    return NextResponse.json(
-      { error: 'Missing video: need compositeVideoBase64' },
-      { status: 400 },
-    );
-  }
+    if (!compositeVideoBase64) {
+      // eslint-disable-next-line no-console
+      console.error('[composite-route-error] missing compositeVideoBase64 in request body');
+      return NextResponse.json(
+        { error: 'Missing video: need compositeVideoBase64' },
+        { status: 400 },
+      );
+    }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: 'GEMINI_API_KEY not configured' }, { status: 500 });
-  }
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      // eslint-disable-next-line no-console
+      console.error('[composite-route-error] GEMINI_API_KEY env var not configured');
+      return NextResponse.json({ error: 'GEMINI_API_KEY not configured' }, { status: 500 });
+    }
 
-  const ai = new GoogleGenAI({ apiKey });
-  const routeStart = Date.now();
+    const ai = new GoogleGenAI({ apiKey });
+    const routeStart = Date.now();
 
-  const prompt = buildCompositePrompt({ legsVisible, mirror, motionOnsetSec });
-  console.log('[gemini-prompt]', prompt);
+    const prompt = buildCompositePrompt({ legsVisible, mirror, motionOnsetSec });
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-prompt]', prompt);
+    // eslint-disable-next-line no-console
+    console.log('[composite-route-schema]', JSON.stringify(GeminiSpecResponseJsonSchema, null, 2));
 
-  const callArgs = {
-    ai,
-    prompt,
-    compositeVideoBase64,
-    compositeMimeType: compositeMimeType || 'video/webm',
-  };
+    const callArgs = {
+      ai,
+      prompt,
+      compositeVideoBase64,
+      compositeMimeType: compositeMimeType || 'video/webm',
+    };
 
-  const first = await callGeminiOnce(callArgs);
-  if (first.ok) {
-    return NextResponse.json({ score: first.score, latencyMs: first.latencyMs });
-  }
+    const first = await callGeminiOnce({ ...callArgs, attemptLabel: 'attempt=1' });
+    if (first.ok) {
+      return NextResponse.json({ score: first.score, latencyMs: first.latencyMs });
+    }
 
-  console.error(`[gemini-score-composite][failure] reason=${first.reason} attempt=1 message=${first.message}`);
-  const elapsed = Date.now() - routeStart;
-  const remaining = TOTAL_BUDGET_MS - elapsed;
-  if (!first.retryable) {
-    console.error(`[gemini-score-composite][fallback] reason=${first.reason} retried=false cause=non_retryable`);
-    return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
-  }
-  if (remaining < MIN_RETRY_BUDGET_MS) {
+    // eslint-disable-next-line no-console
+    console.error(`[composite-route-failure] reason=${first.reason} attempt=1 message=${first.message}`);
+    const elapsed = Date.now() - routeStart;
+    const remaining = TOTAL_BUDGET_MS - elapsed;
+    if (!first.retryable) {
+      // eslint-disable-next-line no-console
+      console.error(`[composite-route-fallback] reason=${first.reason} retried=false cause=non_retryable`);
+      return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
+    }
+    if (remaining < MIN_RETRY_BUDGET_MS) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[composite-route-fallback] reason=${first.reason} retried=false cause=budget_exhausted remainingMs=${remaining}`,
+      );
+      return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
+    }
+
+    // eslint-disable-next-line no-console
+    console.warn(`[composite-route] retrying once (remainingBudgetMs=${remaining})`);
+    const second = await callGeminiOnce({ ...callArgs, attemptLabel: 'attempt=2' });
+    if (second.ok) {
+      // eslint-disable-next-line no-console
+      console.log('[composite-route] retry succeeded');
+      return NextResponse.json({ score: second.score, latencyMs: second.latencyMs });
+    }
+    // eslint-disable-next-line no-console
+    console.error(`[composite-route-failure] reason=${second.reason} attempt=2 message=${second.message}`);
+    // eslint-disable-next-line no-console
     console.error(
-      `[gemini-score-composite][fallback] reason=${first.reason} retried=false cause=budget_exhausted remainingMs=${remaining}`,
+      `[composite-route-fallback] reason=${second.reason} retried=true firstReason=${first.reason}`,
     );
-    return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
+    return NextResponse.json({ error: second.message, reason: second.reason }, { status: 502 });
+  } catch (err) {
+    // Anything that escaped the inner flow. Log it fully and return 500 with
+    // the message so the client gets a non-silent failure.
+    // eslint-disable-next-line no-console
+    console.error('[composite-route-error] handler-level exception escaped');
+    logRawSdkError('handler', err);
+    return NextResponse.json(
+      {
+        error: err instanceof Error ? err.message : String(err),
+        reason: 'handler_exception',
+      },
+      { status: 500 },
+    );
   }
-
-  console.warn(`[gemini-score-composite] retrying once (remainingBudgetMs=${remaining})`);
-  const second = await callGeminiOnce(callArgs);
-  if (second.ok) {
-    console.log('[gemini-score-composite] retry succeeded');
-    return NextResponse.json({ score: second.score, latencyMs: second.latencyMs });
-  }
-  console.error(`[gemini-score-composite][failure] reason=${second.reason} attempt=2 message=${second.message}`);
-  console.error(
-    `[gemini-score-composite][fallback] reason=${second.reason} retried=true firstReason=${first.reason}`,
-  );
-  return NextResponse.json({ error: second.message, reason: second.reason }, { status: 502 });
 }
