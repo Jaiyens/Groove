@@ -688,12 +688,13 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
   }
 
-  // Round-5 Fix 2 (SPECK): rewrite the EBML metadata with ts-ebml before
-  // the blob ever hits a <video> element. The previous seek-trick made
-  // duration FINITE but not CORRECT — real attempts ~7s were landing
-  // around 2s. ts-ebml derives the real duration from cluster timestamps
-  // and rebuilds the header via `tools.makeMetadataSeekable`. Returns
-  // the original blob unchanged on parse failure (best-effort).
+  // Round-5 Fix 2 (SPECK): rewrite the EBML metadata before the blob
+  // ever hits a <video> element. The previous seek-trick made duration
+  // FINITE but not CORRECT — real attempts ~7s were landing around 2s.
+  // repairWebmDuration walks the EBML bytes to read the last cluster's
+  // Timecode and hands the inferred duration to fix-webm-duration for
+  // the actual header rewrite. Returns the original blob unchanged on
+  // parse failure (best-effort).
   const repair = await repairWebmDuration(attemptBlob);
   // eslint-disable-next-line no-console
   console.log('[gemini-client] motion-onset trimAttempt: webm-repair', {
@@ -713,7 +714,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     try {
       // Round-4 Fix 1: MediaRecorder webm blobs notoriously surface
       // duration=0.001 (or Infinity, or NaN) until a seek-to-end forces
-      // the container index to write. Even after the round-5 ts-ebml
+      // the container index to write. Even after the round-5 metadata
       // rewrite above, this second pass is cheap (short-circuits when
       // the duration already looks sane) and a defensive belt-and-braces
       // — kept so a CDN-served webm that bypasses the repair path still

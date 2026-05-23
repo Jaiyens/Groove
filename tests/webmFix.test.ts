@@ -10,14 +10,15 @@ import { repairWebmDuration } from '../lib/scoring/gemini/webmFix.ts';
 // Test scope: unit tests cover the wrapper's CONTRACT (return shape,
 // graceful degradation, type preservation). The round-trip assertion
 // against a real broken-MediaRecorder fixture lives in the browser
-// validation pass — ts-ebml's Encoder cannot build a clean fixture that
-// its own Decoder reads back without errors in node (the encoder appears
-// designed for round-trip-from-decode use only), and recording one with
-// MediaRecorder requires a browser harness this project doesn't ship.
+// validation pass — recording one with MediaRecorder requires a browser
+// harness this project doesn't ship, and constructing a synthetic
+// fixture by hand requires more EBML encoder knowledge than is worth
+// embedding in tests.
 //
 // The graceful-degradation cases here pin the most important field
-// failure mode: ts-ebml throws or finds no clusters → caller falls back
-// to the legacy path without an unhandled rejection or a corrupt blob.
+// failure mode: the EBML byte-scan finds no cluster or fix-webm-duration
+// throws → caller falls back to the original blob without an unhandled
+// rejection or a corrupt return value.
 
 describe('repairWebmDuration — graceful degradation', () => {
   it('returns the original blob unchanged when the input is unparseable garbage', async () => {
