@@ -4,7 +4,10 @@
 // Contract:
 //   body: { compositeVideoBase64, compositeMimeType?, legsVisible?, mirror? }
 //   ok:   { score: GeminiScore, latencyMs: number }
-//   err:  { error: string, reason?: string }            (status 400 / 502)
+//   err:  { error: string, reason?: string, __debug: {...} }    (status 502
+//         on classified failures; status 200 on handler-level exception so
+//         the browser network tab shows the __debug body without CORS or
+//         error-handling getting in the way)
 //
 // Differs from /api/score-gemini in that the model receives ONE video
 // (REF on the left half, ATTEMPT on the right half, audio-synced to
@@ -65,6 +68,16 @@ type FailureReason =
   | 'upstream_4xx'
   | 'unknown';
 
+// Captured raw signature of whatever the SDK / inner flow surfaced. Surfaces
+// into the response body __debug field so the browser network tab can show
+// it without us needing terminal logs.
+interface RawErrorSignature {
+  errorMessage: string;
+  errorStatus?: number;
+  errorName?: string;
+  errorBody?: unknown;
+}
+
 interface AttemptSuccess {
   ok: true;
   score: GeminiSpecScore;
@@ -75,8 +88,65 @@ interface AttemptFailure {
   reason: FailureReason;
   message: string;
   retryable: boolean;
+  raw: RawErrorSignature;
 }
 type AttemptResult = AttemptSuccess | AttemptFailure;
+
+interface GeminiRequestPreview {
+  promptLength: number | null;
+  schemaJson: unknown;
+  motionOnsetSec: number | null;
+  compositeBytes: number | null;
+}
+
+function emptyPreview(): GeminiRequestPreview {
+  return { promptLength: null, schemaJson: null, motionOnsetSec: null, compositeBytes: null };
+}
+
+// Pull as much signature as we can from a thrown value. The Gemini SDK error
+// surface is undocumented; read defensively through `any` and try to surface
+// the upstream response body specifically since that's what carries the real
+// 4xx/5xx reason.
+function extractRawSignature(err: unknown): RawErrorSignature {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any;
+  const sig: RawErrorSignature = {
+    errorMessage: err instanceof Error ? err.message : String(err),
+  };
+  if (e?.name !== undefined) sig.errorName = String(e.name);
+  if (e?.status !== undefined && typeof e.status === 'number') sig.errorStatus = e.status;
+  // The SDK sometimes stores the upstream body on .response, sometimes on
+  // .response.data, sometimes only on .cause. Try each. Prefer parsed JSON.
+  const candidates: unknown[] = [];
+  if (e?.response !== undefined) candidates.push(e.response);
+  if (e?.cause !== undefined) candidates.push(e.cause);
+  // Also try the message itself — the SDK frequently embeds the upstream
+  // JSON body as a string in the .message field, e.g.
+  //   "got status: 400 Bad Request. {\"error\":{\"code\":400,...}}"
+  // Surface it verbatim so the browser can read it.
+  if (typeof e?.message === 'string') candidates.push(e.message);
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue;
+    if (typeof c === 'string') {
+      // Try to find an embedded JSON object and parse it.
+      const idx = c.indexOf('{');
+      if (idx >= 0) {
+        try {
+          sig.errorBody = JSON.parse(c.slice(idx));
+          break;
+        } catch {
+          // fall through and store raw string
+        }
+      }
+      sig.errorBody = c;
+      break;
+    }
+    // Object — keep as-is; NextResponse.json will serialize it.
+    sig.errorBody = c;
+    break;
+  }
+  return sig;
+}
 
 function classifyError(err: unknown): { reason: FailureReason; message: string; retryable: boolean } {
   const message = err instanceof Error ? err.message : String(err);
@@ -202,7 +272,13 @@ async function callGeminiOnce(args: {
     console.log(`[composite-route-response] ${args.attemptLabel}: latencyMs=${latencyMs}`);
 
     if (!text) {
-      return { ok: false, reason: 'empty_response', message: 'Gemini returned empty response', retryable: true };
+      return {
+        ok: false,
+        reason: 'empty_response',
+        message: 'Gemini returned empty response',
+        retryable: true,
+        raw: { errorMessage: 'Gemini returned empty response', errorBody: response as unknown },
+      };
     }
     let parsedJson: unknown;
     try {
@@ -216,6 +292,7 @@ async function callGeminiOnce(args: {
         reason: 'json_parse',
         message: err instanceof Error ? err.message : String(err),
         retryable: true,
+        raw: { ...extractRawSignature(err), errorBody: text },
       };
     }
     const parsed = GeminiSpecScoreSchema.safeParse(parsedJson);
@@ -229,6 +306,11 @@ async function callGeminiOnce(args: {
         reason: 'schema_validation',
         message: JSON.stringify(parsed.error.flatten()),
         retryable: true,
+        raw: {
+          errorMessage: 'Spec schema rejected Gemini response',
+          errorName: 'ZodSchemaValidationError',
+          errorBody: { schemaErrors: parsed.error.flatten(), geminiBody: parsedJson },
+        },
       };
     }
     return { ok: true, score: parsed.data, latencyMs };
@@ -243,17 +325,21 @@ async function callGeminiOnce(args: {
     const { reason, message, retryable } = classifyError(err);
     // eslint-disable-next-line no-console
     console.error(`[composite-route-error] ${args.attemptLabel}: classified reason=${reason} retryable=${retryable}`);
-    return { ok: false, reason, message, retryable };
+    return { ok: false, reason, message, retryable, raw: extractRawSignature(err) };
   }
 }
 
 export async function POST(req: NextRequest) {
-  // Outer try/catch: anything that escapes the inner flow (JSON.parse on the
-  // request body, an SDK constructor throwing, an unexpected sync throw in
-  // callGeminiOnce, NextResponse.json serialization) lands here and gets
-  // logged with the full error signature before returning 500. Previously
-  // these failed silently with an opaque 502 from the global Next.js error
-  // handler. SPEC: score-restoration diagnostic add.
+  // Diagnostic-mode top-level try/catch: ANY uncaught throw lands in the
+  // outer catch and returns 200 with a __debug body. We deliberately return
+  // 200 (not 500) so Chrome DevTools shows the response body without CORS
+  // or default error UI getting in the way. The classified-failure return
+  // paths below still use 502 (the contract), but every non-happy-path
+  // return — 400 / 502 / outer-catch — includes a top-level __debug field.
+  //
+  // The preview/raw fields here let us reconstruct what was sent and what
+  // came back without scraping terminal logs.
+  let preview: GeminiRequestPreview = emptyPreview();
   try {
     let body: RequestBody;
     try {
@@ -262,7 +348,16 @@ export async function POST(req: NextRequest) {
       // eslint-disable-next-line no-console
       console.error('[composite-route-error] request body JSON.parse failed');
       logRawSdkError('request-body', err);
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return NextResponse.json(
+        {
+          __debug: {
+            ...extractRawSignature(err),
+            geminiRequestPreview: preview,
+          },
+          error: 'Invalid JSON body',
+        },
+        { status: 400 },
+      );
     }
 
     const {
@@ -288,11 +383,26 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line no-console
     console.log('[composite-route-input] motionOnsetSec:', motionOnsetSec);
 
+    // Stash what we know so far so any subsequent failure can surface it.
+    preview = {
+      promptLength: null,
+      schemaJson: GeminiSpecResponseJsonSchema,
+      motionOnsetSec,
+      compositeBytes: compositeVideoBase64?.length ?? null,
+    };
+
     if (!compositeVideoBase64) {
       // eslint-disable-next-line no-console
       console.error('[composite-route-error] missing compositeVideoBase64 in request body');
       return NextResponse.json(
-        { error: 'Missing video: need compositeVideoBase64' },
+        {
+          __debug: {
+            errorMessage: 'Missing video: need compositeVideoBase64',
+            errorName: 'BadRequest',
+            geminiRequestPreview: preview,
+          },
+          error: 'Missing video: need compositeVideoBase64',
+        },
         { status: 400 },
       );
     }
@@ -301,13 +411,29 @@ export async function POST(req: NextRequest) {
     if (!apiKey) {
       // eslint-disable-next-line no-console
       console.error('[composite-route-error] GEMINI_API_KEY env var not configured');
-      return NextResponse.json({ error: 'GEMINI_API_KEY not configured' }, { status: 500 });
+      return NextResponse.json(
+        {
+          __debug: {
+            errorMessage: 'GEMINI_API_KEY not configured',
+            errorName: 'MissingEnv',
+            geminiRequestPreview: preview,
+          },
+          error: 'GEMINI_API_KEY not configured',
+        },
+        { status: 500 },
+      );
     }
 
     const ai = new GoogleGenAI({ apiKey });
     const routeStart = Date.now();
 
     const prompt = buildCompositePrompt({ legsVisible, mirror, motionOnsetSec });
+    preview = {
+      promptLength: prompt.length,
+      schemaJson: GeminiSpecResponseJsonSchema,
+      motionOnsetSec,
+      compositeBytes: compositeVideoBase64.length,
+    };
     // eslint-disable-next-line no-console
     console.log('[composite-route-prompt]', prompt);
     // eslint-disable-next-line no-console
@@ -332,14 +458,28 @@ export async function POST(req: NextRequest) {
     if (!first.retryable) {
       // eslint-disable-next-line no-console
       console.error(`[composite-route-fallback] reason=${first.reason} retried=false cause=non_retryable`);
-      return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
+      return NextResponse.json(
+        {
+          __debug: { ...first.raw, geminiRequestPreview: preview },
+          error: first.message,
+          reason: first.reason,
+        },
+        { status: 502 },
+      );
     }
     if (remaining < MIN_RETRY_BUDGET_MS) {
       // eslint-disable-next-line no-console
       console.error(
         `[composite-route-fallback] reason=${first.reason} retried=false cause=budget_exhausted remainingMs=${remaining}`,
       );
-      return NextResponse.json({ error: first.message, reason: first.reason }, { status: 502 });
+      return NextResponse.json(
+        {
+          __debug: { ...first.raw, geminiRequestPreview: preview },
+          error: first.message,
+          reason: first.reason,
+        },
+        { status: 502 },
+      );
     }
 
     // eslint-disable-next-line no-console
@@ -356,19 +496,38 @@ export async function POST(req: NextRequest) {
     console.error(
       `[composite-route-fallback] reason=${second.reason} retried=true firstReason=${first.reason}`,
     );
-    return NextResponse.json({ error: second.message, reason: second.reason }, { status: 502 });
+    return NextResponse.json(
+      {
+        __debug: {
+          ...second.raw,
+          firstAttemptRaw: first.raw,
+          firstAttemptReason: first.reason,
+          geminiRequestPreview: preview,
+        },
+        error: second.message,
+        reason: second.reason,
+      },
+      { status: 502 },
+    );
   } catch (err) {
-    // Anything that escaped the inner flow. Log it fully and return 500 with
-    // the message so the client gets a non-silent failure.
+    // Anything that escaped the inner flow lands here. Return 200 with the
+    // __debug body so Chrome DevTools Network → Response shows it directly
+    // (no CORS / default-error-UI fighting us). The terminal logs still
+    // fire below as a backup.
     // eslint-disable-next-line no-console
     console.error('[composite-route-error] handler-level exception escaped');
     logRawSdkError('handler', err);
     return NextResponse.json(
       {
+        __debug: {
+          ...extractRawSignature(err),
+          handlerLevel: true,
+          geminiRequestPreview: preview,
+        },
         error: err instanceof Error ? err.message : String(err),
         reason: 'handler_exception',
       },
-      { status: 500 },
+      { status: 200 },
     );
   }
 }
