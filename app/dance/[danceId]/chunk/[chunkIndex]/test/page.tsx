@@ -51,7 +51,7 @@ import {
   frameScoreFromSimilarity,
   scoreSession,
 } from '@/lib/scoring/scorer';
-import { cosineSimilarity } from '@/lib/scoring/similarity';
+import { cosineSimilarity, jointAngleAngularSimilarity } from '@/lib/scoring/similarity';
 import {
   generateReferenceSequence,
   neutralReferenceFrame,
@@ -546,13 +546,21 @@ export default function TestPage({ params }: PageProps) {
             const sim = cosineSimilarity(vec, ref);
             const s = frameScoreFromSimilarity(Math.max(0, sim));
             setLiveScore((prev) => prev * 0.7 + s * 0.3);
-            // Live callout engine: similarity is the SAME score the
-            // existing pipeline computes (cosine over joint angles, range
-            // -1..1 but in practice ~0..1 for similar poses). Per SPECK
-            // §Hard rule 3 we feed the existing stream, do not recompute.
+            // SPECK overnight Group 5 (experimental): the live callout
+            // tier now reads from `jointAngleAngularSimilarity` instead
+            // of cosineSimilarity. Cosine on joint-angle vectors is
+            // structurally saturated (0.95-0.999 for any two normal
+            // poses) and makes every beat fire GROOVY. The per-joint
+            // angular agreement score spreads across the full 0-1 band
+            // and matches the tier thresholds the callout engine was
+            // tuned for. See /docs/callout-tier-diagnosis-overnight.md
+            // for the math. `setLiveScore` above keeps using the cosine
+            // value so the post-attempt displayed score is unchanged
+            // — only the live callout tier is affected here.
+            const calloutSim = jointAngleAngularSimilarity(vec, ref);
             calloutEngineRef.current?.ingestFrame({
               timestamp: sessionT,
-              similarity: Math.max(0, sim),
+              similarity: Math.max(0, calloutSim),
             });
             if (sessionT - lastHintAtRef.current >= 200) {
               lastHintAtRef.current = sessionT;
