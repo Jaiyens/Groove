@@ -36,7 +36,6 @@ export default function IntroSplash() {
           <svg
             className="intro-y"
             viewBox="0 0 78 118"
-            focusable="false"
             aria-hidden
           >
             <path

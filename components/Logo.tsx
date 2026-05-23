@@ -45,7 +45,6 @@ function PlayfulY() {
       className="wordmark-groov-y"
       aria-hidden
       viewBox="0 0 78 118"
-      focusable="false"
     >
       <path
         d="M8 18 C20 38 29 50 39 52 C48 43 55 30 64 10"
