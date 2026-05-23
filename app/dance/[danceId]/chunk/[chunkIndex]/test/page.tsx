@@ -927,6 +927,8 @@ export default function TestPage({ params }: PageProps) {
                 setLiveScore(0);
                 setProgress(0);
               }}
+              finalView={finalView}
+              chunkStartMs={chunk.startMs}
             />
           )}
       </div>
