@@ -315,7 +315,11 @@ function GeminiResultsView({
 
       <div className="mt-7 grid w-full max-w-xs grid-cols-2 gap-3">
         <ComponentBar label="Arms" score={primary.components.arms} />
-        <ComponentBar label="Legs" score={primary.components.legs} />
+        <ComponentBar
+          label="Legs"
+          score={primary.components.legs}
+          note={finalView.legsVisible === false ? '(upper body only)' : null}
+        />
         <ComponentBar label="Body" score={primary.components.body} />
         <ComponentBar label="Timing" score={primary.components.timing} />
       </div>
@@ -486,7 +490,18 @@ function drillUrlForGeminiSpot(
   return `/dance/${danceId}/chunk/${chunkIndex}/copy?from=${startMs}&to=${endMs}&speed=0.5`;
 }
 
-function ComponentBar({ label, score }: { label: string; score: number }) {
+function ComponentBar({
+  label,
+  score,
+  note,
+}: {
+  label: string;
+  score: number;
+  // Small contextual subtitle under the label — used to explain a
+  // defaulted leg score when the user filmed upper-body only (SPECK
+  // §windowing-fix). Null when no annotation applies.
+  note?: string | null;
+}) {
   const rounded = Math.round(Math.max(0, Math.min(100, score)));
   return (
     <div className="rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">
@@ -498,6 +513,11 @@ function ComponentBar({ label, score }: { label: string; score: number }) {
           {rounded}
         </span>
       </div>
+      {note && (
+        <div className="mt-0.5 text-[9px] uppercase tracking-widest text-white/35">
+          {note}
+        </div>
+      )}
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
         <div
           className={`h-full ${barColorClass(score)}`}

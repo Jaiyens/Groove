@@ -664,7 +664,7 @@ export default function TestPage({ params }: PageProps) {
         });
       }
 
-      const view = buildFinalScoreView(geminiResult, mediapipeFinal, chunk.startMs);
+      const view = buildFinalScoreView(geminiResult, mediapipeFinal, chunk.startMs, legsVisible);
       setSessionScore(mediapipeFinal);
       setFinalView(view);
       const overall = view.primary.overall_score;

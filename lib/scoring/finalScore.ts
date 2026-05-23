@@ -28,6 +28,13 @@ export interface FinalScoreView {
   primary: GeminiScore;
   backup: SessionScore | null;
   source: FinalScoreSource;
+  // True when the user filmed legs in frame, false when filming upper
+  // body only (SPECK §windowing-fix). Derived from MediaPipe pose
+  // frames before the Gemini call; the ResultsCard uses it to annotate
+  // the LEGS pill with "(upper body only)" so the user understands why
+  // the leg score is defaulted high. Older code paths that don't
+  // detect leg visibility default to true (current behavior).
+  legsVisible: boolean;
 }
 
 const ARM_JOINTS: ReadonlyArray<JointName> = [
@@ -135,17 +142,20 @@ export function buildFinalScoreView(
   geminiResult: GeminiResult,
   mediapipeFinal: SessionScore,
   chunkStartMs: number,
+  legsVisible: boolean = true,
 ): FinalScoreView {
   if (geminiResult.kind === 'success') {
     return {
       primary: geminiResult.score,
       backup: mediapipeFinal,
       source: 'gemini',
+      legsVisible,
     };
   }
   return {
     primary: mediapipeFinalToGeminiShape(mediapipeFinal, chunkStartMs),
     backup: null,
     source: 'mediapipe-fallback',
+    legsVisible,
   };
 }
