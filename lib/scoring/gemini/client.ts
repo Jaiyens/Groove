@@ -91,11 +91,33 @@ async function fetchReferenceAsBlob(url: string, signal?: AbortSignal): Promise<
   return res.blob();
 }
 
+// Short hint for log lines so we don't dump full URLs (could be signed,
+// could include credentials). For blob: URLs it surfaces the blob-id tail;
+// for http(s) URLs it surfaces the trailing path segment.
+function shortUrlHint(url: string): string {
+  if (!url) return '<empty>';
+  if (url.startsWith('blob:')) {
+    const idx = url.lastIndexOf('/');
+    return `blob:…${url.slice(idx + 1, idx + 13)}`;
+  }
+  try {
+    const u = new URL(url);
+    const tail = u.pathname.split('/').filter(Boolean).pop() ?? '';
+    return `${u.hostname}/…/${tail.slice(0, 32)}`;
+  } catch {
+    return `<unparseable len=${url.length}>`;
+  }
+}
+
 // Load a video URL into a hidden DOM element and wait for metadata. Caller
 // must call the returned `dispose` when done so the element is removed and
 // the source revoked. Throws if DOM is unavailable (SSR or a stripped JSDOM).
 async function openHiddenVideo(url: string): Promise<{ video: HTMLVideoElement; dispose: () => void }> {
   if (typeof document === 'undefined') {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset openHiddenVideo: DOM unavailable', {
+      urlHint: shortUrlHint(url),
+    });
     throw new Error('video: DOM unavailable');
   }
   const video = document.createElement('video');
@@ -111,15 +133,42 @@ async function openHiddenVideo(url: string): Promise<{ video: HTMLVideoElement; 
   document.body.appendChild(video);
   video.src = url;
 
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset openHiddenVideo: awaiting metadata', {
+    urlHint: shortUrlHint(url),
+  });
+  const openStartedAt = performance.now();
+
   await new Promise<void>((resolve, reject) => {
     const onLoaded = () => {
       video.removeEventListener('loadedmetadata', onLoaded);
       video.removeEventListener('error', onError);
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset openHiddenVideo: metadata loaded', {
+        urlHint: shortUrlHint(url),
+        durationSec: video.duration,
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+        readyState: video.readyState,
+        networkState: video.networkState,
+        elapsedMs: Math.round(performance.now() - openStartedAt),
+      });
       resolve();
     };
     const onError = () => {
       video.removeEventListener('loadedmetadata', onLoaded);
       video.removeEventListener('error', onError);
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] motion-onset openHiddenVideo: metadata failed', {
+        urlHint: shortUrlHint(url),
+        // Surface every diagnostic the element exposes at error time so we
+        // can tell CORS taint apart from decode error apart from network 4xx.
+        readyState: video.readyState,
+        networkState: video.networkState,
+        errorCode: video.error?.code ?? null,
+        errorMessage: video.error?.message ?? null,
+        elapsedMs: Math.round(performance.now() - openStartedAt),
+      });
       reject(new Error('video failed to load metadata'));
     };
     video.addEventListener('loadedmetadata', onLoaded);
@@ -141,6 +190,7 @@ async function openHiddenVideo(url: string): Promise<{ video: HTMLVideoElement; 
 }
 
 async function seekVideo(video: HTMLVideoElement, sec: number): Promise<void> {
+  const targetSec = sec;
   video.currentTime = sec;
   await new Promise<void>((resolve, reject) => {
     const onSeeked = () => {
@@ -151,6 +201,15 @@ async function seekVideo(video: HTMLVideoElement, sec: number): Promise<void> {
     const onError = () => {
       video.removeEventListener('seeked', onSeeked);
       video.removeEventListener('error', onError);
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] motion-onset seekVideo: seek failed', {
+        targetSec,
+        currentTime: video.currentTime,
+        readyState: video.readyState,
+        networkState: video.networkState,
+        errorCode: video.error?.code ?? null,
+        errorMessage: video.error?.message ?? null,
+      });
       reject(new Error('video seek failed'));
     };
     video.addEventListener('seeked', onSeeked);
@@ -164,30 +223,74 @@ async function seekVideo(video: HTMLVideoElement, sec: number): Promise<void> {
 //
 // Cost: ~scanWindowSec / sampleIntervalSec seeks. Each seek + draw is ~30-
 // 50ms on mobile Safari, so a 3s scan @ 80ms = ~37 samples = ~1.5s wall time.
+//
+// Round-4 diagnosis: every early-return path emits a distinct log line under
+// the `[gemini-client] motion-onset` prefix with the values that triggered
+// the return. Field operations: search for `motion-onset detect:` to see
+// every entry/exit; `motion-onset detect early-return:` to see only the
+// failure paths.
 async function detectMotionOnsetInVideo(
   video: HTMLVideoElement,
   scanStartSec: number,
   scanEndSec: number,
 ): Promise<number | null> {
-  if (typeof document === 'undefined') return null;
+  const fnStartedAt = performance.now();
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset detect: entry', {
+    scanStartSec,
+    scanEndSec,
+    scanWindowSec: scanEndSec - scanStartSec,
+    sampleIntervalMs: MOTION_ONSET_SAMPLE_INTERVAL_MS,
+    expectedSampleCount: Math.max(
+      0,
+      Math.floor((scanEndSec - scanStartSec) / (MOTION_ONSET_SAMPLE_INTERVAL_MS / 1000)) + 1,
+    ),
+    videoDurationSec: video.duration,
+    videoWidth: video.videoWidth,
+    videoHeight: video.videoHeight,
+    readyState: video.readyState,
+  });
+
+  if (typeof document === 'undefined') {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset detect early-return: DOM unavailable');
+    return null;
+  }
 
   const tile = MOTION_ONSET_TILE;
   const canvas = document.createElement('canvas');
   canvas.width = tile;
   canvas.height = tile;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
+  if (!ctx) {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset detect early-return: canvas 2d ctx unavailable', {
+      tile,
+    });
+    return null;
+  }
 
   const samples: number[] = [];
   const sampleTimes: number[] = [];
   let prev: Uint8ClampedArray | null = null;
+  let lastMeanDiff = 0;
+  let lastIterationT = scanStartSec;
+  let iterationCount = 0;
 
   const intervalSec = MOTION_ONSET_SAMPLE_INTERVAL_MS / 1000;
   for (let t = scanStartSec; t <= scanEndSec; t += intervalSec) {
+    iterationCount += 1;
+    lastIterationT = t;
+    // Track which step inside the iteration faulted so the catch can name
+    // it instead of returning a generic "something failed."
+    let phase: 'seek' | 'drawImage' | 'getImageData' | 'diff' = 'seek';
     try {
       await seekVideo(video, t);
+      phase = 'drawImage';
       ctx.drawImage(video, 0, 0, tile, tile);
+      phase = 'getImageData';
       const data = ctx.getImageData(0, 0, tile, tile).data;
+      phase = 'diff';
 
       if (prev) {
         let sum = 0;
@@ -198,6 +301,7 @@ async function detectMotionOnsetInVideo(
           sum += Math.abs(lumCur - lumPrev);
         }
         const meanDiff = sum / (data.length / 4);
+        lastMeanDiff = meanDiff;
         samples.push(meanDiff);
         sampleTimes.push(t);
       } else {
@@ -207,16 +311,89 @@ async function detectMotionOnsetInVideo(
         sampleTimes.push(t);
       }
       prev = new Uint8ClampedArray(data);
-    } catch {
+    } catch (err) {
       // CORS-tainted canvas or seek error — bail and let the caller pick
-      // a sensible default.
+      // a sensible default. We surface WHICH phase faulted so a CORS-
+      // tainted canvas (drawImage / getImageData) is distinguishable from
+      // a seek failure (seek phase) without re-running.
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] motion-onset detect early-return: iteration threw', {
+        phase,
+        iterationT: t,
+        iterationIndex: iterationCount - 1,
+        samplesSoFar: samples.length,
+        elapsedMs: Math.round(performance.now() - fnStartedAt),
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
   }
 
+  // Sample summary — even when an onset IS found, this gives us a sanity
+  // check on what the input distribution looks like.
+  const stats = summarizeSamples(samples);
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset detect: scan complete', {
+    iterationsRun: iterationCount,
+    samplesCollected: samples.length,
+    lastIterationT,
+    lastMeanDiff,
+    elapsedMs: Math.round(performance.now() - fnStartedAt),
+    ...stats,
+  });
+
   const onsetIdx = detectMotionOnsetIndex(samples);
-  if (onsetIdx === null) return null;
+  if (onsetIdx === null) {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset detect early-return: no onset found within scan window', {
+      samplesCollected: samples.length,
+      ...stats,
+      // The decision rule for onset is: sample > 3× rolling baseline of the
+      // previous 3 samples AND sample ≥ 0.5 absolute floor. If max sample is
+      // below the floor the stream is essentially still; if max ratio over
+      // baseline is below 3× the stream is too uniform (e.g. a fully static
+      // pre-roll with no motion-onset hit reached within the scan limit).
+    });
+    return null;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset detect: onset found', {
+    onsetIdx,
+    onsetSec: sampleTimes[onsetIdx],
+    onsetSample: samples[onsetIdx],
+    samplesCollected: samples.length,
+    elapsedMs: Math.round(performance.now() - fnStartedAt),
+  });
   return sampleTimes[onsetIdx];
+}
+
+// Stats helper used only by motion-onset logs. Pure, returns serializable
+// numbers so the log line stays readable. Min and max are useful for
+// "stream is saturated" / "stream is silent" diagnoses respectively; mean
+// helps spot a noisy-but-flat distribution where no single sample stands
+// out enough to clear the 3× rolling-baseline rule.
+function summarizeSamples(samples: number[]): {
+  sampleMax: number;
+  sampleMin: number;
+  sampleMean: number;
+} {
+  if (samples.length === 0) {
+    return { sampleMax: 0, sampleMin: 0, sampleMean: 0 };
+  }
+  let max = -Infinity;
+  let min = Infinity;
+  let sum = 0;
+  for (const s of samples) {
+    if (s > max) max = s;
+    if (s < min) min = s;
+    sum += s;
+  }
+  return {
+    sampleMax: Number(max.toFixed(3)),
+    sampleMin: Number(min.toFixed(3)),
+    sampleMean: Number((sum / samples.length).toFixed(3)),
+  };
 }
 
 // Record a slice of an already-loaded video to a Blob via canvas + MediaRecorder.
@@ -338,7 +515,19 @@ async function trimReferenceClientSide(
   chunkStartMs: number,
   chunkEndMs: number,
 ): Promise<TrimReferenceResult> {
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset trimReference: entry', {
+    urlHint: shortUrlHint(url),
+    chunkStartMs,
+    chunkEndMs,
+  });
+
   if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset trimReference early-return: DOM or MediaRecorder unavailable', {
+      hasDocument: typeof document !== 'undefined',
+      hasMediaRecorder: typeof MediaRecorder !== 'undefined',
+    });
     throw new Error('trim: DOM or MediaRecorder unavailable');
   }
 
@@ -346,12 +535,26 @@ async function trimReferenceClientSide(
   try {
     const durationSec = video.duration;
     if (!Number.isFinite(durationSec) || durationSec <= 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] motion-onset trimReference early-return: duration invalid', {
+        durationSec,
+        isFinite: Number.isFinite(durationSec),
+        urlHint: shortUrlHint(url),
+      });
       throw new Error(`reference video duration unknown (${durationSec})`);
     }
 
     const trimStartMs = Math.max(0, chunkStartMs - REFERENCE_PADDING_MS);
     const trimEndMs = Math.min(durationSec * 1000, chunkEndMs + REFERENCE_PADDING_MS);
     if (trimEndMs <= trimStartMs) {
+      // eslint-disable-next-line no-console
+      console.warn('[gemini-client] motion-onset trimReference early-return: invalid trim window', {
+        trimStartMs,
+        trimEndMs,
+        chunkStartMs,
+        chunkEndMs,
+        durationSec,
+      });
       throw new Error(`invalid trim window: start=${trimStartMs}ms end=${trimEndMs}ms`);
     }
 
@@ -363,6 +566,14 @@ async function trimReferenceClientSide(
       trimEndMs / 1000,
       scanStartSec + MOTION_ONSET_SCAN_LIMIT_MS / 1000,
     );
+    // eslint-disable-next-line no-console
+    console.log('[gemini-client] motion-onset trimReference: scanning', {
+      durationSec,
+      trimStartMs,
+      trimEndMs,
+      scanStartSec,
+      scanEndSec,
+    });
     const onsetAbsSec = await detectMotionOnsetInVideo(video, scanStartSec, scanEndSec);
 
     // Effective start of the recorded slice. If onset was detected, start
@@ -372,6 +583,13 @@ async function trimReferenceClientSide(
       ? Math.max(trimStartMs / 1000, onsetAbsSec - 0.05)
       : trimStartMs / 1000;
     const effectiveEndSec = trimEndMs / 1000;
+
+    // eslint-disable-next-line no-console
+    console.log('[gemini-client] motion-onset trimReference: onset outcome → capture window', {
+      onsetAbsSec,
+      effectiveStartSec,
+      effectiveEndSec,
+    });
 
     const { blob, mimeType } = await captureVideoSlice(
       video,
@@ -386,6 +604,15 @@ async function trimReferenceClientSide(
       onsetAbsSec !== null ? 0 : (chunkStartMs - trimStartMs) / 1000;
     const referenceChunkEndSec =
       referenceChunkStartSec + (chunkEndMs - chunkStartMs) / 1000;
+
+    // eslint-disable-next-line no-console
+    console.log('[gemini-client] motion-onset trimReference: done', {
+      motionOnsetSec: onsetAbsSec,
+      referenceChunkStartSec,
+      referenceChunkEndSec,
+      blobBytes: blob.size,
+      mimeType,
+    });
 
     return {
       blob,
@@ -411,11 +638,26 @@ interface TrimAttemptResult {
 // through unchanged with motionOnsetSec=null — caller treats it as the
 // degraded fallback path.
 async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult> {
+  // eslint-disable-next-line no-console
+  console.log('[gemini-client] motion-onset trimAttempt: entry', {
+    blobBytes: attemptBlob.size,
+    blobType: attemptBlob.type,
+  });
+
   if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset trimAttempt early-return: DOM or MediaRecorder unavailable', {
+      hasDocument: typeof document !== 'undefined',
+      hasMediaRecorder: typeof MediaRecorder !== 'undefined',
+    });
     return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
   }
 
   if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset trimAttempt early-return: URL.createObjectURL unavailable', {
+      hasURL: typeof URL !== 'undefined',
+    });
     return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
   }
 
@@ -426,32 +668,72 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
       const durationSec = video.duration;
       if (!Number.isFinite(durationSec) || durationSec <= 0) {
         // Some MediaRecorder outputs don't surface a valid duration. Fall
-        // back to passing the blob through.
+        // back to passing the blob through. This is the most common cause
+        // of `attemptMotionOnsetSec: null` in the wild — MediaRecorder
+        // webm chunks frequently surface duration=Infinity or NaN until a
+        // full seek-to-end finalizes the index. Worth logging the exact
+        // value so we can tell that case apart from a truly malformed blob.
+        // eslint-disable-next-line no-console
+        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid', {
+          durationSec,
+          isFinite: Number.isFinite(durationSec),
+          blobBytes: attemptBlob.size,
+          blobType: attemptBlob.type,
+        });
         return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset trimAttempt: scanning', {
+        durationSec,
+        scanStartSec: 0,
+        scanEndSec,
+      });
       const onsetAbsSec = await detectMotionOnsetInVideo(video, 0, scanEndSec);
 
       if (onsetAbsSec === null) {
+        // eslint-disable-next-line no-console
+        console.warn('[gemini-client] motion-onset trimAttempt early-return: detect returned null', {
+          durationSec,
+          scanEndSec,
+        });
         return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       // Start slightly before onset to keep the first hit intact.
       const effectiveStartSec = Math.max(0, onsetAbsSec - 0.05);
       const effectiveEndSec = durationSec;
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset trimAttempt: onset outcome → capture window', {
+        onsetAbsSec,
+        effectiveStartSec,
+        effectiveEndSec,
+      });
       const { blob, mimeType } = await captureVideoSlice(
         video,
         effectiveStartSec,
         effectiveEndSec,
         /* flipHorizontally */ false,
       );
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset trimAttempt: done', {
+        motionOnsetSec: onsetAbsSec,
+        blobBytes: blob.size,
+        mimeType,
+      });
       return { blob, mimeType, motionOnsetSec: onsetAbsSec };
     } finally {
       dispose();
     }
-  } catch {
+  } catch (err) {
     // Anything went wrong with the attempt re-encode — degrade silently.
+    // We surface WHICH error landed here so a metadata-load failure (from
+    // openHiddenVideo) is distinguishable from a captureVideoSlice fault.
+    // eslint-disable-next-line no-console
+    console.warn('[gemini-client] motion-onset trimAttempt early-return: outer threw', {
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
     return { blob: attemptBlob, mimeType: attemptBlob.type || 'video/webm', motionOnsetSec: null };
   } finally {
     URL.revokeObjectURL(objectUrl);
