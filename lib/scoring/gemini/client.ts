@@ -696,7 +696,10 @@ const MIN_PLAUSIBLE_DURATION_SEC = 0.5;
 // Caller still opens the hidden <video> for the seek+draw pipeline (motion
 // scan and slice re-encode need an HTMLVideoElement), but trim/scan math
 // keys off `authoritativeDurationSec`, not `video.duration`.
-type DurationSource = 'webm-repair-inferred' | 'browser-finalize';
+// 'server-repair' is added when both client-side paths (EBML scan and
+// browser seek-trick) failed AND /api/repair-webm successfully re-muxed
+// the blob to produce a plausible duration. SPECK overnight Group 3.
+type DurationSource = 'webm-repair-inferred' | 'browser-finalize' | 'server-repair';
 
 interface DurationDecision {
   authoritativeDurationSec: number;
@@ -780,18 +783,30 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     repaired: repair.repaired,
     inferredDurationSec: repair.inferredDurationSec,
   });
-  const repairedBlob = repair.blob;
 
-  const objectUrl = URL.createObjectURL(repairedBlob);
+  // Working blob + duration tracking. We may swap workingBlob mid-flight
+  // if the server-repair fallback fires (SPECK overnight Group 3): the
+  // server returns a re-muxed webm with a proper container index, and
+  // from that point on we use the server's blob for motion-onset scan,
+  // slice capture, and the final returned blob.
+  let workingBlob: Blob = repair.blob;
+  let workingObjectUrl: string | null = null;
+
   try {
-    const { video, dispose } = await openHiddenVideo(objectUrl);
+    // Phase 1: open the client-repaired blob and decide duration.
+    workingObjectUrl = URL.createObjectURL(workingBlob);
+    let phase1 = await openHiddenVideo(workingObjectUrl);
+    let video = phase1.video;
+    let disposeVideo = phase1.dispose;
+
+    let decision: DurationDecision;
     try {
       // SPECK overnight Group 1 §duration-source: the inferred duration
       // from the EBML scan, when valid, IS the authoritative duration.
       // We only fall back to finalizeWebmDuration when the scan couldn't
       // infer a plausible value. This stops the browser's <video>.duration
       // from overriding the library's correct answer.
-      const decision = await decideAttemptDuration(
+      decision = await decideAttemptDuration(
         repair.inferredDurationSec,
         async () => {
           const fix = await finalizeWebmDuration(
@@ -808,21 +823,89 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
         inferredDurationSec: decision.inferredDurationSec,
         finalizedDurationSec: decision.finalizedDurationSec,
       });
+    } catch (err) {
+      disposeVideo();
+      throw err;
+    }
 
+    // SPECK overnight Group 3 §server-side fallback: when EBML inferred
+    // came back null AND the browser-finalize produced an implausible
+    // duration (NaN, < 0.5s, > 60s), escalate to /api/repair-webm. This
+    // is the last-resort path; ffmpeg re-mux can fix containers that
+    // neither client-side approach can recover.
+    if (
+      decision.source === 'browser-finalize' &&
+      !isPlausibleDuration(decision.authoritativeDurationSec)
+    ) {
+      // eslint-disable-next-line no-console
+      console.log('[gemini-client] motion-onset trimAttempt: escalating to server-repair', {
+        clientDurationSec: decision.authoritativeDurationSec,
+        clientSource: decision.source,
+        blobBytes: workingBlob.size,
+      });
+      const serverResult = await runServerRepair(workingBlob);
+      if (serverResult.kind === 'ok') {
+        // Close the current video, swap blobs, re-open. Then re-run the
+        // duration decision so the EBML scan reads the new container.
+        disposeVideo();
+        if (workingObjectUrl) URL.revokeObjectURL(workingObjectUrl);
+        workingBlob = serverResult.blob;
+        workingObjectUrl = URL.createObjectURL(workingBlob);
+        const phase2 = await openHiddenVideo(workingObjectUrl);
+        video = phase2.video;
+        disposeVideo = phase2.dispose;
+
+        // Re-scan the server-repaired blob's EBML; ffmpeg's output is
+        // properly indexed so this should produce a plausible inferred.
+        const reRepair = await repairWebmDuration(workingBlob);
+        const reDecision = await decideAttemptDuration(
+          reRepair.inferredDurationSec,
+          async () => {
+            const fix = await finalizeWebmDuration(
+              video,
+              (sec) => seekVideo(video, sec),
+            );
+            return fix.durationAfter;
+          },
+        );
+        decision = {
+          authoritativeDurationSec: reDecision.authoritativeDurationSec,
+          source: 'server-repair',
+          inferredDurationSec: reDecision.inferredDurationSec,
+          finalizedDurationSec: reDecision.finalizedDurationSec,
+        };
+        // eslint-disable-next-line no-console
+        console.log('[gemini-client] motion-onset trimAttempt: duration-source (post-server-repair)', {
+          source: decision.source,
+          durationSec: decision.authoritativeDurationSec,
+          inferredDurationSec: decision.inferredDurationSec,
+          finalizedDurationSec: decision.finalizedDurationSec,
+          bytesBefore: serverResult.bytesBefore,
+          bytesAfter: serverResult.bytesAfter,
+        });
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn('[gemini-client] motion-onset trimAttempt: server-repair failed; staying on browser-finalize', {
+          reason: serverResult.reason,
+        });
+      }
+    }
+
+    try {
       const durationSec = decision.authoritativeDurationSec;
       if (!Number.isFinite(durationSec) || durationSec <= 0) {
-        // Even with both paths exhausted, no plausible duration.
+        // All paths exhausted — no plausible duration available.
         // eslint-disable-next-line no-console
-        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid (after duration-source decision)', {
+        console.warn('[gemini-client] motion-onset trimAttempt early-return: duration invalid (after all duration sources)', {
           durationSec,
           isFinite: Number.isFinite(durationSec),
           durationSource: decision.source,
           inferredDurationSec: decision.inferredDurationSec,
           finalizedDurationSec: decision.finalizedDurationSec,
-          blobBytes: repairedBlob.size,
-          blobType: repairedBlob.type,
+          blobBytes: workingBlob.size,
+          blobType: workingBlob.type,
         });
-        return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
+        return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       const scanEndSec = Math.min(durationSec, MOTION_ONSET_SCAN_LIMIT_MS / 1000);
@@ -841,7 +924,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
           durationSec,
           scanEndSec,
         });
-        return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
+        return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
       }
 
       // Start slightly before onset to keep the first hit intact. End at
@@ -872,7 +955,7 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
       });
       return { blob, mimeType, motionOnsetSec: onsetAbsSec };
     } finally {
-      dispose();
+      disposeVideo();
     }
   } catch (err) {
     // Anything went wrong with the attempt re-encode — degrade silently.
@@ -882,9 +965,72 @@ async function trimAttemptForOnset(attemptBlob: Blob): Promise<TrimAttemptResult
     console.warn('[gemini-client] motion-onset trimAttempt early-return: outer threw', {
       errorMessage: err instanceof Error ? err.message : String(err),
     });
-    return { blob: repairedBlob, mimeType: repairedBlob.type || 'video/webm', motionOnsetSec: null };
+    return { blob: workingBlob, mimeType: workingBlob.type || 'video/webm', motionOnsetSec: null };
   } finally {
-    URL.revokeObjectURL(objectUrl);
+    if (workingObjectUrl) URL.revokeObjectURL(workingObjectUrl);
+  }
+}
+
+// SPECK overnight Group 3 §server-side fallback: we treat any duration
+// outside this window as implausible enough to justify a network round-
+// trip to /api/repair-webm. 60s upper bound matches MediaRecorder
+// usage in this app — Mode B chunks are bounded by chunker output and
+// never exceed ~30s; > 60s is almost certainly a metadata bug.
+function isPlausibleDuration(sec: number): boolean {
+  return Number.isFinite(sec) && sec >= MIN_PLAUSIBLE_DURATION_SEC && sec <= 60;
+}
+
+type ServerRepairResult =
+  | { kind: 'ok'; blob: Blob; bytesBefore: number; bytesAfter: number }
+  | { kind: 'err'; reason: string };
+
+// POST the blob to /api/repair-webm as base64, expect a re-muxed webm back.
+// Best-effort: any network/server failure falls through to the caller's
+// existing browser-finalize result. The route's `reason` tag is included
+// in the err for log diagnostics.
+async function runServerRepair(blob: Blob): Promise<ServerRepairResult> {
+  try {
+    const webmBase64 = await blobToBase64(blob);
+    const res = await fetch('/api/repair-webm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webmBase64 }),
+    });
+    if (!res.ok) {
+      let reason = `http ${res.status}`;
+      try {
+        const errJson = (await res.json()) as { error?: string; reason?: string };
+        reason = errJson.reason ?? errJson.error ?? reason;
+      } catch {
+        // body not JSON; keep status-based reason
+      }
+      return { kind: 'err', reason };
+    }
+    const json = (await res.json()) as {
+      webmBase64?: unknown;
+      bytesBefore?: unknown;
+      bytesAfter?: unknown;
+    };
+    if (typeof json.webmBase64 !== 'string' || json.webmBase64.length === 0) {
+      return { kind: 'err', reason: 'response missing webmBase64' };
+    }
+    // Decode base64 → Uint8Array → Blob. The native atob path is
+    // available in every browser this app targets.
+    const binary = atob(json.webmBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const repaired = new Blob([bytes], { type: 'video/webm' });
+    return {
+      kind: 'ok',
+      blob: repaired,
+      bytesBefore: typeof json.bytesBefore === 'number' ? json.bytesBefore : blob.size,
+      bytesAfter: typeof json.bytesAfter === 'number' ? json.bytesAfter : repaired.size,
+    };
+  } catch (err) {
+    return {
+      kind: 'err',
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
