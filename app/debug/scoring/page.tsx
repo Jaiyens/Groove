@@ -6,6 +6,7 @@
 // not a feature.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
   base64ToBlob,
   clearAttempts,
@@ -188,6 +189,12 @@ export default function DebugScoringPage() {
               e.target.value = '';
             }}
           />
+          <Link
+            href="/debug/scoring/eval"
+            className="rounded-full bg-cream-card px-3 py-1 text-xs font-bold text-ink ring-1 ring-cream-deep"
+          >
+            Eval →
+          </Link>
           <span className="ml-auto text-xs text-ink-muted">
             {attempts.length} saved
           </span>
