@@ -11,6 +11,7 @@
     "seed": "tsx scripts/seed_library.ts"
   },
   "dependencies": {
+    "@google/genai": "^2.6.0",
     "@mediapipe/tasks-vision": "^0.10.17",
     "@supabase/supabase-js": "^2.45.4",
     "next": "14.2.15",
