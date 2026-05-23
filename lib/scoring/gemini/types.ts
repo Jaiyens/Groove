@@ -18,6 +18,50 @@ export const TroubleSpotSchema = z.object({
   fix: z.string(),
 });
 
+// SPEC: score-restoration. The Gemini API now returns a five-field response
+// (score / tier / did_well / work_on / visibility_notes). The client converts
+// it back into the internal `GeminiScore` shape below before the rest of the
+// pipeline (deterministic layer, ResultsCard) consumes it — keeps the UI
+// untouched while the model boundary follows the new spec.
+export const GeminiSpecTierSchema = z.enum([
+  'GROOVY',
+  'SOLID',
+  'ALMOST',
+  'WARMING_UP',
+  'JUST_STARTED',
+]);
+
+export const GeminiSpecScoreSchema = z.object({
+  score: z.number().min(0).max(100),
+  tier: GeminiSpecTierSchema,
+  did_well: z.string(),
+  work_on: z.string(),
+  visibility_notes: z.string(),
+});
+
+export type GeminiSpecScore = z.infer<typeof GeminiSpecScoreSchema>;
+export type GeminiSpecTier = z.infer<typeof GeminiSpecTierSchema>;
+
+// JSON Schema view for Gemini structured-output `responseSchema`. Kept in
+// sync with GeminiSpecScoreSchema above. `propertyOrdering` is a Gemini-
+// specific hint that biases generation toward the canonical key order from
+// the spec's worked examples.
+export const GeminiSpecResponseJsonSchema = {
+  type: 'object',
+  properties: {
+    score: { type: 'integer', minimum: 0, maximum: 100 },
+    tier: {
+      type: 'string',
+      enum: ['GROOVY', 'SOLID', 'ALMOST', 'WARMING_UP', 'JUST_STARTED'],
+    },
+    did_well: { type: 'string' },
+    work_on: { type: 'string' },
+    visibility_notes: { type: 'string' },
+  },
+  required: ['score', 'tier', 'did_well', 'work_on', 'visibility_notes'],
+  propertyOrdering: ['score', 'tier', 'did_well', 'work_on', 'visibility_notes'],
+} as const;
+
 export const GeminiScoreSchema = z.object({
   is_actually_dancing: z.boolean(),
   overall_score: z.number().min(0).max(100),

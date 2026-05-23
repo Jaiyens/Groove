@@ -21,16 +21,24 @@ import { GoogleGenAI } from '@google/genai';
 
 import { buildCompositePrompt } from '@/lib/scoring/gemini/prompt';
 import {
-  GeminiResponseJsonSchema,
-  GeminiScoreSchema,
-  type GeminiScore,
+  GeminiSpecResponseJsonSchema,
+  GeminiSpecScoreSchema,
+  type GeminiSpecScore,
 } from '@/lib/scoring/gemini/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// maxDuration must exceed the client's 90s timeout so the route doesn't get
+// killed mid-flight. Vercel hard-caps this at 60s on Hobby and 300s on Pro;
+// 120s lets us cover the 80s server budget + retry headroom on Pro and the
+// hard cap on Hobby.
+export const maxDuration = 120;
 
-const TOTAL_BUDGET_MS = 30_000;
-const MIN_RETRY_BUDGET_MS = 8_000;
+// Server-side total budget. Client now waits 90s (SPEC §score-restoration
+// non-negotiable: at least 90000ms). Server budget sits just under client
+// timeout to leave room for response transport. First attempt + retry must
+// both fit within this.
+const TOTAL_BUDGET_MS = 80_000;
+const MIN_RETRY_BUDGET_MS = 20_000;
 
 interface RequestBody {
   compositeVideoBase64?: string;
@@ -40,6 +48,11 @@ interface RequestBody {
   // flips its left/right correspondence clause based on this. SPECK
   // overnight Group 4 + Group 2 §mirror-unification.
   mirror?: boolean;
+  // SPEC: score-restoration §c. The user's first frame of real dance
+  // movement in the COMPOSITE's right-half timebase. The composite is
+  // typically pre-trimmed so this is 0.00s, but the prompt still surfaces
+  // it verbatim per the spec.
+  motionOnsetSec?: number;
 }
 
 type FailureReason =
@@ -54,7 +67,7 @@ type FailureReason =
 
 interface AttemptSuccess {
   ok: true;
-  score: GeminiScore;
+  score: GeminiSpecScore;
   latencyMs: number;
 }
 interface AttemptFailure {
@@ -113,12 +126,12 @@ async function callGeminiOnce(args: {
       config: {
         responseMimeType: 'application/json',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        responseSchema: GeminiResponseJsonSchema as any,
+        responseSchema: GeminiSpecResponseJsonSchema as any,
       },
     });
     const latencyMs = Date.now() - startTime;
     const text = response.text;
-    console.log('[gemini-score-composite] raw response text:', text);
+    console.log('[gemini-response]', text);
     console.log('[gemini-score-composite] latencyMs:', latencyMs);
 
     if (!text) {
@@ -135,7 +148,7 @@ async function callGeminiOnce(args: {
         retryable: true,
       };
     }
-    const parsed = GeminiScoreSchema.safeParse(parsedJson);
+    const parsed = GeminiSpecScoreSchema.safeParse(parsedJson);
     if (!parsed.success) {
       return {
         ok: false,
@@ -164,12 +177,14 @@ export async function POST(req: NextRequest) {
     compositeMimeType,
     legsVisible = true,
     mirror = true,
+    motionOnsetSec = 0,
   } = body;
 
   console.log('[gemini-score-composite] compositeVideoBase64 length:', compositeVideoBase64?.length ?? 'MISSING');
   console.log('[gemini-score-composite] compositeMimeType:', compositeMimeType);
   console.log('[gemini-score-composite] legsVisible:', legsVisible);
   console.log('[gemini-score-composite] mirror:', mirror);
+  console.log('[gemini-score-composite] motionOnsetSec:', motionOnsetSec);
 
   if (!compositeVideoBase64) {
     return NextResponse.json(
@@ -186,7 +201,8 @@ export async function POST(req: NextRequest) {
   const ai = new GoogleGenAI({ apiKey });
   const routeStart = Date.now();
 
-  const prompt = buildCompositePrompt({ legsVisible, mirror });
+  const prompt = buildCompositePrompt({ legsVisible, mirror, motionOnsetSec });
+  console.log('[gemini-prompt]', prompt);
 
   const callArgs = {
     ai,

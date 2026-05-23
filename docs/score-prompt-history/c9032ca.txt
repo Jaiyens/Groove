@@ -1,3 +1,7 @@
+# Commit: c9032ca
+# Date:   2026-05-23
+# Subject: feat(gemini-canary): binary+quantitative canary, component floor 35, tier-capped trouble spots, conditional positive insights
+# ---- prompt.ts at this commit ----
 // Gemini scoring prompt.
 //
 // Two-video input order (REFERENCE then ATTEMPT) with explicit mirror-aware
@@ -146,117 +150,4 @@ Insights should be ACTIONABLE — tell the user what to do differently, not just
 
 OUTPUT
 Return ONLY valid JSON matching the schema. No prose, no markdown, no commentary.`;
-}
-
-// SPEC: score-restoration. The composite-video Gemini prompt, rewritten from
-// scratch using SPECK.md (top of repo) as the source of truth. See
-// `docs/score-restoration-investigation.md` for the picked-good-vs-fallback
-// decision — short version: no historical commit emits the new five-field
-// schema (score/tier/did_well/work_on/visibility_notes) or the new tier
-// vocabulary (GROOVY/SOLID/ALMOST/WARMING_UP/JUST_STARTED), so this prompt
-// is written from scratch following the spec's section ordering (a→g) and
-// embeds the calibration anchors + JSON schema worked examples verbatim.
-//
-// Section order per spec §Implementation phase:
-//   a. Side-by-side framing (opening lines)
-//   b. What to compare / what to ignore
-//   c. Motion onset instruction (with the value)
-//   d. Partial visibility handling
-//   e. Calibration anchors (verbatim from spec)
-//   f. Philosophical framing (penultimate paragraph)
-//   g. Response schema with worked examples (final lines)
-//
-// `motionOnsetSec` reflects the user's first frame of dance movement. In the
-// composite pipeline the right-half attempt is already trimmed to onset, so
-// this is typically 0.00s — the language still reads correctly and the
-// "use your judgment after that timestamp" fallback covers cases where the
-// user is still settling after the trim point.
-export function buildCompositePrompt(args: {
-  legsVisible: boolean;
-  mirror: boolean;
-  motionOnsetSec: number;
-}): string {
-  const { legsVisible, mirror, motionOnsetSec } = args;
-  const onset = motionOnsetSec.toFixed(2);
-
-  // Mirror-orientation note slotted into section (b). The spec is silent on
-  // mirror handling, but the composite renderer can pre-flip the LEFT half
-  // and Gemini needs to know which orientation it is looking at.
-  const mirrorNote = mirror
-    ? "The LEFT half has been horizontally mirrored to match the RIGHT half's selfie-camera orientation, so left and right body parts in both halves correspond DIRECTLY (when the LEFT shows a left arm raised, the RIGHT should also show a left arm raised)."
-    : "The LEFT half is in source orientation; the RIGHT half is mirrored by the selfie camera. Grade as a mirror copy — when the LEFT shows the reference dancer's left arm raised, the RIGHT raising its right arm is CORRECT.";
-
-  // Partial visibility paragraph (section d) leans on the legsVisible signal
-  // we already detected client-side. When legs are out of frame, gently prime
-  // Gemini to use the visibility_notes field instead of zeroing the score.
-  const visibilityHint = legsVisible
-    ? "The user appears to be filming with their full body in frame."
-    : "The user appears to be filming UPPER BODY ONLY — legs are likely not visible. Note this in visibility_notes; do NOT penalize for the missing legs.";
-
-  return `(a) SIDE-BY-SIDE FRAMING
-You are watching a side-by-side comparison video. The LEFT half is the reference dancer — this is the ground truth, the correct way to do the dance. The RIGHT half is a user attempting to replicate the reference dancer's moves. Your job is to score how well the user (right) matches the reference (left). You are NOT judging the user as a dancer in absolute terms — you are measuring how closely their movements track the reference's movements. Compare them move by move, beat by beat.
-
-(b) WHAT TO COMPARE AND WHAT TO IGNORE
-Compare these things: timing on the beat, direction of weight transfer (left/right), arm position and arm timing, body lean, head movement, when major moves start and end. Do NOT score based on: facial expression, outfit, lighting, background, video quality, the user's attractiveness, or anything that is not about matching the choreography.
-
-${mirrorNote}
-
-(c) MOTION ONSET
-The user's first frame of real dance movement is at ${onset}s. Ignore everything in the user's video before that timestamp — they are walking back from the camera or preparing. Begin grading from ${onset}s onward. If you see the user clearly still preparing or adjusting themselves after that timestamp, use your judgment and begin grading at the first beat-aligned dance move you see.
-
-(d) PARTIAL VISIBILITY
-If part of the user's body is out of frame (commonly legs), grade only the body parts you can see. Note the visibility limitation in the visibility_notes field. Do NOT score out-of-frame body parts as zero or as a penalty — simply exclude them from scoring. ${visibilityHint}
-
-(e) CALIBRATION ANCHORS
-Tier the user's performance using these definitions. Match what you saw on the RIGHT half to the closest tier and emit the integer score from the corresponding range:
-
-- **90-100 (GROOVY):** User matches the reference's movements with precise timing and clean execution. Body parts move in the same directions as the reference, on the same beats, with similar amplitude. Minor imperfections allowed.
-- **75-89 (SOLID):** User is clearly doing the same dance. Most moves land on the beat, body parts move in roughly the same directions as the reference, but timing is sometimes off or amplitude is reduced. This is what a sincere first-time attempt by a non-dancer should look like.
-- **60-74 (ALMOST):** User is attempting the choreography but missing significant beats or moves. The overall shape of the dance is recognizable but execution is loose.
-- **40-59 (WARMING UP):** User is moving to the music but not really doing the reference choreography. Movements are present but not aligned with the reference's directions or timing.
-- **Below 40 (JUST STARTED):** User is standing still, barely moving, flailing randomly, or doing something completely unrelated to the reference.
-
-The tier field MUST be one of: GROOVY, SOLID, ALMOST, WARMING_UP, JUST_STARTED (use the underscored form WARMING_UP and JUST_STARTED in the JSON, even though the human label has a space).
-
-(f) PHILOSOPHICAL FRAMING
-Remember: the user is being measured on similarity to a professional reference, not on absolute dance skill. A non-dancer roughly on tempo and moving in the right directions is doing exactly what this product is designed to teach. They should feel rewarded. Be honest, but be kind.
-
-did_well MUST cite a specific body part or beat the user actually got. work_on MUST cite a specific body part or beat AND be something drillable in roughly 90 seconds (a single isolated move or body part the user could practice in front of a mirror). Avoid vague guidance like "be more expressive" or "keep practicing."
-
-(g) RESPONSE SCHEMA
-Return ONLY valid JSON matching this exact shape. No markdown fences, no prose preamble, no commentary:
-
-\`\`\`json
-{
-  "score": <integer 0-100>,
-  "tier": "GROOVY" | "SOLID" | "ALMOST" | "WARMING_UP" | "JUST_STARTED",
-  "did_well": "<one sentence citing a specific body part or beat>",
-  "work_on": "<one sentence citing a specific body part or beat, drillable in 90 seconds>",
-  "visibility_notes": "<empty string if user is fully in frame, otherwise note what was not visible>"
-}
-\`\`\`
-
-Example of a good response for a sincere attempt:
-
-\`\`\`json
-{
-  "score": 78,
-  "tier": "SOLID",
-  "did_well": "Your weight transfer on beats 1 and 3 matched the reference cleanly, especially the left-to-right hip shift.",
-  "work_on": "Your arms stayed too low on the chorus hits — try drilling just the arm raise on counts 5-6 in front of a mirror.",
-  "visibility_notes": ""
-}
-\`\`\`
-
-Example of a good response for a sincere attempt with partial frame:
-
-\`\`\`json
-{
-  "score": 72,
-  "tier": "SOLID",
-  "did_well": "Your upper-body bounce was on tempo throughout, matching the reference's rhythm well.",
-  "work_on": "The chest isolation on beat 4 was understated — drill chest-forward, chest-back to a metronome at the song's tempo.",
-  "visibility_notes": "Legs were not visible in frame, so footwork was not scored."
-}
-\`\`\``;
 }

@@ -3,109 +3,189 @@ import assert from 'node:assert/strict';
 
 import { buildCompositePrompt } from '../lib/scoring/gemini/prompt.ts';
 
-// SPECK overnight Group 4 §composite-prompt: buildCompositePrompt is the
-// side-by-side variant of buildGeminiPrompt. The Group 4 spec says the
-// existing invariants STAY:
-//   - canary clause
-//   - sincere-attempt floor of 35
-//   - severity calibration (MAJOR/MODERATE/MINOR)
-//   - tier-capped trouble spots
-//   - conditional-positive-insight (first insight conditional on
-//     is_actually_dancing)
-//   - DO-NOT-INCLUDE for hand details / execution sharpness
-// What's NEW is the two-halves framing + mirror-state declaration.
+// SPEC: score-restoration. The composite prompt was rewritten from scratch
+// using SPECK.md as source of truth (see docs/score-restoration-investigation.md
+// for the picked-good-vs-fallback decision). These tests lock down the
+// non-negotiables from the spec so a future prompt edit can't quietly drop
+// the side-by-side framing, calibration anchors, motion-onset value, or
+// JSON-schema instructions.
 
-describe('buildCompositePrompt — new framing for the composite case', () => {
-  it('frames the input as a single side-by-side video, not two videos', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    // Must NOT use the two-video phrasing from buildGeminiPrompt.
-    assert.doesNotMatch(p, /two videos in order/i);
-    // Must explicitly tell the model the LEFT/RIGHT halves correspondence.
-    assert.match(p, /LEFT half/);
-    assert.match(p, /RIGHT half/);
-    assert.match(p, /side by side/i);
+describe('buildCompositePrompt — section ordering (spec §Implementation phase a→g)', () => {
+  it('emits sections (a) through (g) in spec order', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0.16,
+    });
+    const sectionOrder = [
+      '(a) SIDE-BY-SIDE FRAMING',
+      '(b) WHAT TO COMPARE',
+      '(c) MOTION ONSET',
+      '(d) PARTIAL VISIBILITY',
+      '(e) CALIBRATION ANCHORS',
+      '(f) PHILOSOPHICAL FRAMING',
+      '(g) RESPONSE SCHEMA',
+    ];
+    let cursor = 0;
+    for (const section of sectionOrder) {
+      const idx = p.indexOf(section, cursor);
+      assert.notEqual(idx, -1, `missing section: ${section}`);
+      cursor = idx;
+    }
+  });
+});
+
+describe('buildCompositePrompt — side-by-side framing (section a)', () => {
+  it('opens with the side-by-side comparison framing', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /side-by-side comparison video/i);
+    assert.match(p, /LEFT half is the reference dancer/);
+    assert.match(p, /RIGHT half is a user attempting/);
+    assert.match(p, /how well the user .right. matches the reference .left./i);
+  });
+});
+
+describe('buildCompositePrompt — what to compare / what to ignore (section b)', () => {
+  it('lists the body-mechanic things to compare and the irrelevant things to ignore', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /timing on the beat/);
+    assert.match(p, /direction of weight transfer/);
+    assert.match(p, /arm position/);
+    assert.match(p, /Do NOT score based on: facial expression, outfit, lighting, background/);
+  });
+});
+
+describe('buildCompositePrompt — motion onset (section c)', () => {
+  it('inlines the motionOnsetSec value with 2-decimal formatting', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0.16,
+    });
+    assert.match(p, /first frame of real dance movement is at 0\.16s/);
+    assert.match(p, /Begin grading from 0\.16s onward/);
+  });
+});
+
+describe('buildCompositePrompt — partial visibility (section d)', () => {
+  it('legsVisible=true: tells the model the user is fully in frame', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /full body in frame/);
   });
 
-  it('tells the model that alignment is built in (no temporal inference needed)', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /alignment is built into the video/i);
+  it('legsVisible=false: routes the model to visibility_notes and avoids zeroing the score', () => {
+    const p = buildCompositePrompt({
+      legsVisible: false,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /UPPER BODY ONLY/);
+    assert.match(p, /Note this in visibility_notes/);
+    assert.match(p, /do NOT penalize for the missing legs/);
+  });
+});
+
+describe('buildCompositePrompt — calibration anchors (section e)', () => {
+  it('includes all five tier descriptions verbatim from the spec', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /\*\*90-100 \(GROOVY\):\*\*/);
+    assert.match(p, /\*\*75-89 \(SOLID\):\*\*/);
+    assert.match(p, /\*\*60-74 \(ALMOST\):\*\*/);
+    assert.match(p, /\*\*40-59 \(WARMING UP\):\*\*/);
+    assert.match(p, /\*\*Below 40 \(JUST STARTED\):\*\*/);
   });
 
-  it('mirror=true declares direct left/right correspondence', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /Mirror state: ENABLED/);
+  it('reminds the model to use the underscored tier identifiers in JSON', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /WARMING_UP/);
+    assert.match(p, /JUST_STARTED/);
+  });
+});
+
+describe('buildCompositePrompt — philosophical framing (section f)', () => {
+  it('includes the "be honest, but be kind" framing', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /similarity to a professional reference, not on absolute dance skill/);
+    assert.match(p, /Be honest, but be kind/);
+  });
+
+  it('requires did_well + work_on to cite a specific body part or beat', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /did_well MUST cite a specific body part or beat/);
+    assert.match(p, /drillable in roughly 90 seconds/);
+  });
+});
+
+describe('buildCompositePrompt — response schema (section g)', () => {
+  it('includes the JSON response schema and BOTH worked examples verbatim', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /"score": <integer 0-100>/);
+    assert.match(p, /"tier": "GROOVY" \| "SOLID" \| "ALMOST" \| "WARMING_UP" \| "JUST_STARTED"/);
+    assert.match(p, /"score": 78/);
+    assert.match(p, /left-to-right hip shift/);
+    assert.match(p, /"score": 72/);
+    assert.match(p, /Legs were not visible in frame/);
+  });
+
+  it('forbids markdown fences and prose preamble', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /No markdown fences, no prose preamble/);
+  });
+});
+
+describe('buildCompositePrompt — mirror branch', () => {
+  it('mirror=true: declares direct left/right correspondence', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: true,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /LEFT half has been horizontally mirrored/);
     assert.match(p, /correspond DIRECTLY/);
   });
 
-  it('mirror=false declares mirror-copy semantics', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: false });
-    assert.match(p, /Mirror state: DISABLED/);
-    assert.match(p, /mirror copy/);
-  });
-});
-
-describe('buildCompositePrompt — preserved invariants from buildGeminiPrompt', () => {
-  it('preserves the is_actually_dancing canary with the same trigger conditions', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /is_actually_dancing/);
-    assert.match(p, /CANARY/);
-    assert.match(p, /flailing/i);
-    assert.match(p, /out of frame for more than 30%/i);
-  });
-
-  it('preserves the sincere-attempt floor of 35', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /No individual component score may be below 35/);
-  });
-
-  it('preserves the MAJOR/MODERATE/MINOR severity calibration', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /\*\*MAJOR:\*\*/);
-    assert.match(p, /\*\*MODERATE:\*\*/);
-    assert.match(p, /\*\*MINOR:\*\*/);
-  });
-
-  it('preserves tier-capped trouble-spot counts', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /tier: GROOVY:\*\* at most 2 trouble spots/);
-    assert.match(p, /tier: SOLID:\*\* at most 3 trouble spots/);
-    assert.match(p, /tier: SHAKY:\*\* at most 4 trouble spots/);
-    assert.match(p, /tier: NOT_DANCING:\*\* exactly 1 trouble spot/);
-  });
-
-  it('preserves the DO-NOT-INCLUDE for hand details', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /HAND AND FINGER DETAILS ARE MINOR/);
-  });
-
-  it('preserves the EXECUTION QUALITY IS MINOR clause', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /EXECUTION QUALITY IS MINOR/);
-  });
-
-  it('preserves the conditional-positive-insight rule', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /FIRST insight MUST be a specific positive observation/);
-    assert.match(p, /Do NOT lead with a fake compliment/);
-  });
-
-  it('preserves the JSON-only output instruction', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /Return ONLY valid JSON/);
-    assert.match(p, /No prose, no markdown/);
-  });
-});
-
-describe('buildCompositePrompt — legsVisible branching', () => {
-  it('legsVisible=true tells the model to score legs normally', () => {
-    const p = buildCompositePrompt({ legsVisible: true, mirror: true });
-    assert.match(p, /Score the legs component normally/);
-    assert.doesNotMatch(p, /Set the legs component to null/);
-  });
-
-  it('legsVisible=false tells the model to set legs to null', () => {
-    const p = buildCompositePrompt({ legsVisible: false, mirror: true });
-    assert.match(p, /Set the legs component to null/);
-    assert.match(p, /UPPER BODY ONLY/);
+  it('mirror=false: declares mirror-copy semantics', () => {
+    const p = buildCompositePrompt({
+      legsVisible: true,
+      mirror: false,
+      motionOnsetSec: 0,
+    });
+    assert.match(p, /Grade as a mirror copy/);
   });
 });

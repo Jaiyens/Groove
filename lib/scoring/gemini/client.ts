@@ -36,7 +36,14 @@
 // ignores the padding interior seconds. Less efficient (bigger upload,
 // more for Gemini to chew on) but the user still gets a valid score.
 
-import { GeminiScoreSchema, type GeminiScore } from './types';
+import {
+  GeminiScoreSchema,
+  GeminiSpecScoreSchema,
+  type GeminiScore,
+  type GeminiSpecScore,
+  type GeminiSpecTier,
+} from './types';
+import { buildCompositePrompt } from './prompt';
 import { detectMotionOnsetIndex } from './motionOnset';
 import { finalizeWebmDuration } from './webmDuration';
 import { repairWebmDuration } from './webmFix';
@@ -74,11 +81,13 @@ export type ScoreWithGeminiArgs = {
 // retry would have succeeded, and the user sees `FALLBACK SCORING` on a
 // perfectly-valid attempt.
 //
-// Server budget: first attempt ~11s + retry ~26s + overhead ≈ 37s worst case.
-// Floor: 35s (one full server budget). We pick 40s for headroom — three
-// seconds of slack on top of the floor.
-export const SERVER_BUDGET_FLOOR_MS = 35_000;
-export const DEFAULT_TIMEOUT_MS = 40_000;
+// SPEC: score-restoration non-negotiable §"Gemini timeout budget MUST be
+// raised to at least 90000ms." Real-attempt traces showed 40s firing before
+// Gemini returned on composite-bytes payloads, forcing silent MediaPipe
+// fallbacks on sincere attempts. 90s gives the server's 80s budget room to
+// retry once and still return.
+export const SERVER_BUDGET_FLOOR_MS = 80_000;
+export const DEFAULT_TIMEOUT_MS = 90_000;
 const REFERENCE_PADDING_MS = 500;
 // How far past the leading edge of the trim window we scan looking for the
 // first frame of dance movement. 3s is the practical upper bound for a
@@ -92,6 +101,53 @@ const MOTION_ONSET_SAMPLE_INTERVAL_MS = 80;
 // Tiny image used for frame-diff. 64×64 is the spec value; trades resolution
 // for a cheap O(4096) per-frame math op.
 const MOTION_ONSET_TILE = 64;
+
+// SPEC: score-restoration §Implementation phase. Gemini now returns a
+// five-field response (score / tier / did_well / work_on / visibility_notes).
+// The downstream UI (ResultsCard) still consumes the legacy GeminiScore
+// shape (components{arms,legs,body,timing}, insights[], trouble_spots[]).
+// This adapter converts at the client boundary so the UI doesn't break:
+//   - score → overall_score; all four components synthesized to `score` so
+//     `displayedOverall` (mean of visible components) re-yields `score`.
+//   - tier mapped onto the internal four-tier enum.
+//   - did_well + work_on (+ visibility_notes when non-empty) populate
+//     insights[].
+//   - trouble_spots = [] — the spec replaces the multi-spot list with a
+//     single `work_on` sentence; the spotty UI segment renders empty.
+//   - is_actually_dancing: tier !== 'JUST_STARTED'.
+function mapSpecTier(tier: GeminiSpecTier): GeminiScore['tier'] {
+  switch (tier) {
+    case 'GROOVY': return 'GROOVY';
+    case 'SOLID': return 'SOLID';
+    case 'ALMOST': return 'SOLID';
+    case 'WARMING_UP': return 'SHAKY';
+    case 'JUST_STARTED': return 'NOT_DANCING';
+  }
+}
+
+export function specScoreToInternalScore(
+  spec: GeminiSpecScore,
+  legsVisible: boolean,
+): GeminiScore {
+  const score = Math.round(spec.score);
+  const insights: string[] = [spec.did_well, spec.work_on];
+  if (spec.visibility_notes && spec.visibility_notes.trim().length > 0) {
+    insights.push(spec.visibility_notes.trim());
+  }
+  return {
+    is_actually_dancing: spec.tier !== 'JUST_STARTED',
+    overall_score: score,
+    tier: mapSpecTier(spec.tier),
+    components: {
+      arms: score,
+      legs: legsVisible ? score : null,
+      body: score,
+      timing: score,
+    },
+    insights,
+    trouble_spots: [],
+  };
+}
 
 async function blobToBase64(blob: Blob): Promise<string> {
   // FileReader gives us a data URL; strip the `data:...;base64,` prefix.
@@ -1222,6 +1278,22 @@ export async function scoreWithGemini(
 
       if (composite.kind === 'success') {
         const compositeBase64 = await blobToBase64(composite.blob);
+        // SPEC: score-restoration §3 — composite is pre-trimmed to onset on
+        // both halves, so the user's first frame of dance movement IS the
+        // first frame of the right half. Pass 0 to the prompt; the spec's
+        // section (c) language reads correctly with 0.00s.
+        const compositeMotionOnsetSec = 0;
+        // SPEC: score-restoration §8 — surface the full prompt and response
+        // in the browser console so a validator can read what was sent and
+        // received without leaving the device. The server logs the same on
+        // its end (Vercel logs) but the user runs validation client-side.
+        const compositePrompt = buildCompositePrompt({
+          legsVisible,
+          mirror: referenceMirrored,
+          motionOnsetSec: compositeMotionOnsetSec,
+        });
+        // eslint-disable-next-line no-console
+        console.log('[gemini-prompt]', compositePrompt);
         // eslint-disable-next-line no-console
         console.log('[gemini-client] sending composite', {
           mirror: referenceMirrored,
@@ -1229,6 +1301,8 @@ export async function scoreWithGemini(
           compositeBytes: compositeBase64.length,
           mimeType: composite.mimeType,
           durationSec: composite.durationSec,
+          motionOnsetSec: compositeMotionOnsetSec,
+          timeoutMs: DEFAULT_TIMEOUT_MS,
         });
         const compositeRequestPayload = {
           endpoint: '/api/score-gemini-composite',
@@ -1237,6 +1311,7 @@ export async function scoreWithGemini(
           compositeBytes: compositeBase64.length,
           legsVisible,
           mirror: referenceMirrored,
+          motionOnsetSec: compositeMotionOnsetSec,
         };
         captureTrace.requestPayload = compositeRequestPayload;
         const compRes = await fetch('/api/score-gemini-composite', {
@@ -1248,14 +1323,18 @@ export async function scoreWithGemini(
             compositeMimeType: composite.mimeType,
             legsVisible,
             mirror: referenceMirrored,
+            motionOnsetSec: compositeMotionOnsetSec,
           }),
         });
         if (compRes.ok) {
           const cJson = (await compRes.json()) as { score?: unknown; latencyMs?: unknown };
           captureTrace.responseRaw = cJson;
-          const cParsed = GeminiScoreSchema.safeParse(cJson.score);
+          // eslint-disable-next-line no-console
+          console.log('[gemini-response]', cJson.score);
+          const cParsed = GeminiSpecScoreSchema.safeParse(cJson.score);
           if (cParsed.success) {
             const latencyMs = typeof cJson.latencyMs === 'number' ? cJson.latencyMs : 0;
+            const internalScore = specScoreToInternalScore(cParsed.data, legsVisible);
             await captureIfEnabled({
               args,
               attemptToSend,
@@ -1265,10 +1344,10 @@ export async function scoreWithGemini(
               chunkIndex,
               trace: captureTrace,
             });
-            return { kind: 'success', score: cParsed.data, latencyMs };
+            return { kind: 'success', score: internalScore, latencyMs };
           }
           // eslint-disable-next-line no-console
-          console.warn('[gemini-client] composite response failed schema; falling back to two-video', cParsed.error.flatten());
+          console.warn('[gemini-client] composite response failed spec schema; falling back to two-video', cParsed.error.flatten());
         } else {
           // eslint-disable-next-line no-console
           console.warn('[gemini-client] composite endpoint non-ok; falling back to two-video', {

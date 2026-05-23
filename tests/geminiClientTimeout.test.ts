@@ -5,35 +5,27 @@ import {
   SERVER_BUDGET_FLOOR_MS,
 } from '../lib/scoring/gemini/client.ts';
 
-// SPECK: bump the /api/score-gemini client timeout above the server's total
-// retry budget so a transient 503 + server-side retry can complete before
-// the client gives up. Server budget today: first attempt ~11s + retry ~26s
-// + overhead ≈ 37s worst case. The floor enforced here is 35s (one full
-// server budget); we currently sit at 40s for a few seconds of headroom.
+// SPEC: score-restoration §non-negotiables — "The Gemini timeout budget MUST
+// be raised to at least 90000ms." Real-attempt traces showed 40s firing
+// before Gemini returned on composite-bytes payloads, forcing silent
+// MediaPipe fallbacks. The floor is now 80s server budget; client sits at
+// 90s for transport headroom.
 
 describe('scoreWithGemini client timeout', () => {
   it('DEFAULT_TIMEOUT_MS is at least SERVER_BUDGET_FLOOR_MS', () => {
-    // The whole reason the previous run failed: client timeout 30s, server
-    // retry succeeded at 13.6s — but only AFTER the client had already
-    // aborted at 30s. If this assert fails again, the regression is
-    // exactly that race.
     assert.ok(
       DEFAULT_TIMEOUT_MS >= SERVER_BUDGET_FLOOR_MS,
       `client timeout ${DEFAULT_TIMEOUT_MS}ms must be ≥ server budget floor ${SERVER_BUDGET_FLOOR_MS}ms`,
     );
   });
 
-  it('SERVER_BUDGET_FLOOR_MS is at least 35s (one full server retry budget)', () => {
+  it('DEFAULT_TIMEOUT_MS pins to the spec-mandated floor of 90000ms', () => {
+    // SPEC: score-restoration non-negotiable. The previous value of 40000ms
+    // was causing fallbacks to MediaPipe on real attempts because Gemini's
+    // composite-bytes latency routinely exceeded it.
     assert.ok(
-      SERVER_BUDGET_FLOOR_MS >= 35_000,
-      `server budget floor ${SERVER_BUDGET_FLOOR_MS}ms must be ≥ 35000ms`,
+      DEFAULT_TIMEOUT_MS >= 90_000,
+      `client timeout ${DEFAULT_TIMEOUT_MS}ms must be ≥ 90000ms per SPEC: score-restoration`,
     );
-  });
-
-  it('DEFAULT_TIMEOUT_MS pins to the spec-mandated 40s', () => {
-    // The spec asks for exactly 40s — small headroom over the 37s server
-    // worst case. If this test fails because the value was raised, that
-    // is fine but the spec referenced this constant; review carefully.
-    assert.equal(DEFAULT_TIMEOUT_MS, 40_000);
   });
 });
