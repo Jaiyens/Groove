@@ -1,30 +1,29 @@
-// Gemini scoring prompt. Two-video input order (REFERENCE then ATTEMPT) with
-// explicit mirror-aware grading guidance plus chunk-window framing and
-// leg-visibility calibration (SPECK §generosity-rewrite).
+// Gemini scoring prompt.
 //
-// The reference video is a SHORT CHUNK of a longer dance with ~500ms of
-// padding on each side; the prompt tells Gemini exactly which interior
-// seconds count and which are padding. Leg visibility is detected from
-// MediaPipe before the call (lib/scoring/legVisibility.ts) and surfaced
-// here so the prompt can downweight legs when the user filmed upper-body
-// only. Schema is enforced via `responseSchema`, so prose-only here.
+// Two-video input order (REFERENCE then ATTEMPT) with explicit mirror-aware
+// grading guidance (Group 1), motion-onset framing (Group 2), and a
+// canary + component-floor calibration (Group 3 + Group 4).
 //
-// Generosity calibration: previous version's "be generous" language was
-// too vague — Gemini interpreted it as "give benefit of the doubt to any
-// motion". This version raises the floor for sincere attempts (50), tightens
-// the definition of "sincere", recalibrates severity (most things MINOR),
-// caps trouble-spot counts proportional to score, and requires the first
-// insight to be a specific positive observation.
+// Round 3 changes (see SPECK round-3 §Group-4):
+//   - The canary is binary AND quantitative. Standing still / flailing /
+//     out-of-frame trips `is_actually_dancing: false` AND forces
+//     overall_score into 5–25. Components in that case reflect reality
+//     (e.g., flailing arms: 15, standing-still body: 5) — never padded up.
+//   - Sincere attempts have an explicit per-component floor of 35.
+//   - Upper-body-only mode returns `legs: null` (no more default 75).
+//   - Trouble-spot count is capped by tier (GROOVY ≤2, SOLID ≤3,
+//     SHAKY ≤4, NOT_DANCING =1).
+//   - The first insight is positive ONLY when `is_actually_dancing: true`.
+//     Non-attempts get an honest "this didn't look like the dance" insight
+//     instead of a fake compliment.
+//
+// Schema is enforced via `responseSchema`, so prose-only here.
 
 export function buildGeminiPrompt(args: {
   legsVisible: boolean;
   referenceChunkStartSec: number;
   referenceChunkEndSec: number;
   referenceMirrored?: boolean;
-  // SPECK round-3 §Group-2: when true, both videos arrive with their pre-roll
-  // physically trimmed to the first frame of dance movement. The prompt
-  // switches from "ignore the padding" (which Gemini was ignoring) to
-  // "there is no padding, grade from the first frame."
   videosMotionOnsetTrimmed?: boolean;
 }): string {
   const {
@@ -36,16 +35,16 @@ export function buildGeminiPrompt(args: {
   } = args;
 
   // SPECK round-3 §Group-1: when the client trim mirrors the reference, the
-  // model grades left/right LITERALLY. The legacy fallback path (no client
-  // trim, no flip) keeps the older mirror-copy clause as a safety net.
+  // model grades left/right LITERALLY. The legacy fallback path keeps the
+  // older mirror-copy clause as a safety net.
   const orientationClause = referenceMirrored
     ? 'The REFERENCE video has been horizontally mirrored so that left/right correspond directly to the ATTEMPT video, which is captured from a front-facing camera. Grade left and right literally — when the reference\'s left arm goes up, the attempt\'s left arm should go up.'
     : 'The ATTEMPT is captured from a front-facing camera and is mirrored. The REFERENCE is in its source orientation (un-mirrored fallback). Grade as a mirror copy — when the reference dancer\'s left arm goes up, the attempt\'s right arm going up is CORRECT.';
 
-  // SPECK round-3 §Group-2 prompt swap: motion-onset trim replaces the old
-  // padding-ignore language. The fallback branch (re-encode unavailable, or
-  // onset detection found nothing) keeps the legacy CHUNK CONTEXT + WHAT
-  // COUNTS clauses so the model still has something to anchor on.
+  // SPECK round-3 §Group-2: motion-onset trim replaces the old padding-
+  // ignore language. Fallback branch (re-encode unavailable or onset not
+  // detected) keeps the legacy CHUNK CONTEXT block so the model still has
+  // something to anchor on.
   const framingClause = videosMotionOnsetTrimmed
     ? `CHUNK CONTEXT
 Both videos start exactly at the moment of first dance movement. There is no pre-roll padding. All trouble spots must reference timestamps within the dance, not before it. The choreography in the reference runs to ${referenceChunkEndSec.toFixed(2)}s — DO NOT report trouble spots past that point.
@@ -68,6 +67,13 @@ IGNORE incidental motion in the reference:
 - Natural body micro-movements between choreographed counts
 These are setup and recovery, NOT choreography. Do NOT penalize the user for not replicating them.`;
 
+  // SPECK round-3 §Group-4: legs schema is now nullable. Upper-body framing
+  // returns null and the downstream `displayedOverall` excludes legs from
+  // the mean — DO NOT default legs to 75 to "be kind"; that lies on the bar.
+  const legsClause = legsVisible
+    ? 'LEGS: The user has their legs in frame. Score the legs component normally as part of the choreography.'
+    : 'LEGS: The user is filming UPPER BODY ONLY — legs are not in frame. This is a framing choice, not a performance error. Set the legs component to null. Do NOT include leg-related trouble spots. Focus your trouble spots on arms, body, and timing.';
+
   return `You are a supportive dance teacher grading a student's attempt at a SINGLE CHUNK of a TikTok dance. Your job is to help the student improve, not to nitpick. Lead with what worked, then constructively note what to improve.
 
 VIDEOS
@@ -79,27 +85,25 @@ ${framingClause}
 PERSONAL STYLE IS NOT AN ERROR
 The user may execute the choreography with their own angle, energy, or flourish. If the core move is recognizable, that is SUCCESS. Score down only for missing or incorrect choreography — not for stylistic variation. Smaller motion executed correctly beats bigger motion executed incorrectly.
 
-${legsVisible
-  ? 'LEGS: The user has their legs in frame. Score legs normally as part of the choreography.'
-  : 'LEGS: The user is filming UPPER BODY ONLY — legs are not in frame. This is a framing choice, not a performance error. Score the legs component at 75 by default and do NOT let leg-related issues affect overall_score. Do NOT include leg-related trouble spots. Focus your trouble spots on arms, body, and timing.'}
+${legsClause}
 
-SCORING — RAISE THE FLOOR FOR REAL ATTEMPTS
-This is a HARD RULE. If the user is sincerely attempting the choreography — even badly, even with most moves wrong — the overall_score MUST be at least 50.
+STEP 1 — DECIDE is_actually_dancing (CANARY)
+The attempt is NOT a dance attempt if ANY of the following are true:
+  (a) the body is mostly still relative to the camera (postural sway only),
+  (b) the limb motion is fast but uncorrelated with the reference — the user is flailing, not copying,
+  (c) the user is out of frame for more than 30% of the chunk.
 
-A "sincere attempt" means: the user is performing recognizable choreographed moves in approximate sequence, with at least some timing relationship to the music. NOT just "any motion is happening." Random arm-waving with no relation to the reference is NOT a sincere attempt.
+If ANY of (a)/(b)/(c) holds:
+- Set is_actually_dancing: false.
+- Set overall_score to a value between 5 and 25.
+- Components must reflect what was actually observed. For example: flailing arms might score arms: 15 because there IS arm motion (just wrong); standing-still body should score body: 5. Do NOT pad components upward to make the result feel kinder.
 
-Three zones, no exceptions:
-- **0-39: Not attempting.** Standing still, off-camera, or motion completely unrelated to the choreography (random flailing).
-- **40-49: Attempting but very poor.** Motion is present and some timing relation to the music exists, but few or no specific reference moves are recognizable.
-- **50-100: Sincere attempt.** User is performing recognizable moves from the choreography, even if execution is imperfect. Floor is 50, no exceptions.
+If NONE of (a)/(b)/(c) holds, the user is sincerely attempting the choreography. Set is_actually_dancing: true and continue to Step 2.
 
-Within 50-100, calibrate:
-- **50-64 SHAKY:** Some moves recognizable but many missed, wrong, or significantly off-beat.
-- **65-84 SOLID:** Most moves recognizable, mostly on beat, execution mostly correct.
-- **85-100 GROOVY:** All major moves hit, on the beat, full performance energy.
-
-CANARY (this still applies)
-If is_actually_dancing is false, overall_score MUST be below 40. Standing still → score 0-15. Random flailing with no choreography match → score 25-39.
+STEP 2 — SINCERE-ATTEMPT FLOOR
+If is_actually_dancing: true:
+- No individual component score may be below 35 unless the attempt genuinely shows zero effort on that axis. A sincere user who tried timing but missed it scores timing: 35-50, not timing: 10.
+- Score each component 0–100 based on what you observed. Be specific: 50 = recognizable but rough. 70 = solid execution. 85+ = nailed.
 
 SEVERITY CALIBRATION
 Trouble spots have severity levels. Use them PROPORTIONATELY. Most issues should be MINOR. MAJOR should be rare.
@@ -116,20 +120,27 @@ Exact hand shapes, finger configurations, and hand-signal gestures (rock-on, fin
 EXECUTION QUALITY IS MINOR
 Trouble spots about "extension," "crispness," "sharpness," "isolation," "fullness," or "energy of execution" are MINOR. Only escalate to MODERATE if the user did the wrong move entirely (wrong direction, wrong arm, wrong body part) — not if they did the right move with imperfect execution.
 
-TROUBLE SPOT COUNT — DO NOT PAD
-Match the count to how poorly the user actually did. DO NOT generate the maximum just to fill the list.
-
-- **overall_score 0-39:** 1-3 trouble spots. For non-attempts, ONE summary trouble spot is enough.
-- **overall_score 40-64:** 2-3 trouble spots. Pick the most important.
-- **overall_score 65-84:** 1-2 trouble spots. The user did mostly well — only call out the top issues.
-- **overall_score 85-100:** 0-1 trouble spots. The user nailed it. Maybe one tiny polish note.
+TROUBLE SPOT COUNT — CAPPED BY TIER
+Match the trouble_spots array length to the user's result tier — DO NOT pad to fill.
+- **tier: GROOVY:** at most 2 trouble spots. Often 0–1.
+- **tier: SOLID:** at most 3 trouble spots.
+- **tier: SHAKY:** at most 4 trouble spots.
+- **tier: NOT_DANCING:** exactly 1 trouble spot — a single summary entry like "this didn't look like an attempt at the dance."
 
 If a trouble spot is MINOR, ask yourself if it's worth including at all. Most MINOR issues should just be omitted.
 
-INSIGHTS — TONE MATTERS
-1-4 insights. The FIRST insight MUST be a specific positive observation about what the user did well. Not generic ("good effort") — specific ("you nailed the arm extension on the second beat"). If you genuinely cannot identify anything positive (only true for non-attempts under 40), say "You showed up and tried — that's the first step." and move on.
+INSIGHTS — TONE MATTERS, CONDITIONAL ON is_actually_dancing
+The insights array must have 1–4 entries.
 
-Subsequent insights are constructive but PROPORTIONATE. Avoid these adjectives unless the issue is truly extreme: "very," "significantly," "completely," "entirely," "totally," "barely," "not at all." Instead use proportionate language: "slightly," "a bit," "could be sharper," "try to extend a little more."
+If is_actually_dancing: true:
+- The FIRST insight MUST be a specific positive observation about what the user did well. Not generic ("good effort") — specific ("you nailed the arm extension on the second beat").
+- Subsequent insights are constructive but PROPORTIONATE.
+
+If is_actually_dancing: false:
+- Do NOT pretend there was good work to praise. Do NOT lead with a fake compliment.
+- Be honest and brief: one or two insights along the lines of "this didn't look like an attempt at the dance — watch the reference all the way through, then try again."
+
+Across both branches, avoid these punitive adjectives unless the issue is truly extreme: "very," "significantly," "completely," "entirely," "totally," "barely," "not at all." Instead use proportionate language: "slightly," "a bit," "could be sharper," "try to extend a little more."
 
 Insights should be ACTIONABLE — tell the user what to do differently, not just what was wrong.
 

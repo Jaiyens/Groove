@@ -24,7 +24,11 @@ export const GeminiScoreSchema = z.object({
   tier: z.enum(['GROOVY', 'SOLID', 'SHAKY', 'NOT_DANCING']),
   components: z.object({
     arms: z.number().min(0).max(100),
-    legs: z.number().min(0).max(100),
+    // SPECK round-3 §Group-4: legs is null when the user filmed
+    // upper-body only. The downstream `displayedOverall` excludes it
+    // from the mean. Older versions defaulted to 75 which lied on the
+    // breakdown bar.
+    legs: z.number().min(0).max(100).nullable(),
     body: z.number().min(0).max(100),
     timing: z.number().min(0).max(100),
   }),
@@ -51,7 +55,9 @@ export const GeminiResponseJsonSchema = {
       type: 'object',
       properties: {
         arms: { type: 'number', minimum: 0, maximum: 100 },
-        legs: { type: 'number', minimum: 0, maximum: 100 },
+        // SPECK round-3 §Group-4: legs nullable for upper-body-only attempts.
+        // Gemini structured-output (OpenAPI-style) uses `nullable: true`.
+        legs: { type: 'number', minimum: 0, maximum: 100, nullable: true },
         body: { type: 'number', minimum: 0, maximum: 100 },
         timing: { type: 'number', minimum: 0, maximum: 100 },
       },

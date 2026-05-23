@@ -120,7 +120,7 @@ describe('buildGeminiPrompt — chunk windowing (videosMotionOnsetTrimmed=false 
   });
 });
 
-describe('buildGeminiPrompt — legs visibility branch', () => {
+describe('buildGeminiPrompt — legs visibility branch (SPECK round-3 §Group-4)', () => {
   it('legsVisible=true uses the normal-scoring branch', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
@@ -128,18 +128,25 @@ describe('buildGeminiPrompt — legs visibility branch', () => {
       referenceChunkEndSec: 1.5,
     });
     assert.ok(out.includes('legs in frame'), 'expected legs-in-frame language');
-    assert.ok(out.includes('Score legs normally'), 'expected normal-scoring instruction');
+    assert.ok(out.match(/Score the legs component normally/i), 'expected normal-scoring instruction');
     assert.ok(!out.includes('UPPER BODY ONLY'), 'upper-body branch must not fire');
   });
 
-  it('legsVisible=false uses the upper-body-only branch with default 75', () => {
+  it('legsVisible=false sets legs to null (no more default 75)', () => {
     const out = buildGeminiPrompt({
       legsVisible: false,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
     assert.ok(out.includes('UPPER BODY ONLY'), 'expected upper-body-only marker');
-    assert.ok(out.includes('at 75 by default'), 'expected generous leg default of 75');
+    assert.ok(
+      out.includes('Set the legs component to null'),
+      'must instruct legs: null rather than default 75',
+    );
+    assert.ok(
+      !out.includes('at 75 by default'),
+      'old default-75 language must be gone',
+    );
     assert.ok(
       out.includes('Do NOT include leg-related trouble spots'),
       'must suppress leg-related trouble spots',
@@ -147,29 +154,95 @@ describe('buildGeminiPrompt — legs visibility branch', () => {
   });
 });
 
-describe('buildGeminiPrompt — canary intact (legs branch agnostic)', () => {
-  it('preserves the standing-still / random-flailing canary for legsVisible=true', () => {
+describe('buildGeminiPrompt — canary (binary AND quantitative)', () => {
+  it('step 1 names the three trip conditions (a/b/c)', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
-    assert.ok(out.includes('CANARY'), 'CANARY section missing');
-    assert.ok(out.includes('is_actually_dancing is false'), 'canary must reference is_actually_dancing is false');
-    assert.ok(out.match(/MUST be below 40/), 'canary must require score below 40');
-    assert.ok(out.includes('Standing still'), 'canary must catch standing still');
-    assert.ok(out.match(/random flailing/i), 'canary must catch random flailing');
+    assert.ok(
+      out.includes('STEP 1 — DECIDE is_actually_dancing'),
+      'must call out STEP 1 canary heading',
+    );
+    assert.ok(out.includes('(a)'), 'must label condition (a)');
+    assert.ok(out.includes('postural sway'), 'condition (a) — postural sway only');
+    assert.ok(out.includes('(b)'), 'must label condition (b)');
+    assert.ok(out.includes('uncorrelated with the reference'), 'condition (b) — flailing not copying');
+    assert.ok(out.includes('(c)'), 'must label condition (c)');
+    assert.ok(out.match(/out of frame.*30%/), 'condition (c) — out of frame >30%');
   });
 
-  it('preserves the canary even when legsVisible=false (generosity does not apply to non-attempts)', () => {
+  it('forces overall_score into 5-25 on canary trip', () => {
     const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.match(/overall_score to a value between 5 and 25/),
+      'must require overall_score in [5,25] when canary trips',
+    );
+  });
+
+  it('forbids padding components upward on canary trip', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.match(/[Dd]o NOT pad components upward/),
+      'must forbid padding components upward to feel kind',
+    );
+    // Worked examples should anchor the model.
+    assert.ok(
+      out.includes('arms: 15'),
+      'must give the flailing arms: 15 example',
+    );
+    assert.ok(
+      out.includes('body: 5'),
+      'must give the standing-still body: 5 example',
+    );
+  });
+
+  it('canary fires on both legs branches', () => {
+    const outLegs = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    const outUpper = buildGeminiPrompt({
       legsVisible: false,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
-    assert.ok(out.includes('CANARY'), 'CANARY section missing');
-    assert.ok(out.includes('is_actually_dancing is false'), 'canary must reference is_actually_dancing is false');
-    assert.ok(out.match(/MUST be below 40/), 'canary must require score below 40');
+    for (const out of [outLegs, outUpper]) {
+      assert.ok(out.includes('STEP 1 — DECIDE is_actually_dancing'));
+      assert.ok(out.match(/between 5 and 25/));
+    }
+  });
+});
+
+describe('buildGeminiPrompt — sincere-attempt component floor (SPECK round-3 §Group-4 §2)', () => {
+  it('declares the per-component floor of 35 for sincere attempts', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.includes('STEP 2 — SINCERE-ATTEMPT FLOOR'),
+      'must call out STEP 2 floor heading',
+    );
+    assert.ok(
+      out.match(/No individual component score may be below 35/),
+      'must state the 35 component floor',
+    );
+    assert.ok(
+      out.match(/zero effort/),
+      'must allow the "zero effort on that axis" escape hatch',
+    );
   });
 });
 
@@ -245,44 +318,7 @@ describe('buildGeminiPrompt — mirror grading + style tolerance', () => {
   });
 });
 
-describe('buildGeminiPrompt — generosity calibration', () => {
-  it('contains the floor-50 hard rule for sincere attempts', () => {
-    const out = buildGeminiPrompt({
-      legsVisible: true,
-      referenceChunkStartSec: 0,
-      referenceChunkEndSec: 1.5,
-    });
-    assert.ok(out.includes('overall_score MUST be at least 50'), 'must state floor-50 hard rule');
-    assert.ok(out.includes('Floor is 50, no exceptions'), 'must reinforce floor-50 inside zone breakdown');
-  });
-
-  it('tightens the definition of a "sincere attempt"', () => {
-    const out = buildGeminiPrompt({
-      legsVisible: true,
-      referenceChunkStartSec: 0,
-      referenceChunkEndSec: 1.5,
-    });
-    assert.ok(out.match(/sincere attempt/i), 'must define "sincere attempt"');
-    assert.ok(
-      out.includes('Random arm-waving with no relation to the reference is NOT a sincere attempt'),
-      'must explicitly disqualify random arm-waving as sincere',
-    );
-  });
-
-  it('defines all four zones (0-39 / 40-49 / 50-100, plus SHAKY/SOLID/GROOVY brackets)', () => {
-    const out = buildGeminiPrompt({
-      legsVisible: true,
-      referenceChunkStartSec: 0,
-      referenceChunkEndSec: 1.5,
-    });
-    assert.ok(out.includes('0-39'), 'must define 0-39 zone');
-    assert.ok(out.includes('40-49'), 'must define 40-49 zone');
-    assert.ok(out.includes('50-100'), 'must define 50-100 zone');
-    assert.ok(out.includes('50-64 SHAKY'), 'must label SHAKY bracket');
-    assert.ok(out.includes('65-84 SOLID'), 'must label SOLID bracket');
-    assert.ok(out.includes('85-100 GROOVY'), 'must label GROOVY bracket');
-  });
-
+describe('buildGeminiPrompt — severity calibration', () => {
   it('includes severity calibration paragraph (most issues MINOR, MAJOR rare)', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
@@ -296,22 +332,60 @@ describe('buildGeminiPrompt — generosity calibration', () => {
     assert.ok(out.includes('MODERATE:'), 'must define MODERATE');
     assert.ok(out.includes('MINOR:'), 'must define MINOR');
   });
+});
 
-  it('caps trouble spot counts by score bracket', () => {
+describe('buildGeminiPrompt — trouble-spot caps by tier (SPECK round-3 §Group-4 §4)', () => {
+  it('caps the count by the result tier, not by overall_score bracket', () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
     assert.ok(out.includes('TROUBLE SPOT COUNT'), 'must include trouble-spot count cap section');
-    assert.ok(out.includes('DO NOT PAD'), 'must explicitly forbid padding the list');
-    assert.ok(out.match(/0-39:\*\* 1-3/), 'must cap 0-39 at 1-3');
-    assert.ok(out.match(/40-64:\*\* 2-3/), 'must cap 40-64 at 2-3');
-    assert.ok(out.match(/65-84:\*\* 1-2/), 'must cap 65-84 at 1-2');
-    assert.ok(out.match(/85-100:\*\* 0-1/), 'must cap 85-100 at 0-1');
+    assert.ok(out.match(/tier: GROOVY.*at most 2/), 'GROOVY ≤ 2');
+    assert.ok(out.match(/tier: SOLID.*at most 3/), 'SOLID ≤ 3');
+    assert.ok(out.match(/tier: SHAKY.*at most 4/), 'SHAKY ≤ 4');
+    assert.ok(out.match(/tier: NOT_DANCING.*exactly 1/), 'NOT_DANCING exactly 1');
   });
 
-  it('requires the first insight to be a specific positive observation', () => {
+  it("NOT_DANCING's one trouble spot is a summary, not a nit-pick", () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(
+      out.match(/didn't look like an attempt at the dance/),
+      'NOT_DANCING summary copy must be present',
+    );
+  });
+
+  it("drops the old overall_score-bracket caps (0-39 / 40-64 / 65-84 / 85-100)", () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    assert.ok(!out.match(/overall_score 0-39:\*\* 1-3/), 'old 0-39 cap must be gone');
+    assert.ok(!out.match(/overall_score 40-64:\*\* 2-3/), 'old 40-64 cap must be gone');
+  });
+});
+
+describe('buildGeminiPrompt — insights conditional on is_actually_dancing (SPECK round-3 §Group-4 §5)', () => {
+  it('keeps the punitive-adjective ban', () => {
+    const out = buildGeminiPrompt({
+      legsVisible: true,
+      referenceChunkStartSec: 0,
+      referenceChunkEndSec: 1.5,
+    });
+    for (const adj of ['"very,"', '"significantly,"', '"completely,"', '"entirely,"', '"totally,"', '"barely,"']) {
+      assert.ok(out.includes(adj), `must list ${adj} as a punitive adjective to avoid`);
+    }
+    assert.ok(out.includes('proportionate language'), 'must direct toward proportionate language');
+    assert.ok(out.match(/ACTIONABLE/i), 'insights should be ACTIONABLE');
+  });
+
+  it("requires the first insight to be a specific positive observation when is_actually_dancing: true", () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
@@ -319,24 +393,33 @@ describe('buildGeminiPrompt — generosity calibration', () => {
     });
     assert.ok(out.includes('INSIGHTS'), 'must include INSIGHTS section');
     assert.ok(
+      out.match(/If is_actually_dancing: true/),
+      'must have an is_actually_dancing: true branch in INSIGHTS',
+    );
+    assert.ok(
       out.includes('FIRST insight MUST be a specific positive observation'),
       'must require first insight is a specific positive observation',
     );
   });
 
-  it('warns against punitive adjectives in insights', () => {
+  it("forbids a fake compliment when is_actually_dancing: false", () => {
     const out = buildGeminiPrompt({
       legsVisible: true,
       referenceChunkStartSec: 0,
       referenceChunkEndSec: 1.5,
     });
-    // The list of disallowed adjectives must appear so future Gemini calls
-    // can be lint-checked against this exact set.
-    for (const adj of ['"very,"', '"significantly,"', '"completely,"', '"entirely,"', '"totally,"', '"barely,"']) {
-      assert.ok(out.includes(adj), `must list ${adj} as a punitive adjective to avoid`);
-    }
-    assert.ok(out.includes('proportionate language'), 'must direct toward proportionate language');
-    assert.ok(out.match(/ACTIONABLE/i), 'insights should be ACTIONABLE');
+    assert.ok(
+      out.match(/If is_actually_dancing: false/),
+      'must have an is_actually_dancing: false branch in INSIGHTS',
+    );
+    assert.ok(
+      out.match(/Do NOT pretend there was good work/),
+      'must explicitly forbid pretending there was good work to praise',
+    );
+    assert.ok(
+      out.match(/fake compliment/i),
+      'must reinforce no fake compliments',
+    );
   });
 });
 
