@@ -27,6 +27,7 @@ import { PASS_THRESHOLD } from '@/lib/mastery/chunkProgress';
 import type { ComponentScores, SessionScore, TroubleSpot } from '@/lib/scoring/types';
 import type { FinalScoreView } from '@/lib/scoring/finalScore';
 import type { GeminiScore } from '@/lib/scoring/gemini/types';
+import type { DeterministicScore } from '@/lib/scoring/deterministic';
 
 interface ResultsCardProps {
   danceId: string;
@@ -50,32 +51,35 @@ interface ResultsCardProps {
 
 const SHOW_BOTH_SCORES = process.env.NEXT_PUBLIC_SHOW_BOTH_SCORES === 'true';
 
-// Headline + color brackets align with the prompt's score zones
-// (SPECK §generosity-rewrite §ResultsCard): 0-39 / 40-49 / 50-64 / 65-84 / 85+.
+// Headline + color brackets align with the deterministic score zones
+// (SPECK §deterministic-scoring §ResultsCard): 0-39 / 40-69 / 70-74 / 75-84 / 85+.
+// The deterministic formula floors sincere attempts at 70, so the
+// 40-69 band is reached only by the MediaPipe fallback path — keep
+// "JUST TRYING?" there for coverage.
 // PASS_THRESHOLD (70) is the mastery gate and stays untouched — it gates
 // chunk unlocks, not headline copy.
 //
 // Strings are stored uppercase to match the spec literally; the markup also
 // applies `uppercase` via CSS so the rendered output is unaffected by the
 // literal case.
-function headlineCopy(score: number): string {
-  if (score >= 85) return 'YOU GOT IT.';
-  if (score >= 65) return 'NICE WORK.';
-  if (score >= 50) return 'GETTING THERE.';
+export function headlineCopy(score: number): string {
+  if (score >= 85) return 'GROOVY!';
+  if (score >= 75) return 'NICE WORK.';
+  if (score >= 70) return 'GETTING THERE.';
   if (score >= 40) return 'JUST TRYING?';
   return 'WAS THAT A DANCE?';
 }
 
 // Score color by zone — exact hex values per SPECK:
-//   85+   pink         #FF1F8E
-//   65-84 yellow-green #A3E635
-//   40-64 amber        #F59E0B
-//   0-39  red          #EF4444
+//   85+   pink         #FF1F8E    GROOVY
+//   75-84 yellow-green #A3E635    SOLID
+//   40-74 amber        #F59E0B    SHAKY (70-74) / TRYING (40-69 fallback only)
+//   0-39  red          #EF4444    NOT_DANCING
 // Tailwind arbitrary values keep these hexes local to this file rather
 // than promoting them into the global palette tokens.
-function scoreColorClass(score: number): string {
+export function scoreColorClass(score: number): string {
   if (score >= 85) return 'text-[#FF1F8E]';
-  if (score >= 65) return 'text-[#A3E635]';
+  if (score >= 75) return 'text-[#A3E635]';
   if (score >= 40) return 'text-[#F59E0B]';
   return 'text-[#EF4444]';
 }
@@ -266,32 +270,40 @@ function GeminiResultsView({
   onRetry,
 }: GeminiResultsViewProps) {
   const [showCompare, setShowCompare] = useState(false);
+  const display = finalView.display;
   const primary = finalView.primary;
   const passed = finalScore >= PASS_THRESHOLD;
   const hasNextChunk = chunkIndex + 1 < totalChunks;
 
-  // Mediapipe debug pill is only shown in validation mode. The score is
-  // unaffected by the pill — Gemini's overall_score is the headline either
-  // way. When finalView.source === 'mediapipe-fallback' there's nothing
-  // useful to compare against (backup is null), so we hide the pill.
-  const showDebugPill = SHOW_BOTH_SCORES && finalView.source === 'gemini' && sessionScore != null;
+  // Validation-mode debug pill. On the gemini path we show Gemini's raw
+  // overall_score + MediaPipe — both diverge from the deterministic
+  // display number, and the spec wants both visible for tuning. On the
+  // mediapipe-fallback path Gemini-raw equals display so there's
+  // nothing to compare; hide the pill.
+  const showDebugPill = SHOW_BOTH_SCORES && finalView.source === 'gemini';
   const worstSpot = pickWorstGeminiSpot(primary.trouble_spots);
 
   return (
     <div className="absolute inset-0 z-40 flex flex-col items-center justify-start overflow-y-auto bg-black/95 px-6 pt-8 pb-10 text-center">
       <div className="mt-2 text-xs uppercase tracking-widest text-white/55">
-        {headlineCopyForTier(primary.tier, finalScore)}
+        {headlineCopyForDisplay(display)}
       </div>
       <div
-        className={`mt-1 text-[120px] font-extrabold leading-none tabular-nums ${scoreColorClass(finalScore)}`}
+        className={`mt-1 text-[120px] font-extrabold leading-none tabular-nums ${scoreColorClass(display.displayScore)}`}
       >
-        {finalScore}
+        {display.displayScore}
       </div>
 
-      {showDebugPill && sessionScore && (
+      {showDebugPill && (
         <div className="mt-2 flex flex-col items-center gap-1">
           <div className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-semibold tracking-widest text-white/55">
-            MediaPipe (debug): {Math.round(sessionScore.overall)}
+            {`Gemini raw: ${Math.round(display.geminiRawScore)}`}
+            {sessionScore && (
+              <>
+                {' · '}
+                {`MediaPipe (debug): ${Math.round(sessionScore.overall)}`}
+              </>
+            )}
           </div>
           <button
             type="button"
@@ -303,10 +315,13 @@ function GeminiResultsView({
         </div>
       )}
 
-      {showCompare && sessionScore && (
+      {showCompare && (
         <CompareTable
+          display={display}
           gemini={primary.components}
-          mediapipe={sessionScore.components ?? null}
+          mediapipe={sessionScore?.components ?? null}
+          geminiRawOverall={primary.overall_score}
+          mediapipeOverall={sessionScore?.overall ?? null}
         />
       )}
 
@@ -331,14 +346,20 @@ function GeminiResultsView({
       )}
 
       <div className="mt-7 grid w-full max-w-xs grid-cols-2 gap-3">
-        <ComponentBar label="Arms" score={primary.components.arms} />
+        <ComponentBar label="Arms" score={display.components.arms} />
         <ComponentBar
           label="Legs"
-          score={primary.components.legs}
-          note={finalView.legsVisible === false ? '(upper body only)' : null}
+          score={display.components.legs}
+          note={
+            !display.isActuallyDancing
+              ? null
+              : finalView.legsVisible === false
+                ? '(upper body only)'
+                : null
+          }
         />
-        <ComponentBar label="Body" score={primary.components.body} />
-        <ComponentBar label="Timing" score={primary.components.timing} />
+        <ComponentBar label="Body" score={display.components.body} />
+        <ComponentBar label="Timing" score={display.components.timing} />
       </div>
 
       {primary.insights.length > 0 && (
@@ -426,31 +447,44 @@ function GeminiResultsView({
 }
 
 function CompareTable({
+  display,
   gemini,
   mediapipe,
+  geminiRawOverall,
+  mediapipeOverall,
 }: {
+  display: DeterministicScore;
   gemini: GeminiScore['components'];
   mediapipe: ComponentScores | null;
+  geminiRawOverall: number;
+  mediapipeOverall: number | null;
 }) {
-  const rows: Array<['Arms' | 'Legs' | 'Body' | 'Timing', number, number | null]> = [
-    ['Arms', gemini.arms, mediapipe?.arms ?? null],
-    ['Legs', gemini.legs, mediapipe?.legs ?? null],
-    ['Body', gemini.body, mediapipe?.body ?? null],
-    ['Timing', gemini.timing, mediapipe?.timing ?? null],
+  // Educational 3-way comparison: Display (deterministic, what the user
+  // sees), Gemini raw (model output, calibration drift), MediaPipe
+  // (pose-only baseline). Helps the validator diagnose why the headline
+  // diverges from either underlying signal.
+  const rows: Array<[string, number, number, number | null]> = [
+    ['Overall', display.displayScore, Math.round(geminiRawOverall), mediapipeOverall != null ? Math.round(mediapipeOverall) : null],
+    ['Arms', display.components.arms, Math.round(gemini.arms), mediapipe?.arms != null ? Math.round(mediapipe.arms) : null],
+    ['Legs', display.components.legs, Math.round(gemini.legs), mediapipe?.legs != null ? Math.round(mediapipe.legs) : null],
+    ['Body', display.components.body, Math.round(gemini.body), mediapipe?.body != null ? Math.round(mediapipe.body) : null],
+    ['Timing', display.components.timing, Math.round(gemini.timing), mediapipe?.timing != null ? Math.round(mediapipe.timing) : null],
   ];
   return (
     <div className="mt-3 w-full max-w-xs rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">
-      <div className="grid grid-cols-3 gap-2 text-[10px] uppercase tracking-widest text-white/40">
+      <div className="grid grid-cols-4 gap-2 text-[10px] uppercase tracking-widest text-white/40">
         <span className="text-left">Component</span>
+        <span className="text-right">Display</span>
         <span className="text-right">Gemini</span>
         <span className="text-right">MediaPipe</span>
       </div>
       <ul className="mt-1 flex flex-col gap-0.5">
-        {rows.map(([label, g, mp]) => (
-          <li key={label} className="grid grid-cols-3 gap-2 text-xs tabular-nums">
+        {rows.map(([label, d, g, mp]) => (
+          <li key={label} className="grid grid-cols-4 gap-2 text-xs tabular-nums">
             <span className="text-left text-white/75">{label}</span>
-            <span className="text-right text-white">{Math.round(g)}</span>
-            <span className="text-right text-white/55">{mp != null ? Math.round(mp) : '—'}</span>
+            <span className="text-right text-white">{d}</span>
+            <span className="text-right text-white/75">{g}</span>
+            <span className="text-right text-white/55">{mp != null ? mp : '—'}</span>
           </li>
         ))}
       </ul>
@@ -458,15 +492,11 @@ function CompareTable({
   );
 }
 
-function headlineCopyForTier(tier: GeminiScore['tier'], score: number): string {
-  // Score is the source of truth for headline copy (matches the prompt's
-  // explicit score zones). Keep the tier param so callers can keep passing
-  // it — useful for telemetry — but use the score to map to copy so a
-  // Gemini answer with a divergent tier still gets a consistent headline.
-  // NOT_DANCING is special-cased to keep the "Was that a dance?" voice
-  // when Gemini sets the canary, even if the score lands on the 0-39 edge.
-  if (tier === 'NOT_DANCING' || score < 40) return 'WAS THAT A DANCE?';
-  return headlineCopy(score);
+function headlineCopyForDisplay(display: DeterministicScore): string {
+  // The deterministic transform owns is_actually_dancing; honor it so the
+  // "Was that a dance?" voice stays consistent even at the 39/40 edge.
+  if (!display.isActuallyDancing) return 'WAS THAT A DANCE?';
+  return headlineCopy(display.displayScore);
 }
 
 function formatSeconds(sec: number): string {
