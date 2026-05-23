@@ -3,8 +3,13 @@
 //
 // Source = 'gemini' is the headline path (success). Source =
 // 'mediapipe-fallback' fires when Gemini timed out / errored / schema-
-// failed. In both cases `.primary` is GeminiScore-shaped so the
+// failed. In both cases `.display` is a DeterministicScore so the
 // ResultsCard renders the same JSX either way.
+//
+// `.primary` is the underlying GeminiScore (real Gemini response on the
+// success path; MediaPipe-projected GeminiScore-shape on the fallback
+// path) — kept for the debug pill, trouble-spot drill rows, and
+// insights, none of which the deterministic transform produces.
 //
 // Drill-mode routing reads `.primary.trouble_spots`. For the
 // mediapipe-fallback case the spots are stubbed from MediaPipe's
@@ -21,10 +26,21 @@ import type { SessionScore } from '@/lib/scoring/types';
 import type { GeminiResult } from '@/lib/scoring/gemini/client';
 import type { GeminiScore, GeminiBodyPart, GeminiTier } from '@/lib/scoring/gemini/types';
 import type { JointName } from '@/lib/pose/types';
+import {
+  computeDeterministicScore,
+  scoreToTier,
+  type DeterministicScore,
+} from '@/lib/scoring/deterministic';
 
 export type FinalScoreSource = 'gemini' | 'mediapipe-fallback';
 
 export interface FinalScoreView {
+  // The score the user actually sees. Driven by the deterministic
+  // formula in lib/scoring/deterministic.ts on the gemini path; built
+  // directly from the MediaPipe SessionScore on the fallback path
+  // (per SPECK: no deterministic computation when we can't trust the
+  // is_actually_dancing canary).
+  display: DeterministicScore;
   primary: GeminiScore;
   backup: SessionScore | null;
   source: FinalScoreSource;
@@ -145,17 +161,45 @@ export function buildFinalScoreView(
   legsVisible: boolean = true,
 ): FinalScoreView {
   if (geminiResult.kind === 'success') {
+    const display = computeDeterministicScore(geminiResult.score, legsVisible);
     return {
+      display,
       primary: geminiResult.score,
       backup: mediapipeFinal,
       source: 'gemini',
       legsVisible,
     };
   }
+  const fallbackPrimary = mediapipeFinalToGeminiShape(mediapipeFinal, chunkStartMs);
+  // MediaPipe-fallback: bypass computeDeterministicScore — we can't trust
+  // is_actually_dancing on this path. Project the MediaPipe overall_score
+  // directly into the DisplayScore shape so the ResultsCard renders the
+  // same JSX regardless of source.
+  const display = mediapipeToDisplayScore(fallbackPrimary, legsVisible);
   return {
-    primary: mediapipeFinalToGeminiShape(mediapipeFinal, chunkStartMs),
+    display,
+    primary: fallbackPrimary,
     backup: null,
     source: 'mediapipe-fallback',
     legsVisible,
+  };
+}
+
+function mediapipeToDisplayScore(
+  shaped: GeminiScore,
+  legsVisible: boolean,
+): DeterministicScore {
+  const displayScore = Math.round(shaped.overall_score);
+  return {
+    displayScore,
+    displayTier: scoreToTier(displayScore),
+    geminiRawScore: shaped.overall_score,
+    isActuallyDancing: shaped.is_actually_dancing,
+    components: {
+      arms: Math.round(shaped.components.arms),
+      legs: legsVisible ? Math.round(shaped.components.legs) : 75,
+      body: Math.round(shaped.components.body),
+      timing: Math.round(shaped.components.timing),
+    },
   };
 }

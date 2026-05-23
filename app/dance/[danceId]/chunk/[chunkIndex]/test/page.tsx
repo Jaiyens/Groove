@@ -657,7 +657,7 @@ export default function TestPage({ params }: PageProps) {
         console.warn('[mode-b] gemini failed → falling back to MediaPipe', geminiResult.reason);
       } else {
         // eslint-disable-next-line no-console
-        console.log('[mode-b] gemini scored', {
+        console.log('[mode-b] gemini scored (raw, internal)', {
           overall: geminiResult.score.overall_score,
           tier: geminiResult.score.tier,
           latencyMs: geminiResult.latencyMs,
@@ -667,9 +667,12 @@ export default function TestPage({ params }: PageProps) {
       const view = buildFinalScoreView(geminiResult, mediapipeFinal, chunk.startMs, legsVisible);
       setSessionScore(mediapipeFinal);
       setFinalView(view);
-      const overall = view.primary.overall_score;
-      setFinalScore(overall);
-      const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, overall);
+      // Display score is what the user sees AND what gates chunk unlock —
+      // the deterministic formula is the headline number, Gemini's raw
+      // overall_score is logged for debugging only (SPECK §Hard rule 2).
+      const display = view.display.displayScore;
+      setFinalScore(display);
+      const { unlockedNext } = recordChunkScore(dance.id, chunkIndex, display);
       recordContinueLearning({
         danceId: dance.id,
         title: dance.name,
