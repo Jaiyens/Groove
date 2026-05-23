@@ -64,8 +64,20 @@ export function createCalloutEngine(config: CalloutEngineConfig): CalloutEngine 
       // the user wasn't being scored at this beat (pose lost, pre-roll, etc.)
       // and a phantom ALMOST would be misleading.
       if (Number.isFinite(maxSim)) {
+        const tier = tierForSimilarity(maxSim);
+        // Per-beat diagnostic so the human can see in the terminal whether
+        // a sincere attempt is producing the expected tier mix. Expected
+        // for a real attempt: mostly PERFECT / GREAT with the occasional
+        // GROOVY peak and rare ALMOST. If every beat is GROOVY (0.9+),
+        // there's a normalization bug upstream — values are inflated and
+        // we should either tune thresholds or fix the per-frame
+        // similarity pipeline.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[callout-engine] beat=${nextBeatToCommit} timestamp=${beatTs.toFixed(0)}ms windowMaxSimilarity=${maxSim.toFixed(3)} tier=${tier}`,
+        );
         config.onCallout({
-          tier: tierForSimilarity(maxSim),
+          tier,
           beatIndex: nextBeatToCommit,
           timestamp: beatTs,
           similarity: maxSim,
