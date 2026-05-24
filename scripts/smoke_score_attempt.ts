@@ -18,9 +18,11 @@ if (existsSync(envPath)) {
   }
 }
 
-const { scoreDanceAttempt } = await import('../lib/scoring/gemini/score-attempt');
-
 async function main() {
+  // Dynamic import keeps top-level await out of the CJS-compiled script and
+  // ensures env vars above are visible when the ESM `ai` package loads.
+  const { scoreDanceAttempt } = await import('../lib/scoring/gemini/score-attempt');
+
   const [referencePath, attemptPath] = process.argv.slice(2);
   if (!referencePath || !attemptPath) {
     console.error('Usage: tsx scripts/smoke_score_attempt.ts <reference.mp4> <attempt.mp4>');
