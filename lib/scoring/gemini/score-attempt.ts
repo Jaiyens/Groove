@@ -50,7 +50,8 @@ export const DanceScoreSchema = z.object({
         fix: z.string(),
       }),
     )
-    .length(3),
+    .min(1)
+    .max(5),
   did_well: z.object({
     timestamp: z.string(),
     note: z.string(),
