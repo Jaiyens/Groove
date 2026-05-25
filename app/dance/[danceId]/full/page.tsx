@@ -1,46 +1,32 @@
 'use client';
 
-// Mode C — full attempt. Available only when every chunk has been passed.
-// No reference video; audio plays. Full DTW scoring over the entire routine.
-// On finish: persist a mastery attempt and route to /results/[sessionId].
+// Full-dance final attempt. Split-screen (reference left, you right). When
+// the reference song ends, the user's recorded video is uploaded to
+// /api/score for a single Gemini-scored verdict — no per-chunk testing.
+//
+// MediaPipe live feedback is intentionally absent here: the final attempt
+// is a performance, not a rehearsal. Per-chunk MediaPipe still lives in
+// Mode A (the copy page).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import BackHomeButton from '@/components/BackHomeButton';
-import CorrectionToast from '@/components/CorrectionToast';
-import FramingToast from '@/components/FramingToast';
-import LiveScore from '@/components/LiveScore';
-import ProgressBar from '@/components/ProgressBar';
-import SkeletonOverlay from '@/components/SkeletonOverlay';
-import VolumeControl from '@/components/VolumeControl';
-import { useDanceAudio } from '@/lib/audio/danceAudio';
+import DanceScoreResult from '@/components/DanceScoreResult';
 import { useDance } from '@/lib/dances/useDance';
-import { useGraph } from '@/lib/graph/context';
-import { isFullUnlocked } from '@/lib/mastery/chunkProgress';
-import { getMasteryStore } from '@/lib/mastery/store';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
-import { computeJointAngles } from '@/lib/pose/jointAngles';
-import { PoseExtractor } from '@/lib/pose/poseExtractor';
-import type { FrameSample, PoseLandmark } from '@/lib/pose/types';
-import { BeatTracker } from '@/lib/scoring/beatTracker';
-import {
-  correctionHint,
-  frameScoreFromSimilarity,
-  scoreSession,
-} from '@/lib/scoring/scorer';
-import { cosineSimilarity } from '@/lib/scoring/similarity';
-import {
-  generateReferenceSequence,
-  neutralReferenceFrame,
-} from '@/lib/scoring/syntheticReference';
-import type { CorrectionHint } from '@/lib/scoring/types';
+import type { DanceScore } from '@/lib/scoring/gemini/score-attempt';
 
 type CamState = 'idle' | 'requesting' | 'granted' | 'needs_tap' | 'denied' | 'unavailable';
-type RunState = 'waiting_for_camera' | 'preroll' | 'running' | 'finished';
+type RunState =
+  | 'waiting_for_camera'
+  | 'ready'
+  | 'countdown'
+  | 'recording'
+  | 'uploading'
+  | 'result'
+  | 'error';
 
-const PREROLL_SECONDS = 3;
+const COUNTDOWN_SECONDS = 3;
 
 interface PageProps {
   params: { danceId: string };
@@ -48,8 +34,7 @@ interface PageProps {
 
 export default function FullAttemptPage({ params }: PageProps) {
   const router = useRouter();
-  const { bumpMastery } = useGraph();
-  const { loading, notFound, dance, chunks } = useDance(params.danceId);
+  const { loading, notFound, dance } = useDance(params.danceId);
 
   useEffect(() => {
     if (!loading && notFound) router.replace('/');
@@ -61,40 +46,19 @@ export default function FullAttemptPage({ params }: PageProps) {
     router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
   }, [params.danceId, router]);
 
-  // Gate: Mode C requires every chunk to have been passed.
-  const [gateChecked, setGateChecked] = useState(false);
-  useEffect(() => {
-    if (!dance || chunks.length === 0) return;
-    if (!isFullUnlocked(dance.id, chunks.length)) {
-      router.replace(`/dance/${dance.id}`);
-      return;
-    }
-    setGateChecked(true);
-  }, [dance, chunks.length, router]);
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const userVideoRef = useRef<HTMLVideoElement | null>(null);
+  const referenceVideoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const extractorRef = useRef<PoseExtractor | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const userFramesRef = useRef<FrameSample[]>([]);
-  const startMsRef = useRef<number | null>(null);
-  const lastHintAtRef = useRef<number>(0);
-  const lastDetectAtRef = useRef<number>(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
 
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('waiting_for_camera');
-  const [prerollLeft, setPrerollLeft] = useState(PREROLL_SECONDS);
-  const [landmarks, setLandmarks] = useState<PoseLandmark[] | null>(null);
-  const [liveScore, setLiveScore] = useState(0);
-  const [progress, setProgress] = useState(0);
-  const [hint, setHint] = useState<CorrectionHint | null>(null);
-  const [poseStatus, setPoseStatus] = useState<'ok' | 'lost' | 'failed'>('ok');
-  const [volume, setVolume] = useState(1);
+  const [countdownLeft, setCountdownLeft] = useState(COUNTDOWN_SECONDS);
+  const [result, setResult] = useState<DanceScore | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const audio = useDanceAudio(dance?.audio_url ?? null, { initialVolume: volume });
-  useEffect(() => {
-    audio.setVolume(volume);
-  }, [audio, volume]);
+  // --- Camera setup ---
 
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -108,7 +72,7 @@ export default function FullAttemptPage({ params }: PageProps) {
         audio: false,
       });
       streamRef.current = stream;
-      const v = videoRef.current;
+      const v = userVideoRef.current;
       if (!v) {
         setCamState('needs_tap');
         return;
@@ -121,7 +85,7 @@ export default function FullAttemptPage({ params }: PageProps) {
   }, []);
 
   const handleTapToStart = useCallback(async () => {
-    const v = videoRef.current;
+    const v = userVideoRef.current;
     const s = streamRef.current;
     if (!v || !s) {
       startCamera();
@@ -132,254 +96,300 @@ export default function FullAttemptPage({ params }: PageProps) {
   }, [startCamera]);
 
   useEffect(() => {
-    if (!isFramingCalibrated()) return;
-    if (camState === 'idle' && gateChecked) startCamera();
-  }, [camState, gateChecked, startCamera]);
+    if (camState === 'idle' && !loading && dance) startCamera();
+  }, [camState, loading, dance, startCamera]);
 
   useEffect(() => {
-    if (camState !== 'granted') return;
-    let cancelled = false;
-    const ex = new PoseExtractor();
-    extractorRef.current = ex;
-    setPoseStatus('ok');
-    ex.init()
-      .then(() => {
-        if (cancelled) ex.close();
-        else if (runState === 'waiting_for_camera') setRunState('preroll');
-      })
-      .catch((err: unknown) => {
-        console.error('PoseExtractor init failed', err);
-        if (!cancelled) setPoseStatus('failed');
-      });
-    return () => {
-      cancelled = true;
-      ex.close();
-      extractorRef.current = null;
-    };
+    if (camState === 'granted' && runState === 'waiting_for_camera') {
+      setRunState('ready');
+    }
   }, [camState, runState]);
 
+  // --- Recording lifecycle ---
+
+  const beginRun = useCallback(() => {
+    if (runState !== 'ready') return;
+    setCountdownLeft(COUNTDOWN_SECONDS);
+    setRunState('countdown');
+  }, [runState]);
+
   useEffect(() => {
-    if (runState !== 'preroll') return;
-    if (prerollLeft <= 0) {
-      setRunState('running');
-      startMsRef.current = performance.now();
-      userFramesRef.current = [];
-      audio.seekMs(0);
-      void audio.play();
+    if (runState !== 'countdown') return;
+    if (countdownLeft <= 0) {
+      startRecording();
       return;
     }
-    const t = setTimeout(() => setPrerollLeft((n) => n - 1), 1000);
+    const t = setTimeout(() => setCountdownLeft((n) => n - 1), 1000);
     return () => clearTimeout(t);
-  }, [runState, prerollLeft, audio]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runState, countdownLeft]);
 
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const onVis = () => {
-      if (document.hidden) {
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-        audio.pause();
-      } else if (runState === 'running' && dance) {
-        const elapsedMs = progress * dance.duration_seconds * 1000;
-        startMsRef.current = performance.now() - elapsedMs;
-        void audio.play();
-      }
+  const startRecording = useCallback(() => {
+    const stream = streamRef.current;
+    const ref = referenceVideoRef.current;
+    if (!stream || !ref) {
+      setErrorMessage('camera or reference video not ready');
+      setRunState('error');
+      return;
+    }
+    // Video-only — Gemini scores video, and we don't want to send the user's
+    // mic audio to the server.
+    const videoOnly = new MediaStream(stream.getVideoTracks());
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+        ? 'video/webm;codecs=vp8'
+        : 'video/webm';
+    const rec = new MediaRecorder(videoOnly, { mimeType });
+    recordedChunksRef.current = [];
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
     };
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, [runState, progress, dance, audio]);
+    recorderRef.current = rec;
+    rec.start();
 
-  useEffect(() => {
-    if (runState !== 'running' || !dance) return;
-    const durationMs = dance.duration_seconds * 1000;
-
-    const loop = () => {
-      const v = videoRef.current;
-      const ex = extractorRef.current;
-      const t0 = startMsRef.current ?? performance.now();
-      const sessionT = performance.now() - t0;
-      setProgress(Math.min(1, sessionT / durationMs));
-
-      if (v && ex?.ready && v.readyState >= 2) {
-        const res = ex.detectFromVideo(v, sessionT);
-        if (res) {
-          lastDetectAtRef.current = performance.now();
-          if (poseStatus !== 'ok') setPoseStatus('ok');
-          setLandmarks(res.landmarks);
-          if (res.worldLandmarks.length > 0) {
-            const vec = computeJointAngles(res.worldLandmarks);
-            userFramesRef.current.push({ timestampMs: sessionT, vector: vec });
-            const ref = neutralReferenceFrame(sessionT, dance.bpm);
-            const sim = cosineSimilarity(vec, ref);
-            const s = frameScoreFromSimilarity(Math.max(0, sim));
-            setLiveScore((prev) => prev * 0.7 + s * 0.3);
-            if (sessionT - lastHintAtRef.current >= 200) {
-              lastHintAtRef.current = sessionT;
-              setHint(correctionHint(vec, ref));
-            }
-          }
-        } else {
-          setLandmarks(null);
-          if (performance.now() - lastDetectAtRef.current > 1500) {
-            if (poseStatus === 'ok') setPoseStatus('lost');
-          }
-        }
-      }
-
-      if (sessionT >= durationMs) {
-        setRunState('finished');
-        return;
-      }
-      rafRef.current = requestAnimationFrame(loop);
-    };
-    rafRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    };
-  }, [runState, dance, poseStatus]);
-
-  // On finish: persist mastery attempt + go to results.
-  useEffect(() => {
-    if (runState !== 'finished' || !dance) return;
-    audio.stop();
-    const store = getMasteryStore();
-    const ref = generateReferenceSequence(dance.duration_seconds, dance.bpm);
-    const beatGrid = new BeatTracker(dance.bpm, 0).asGrid();
-    const result = scoreSession({
-      userFrames: userFramesRef.current,
-      referenceFrames: ref,
-      beatGrid,
-      skillIds: [...dance.required_skills],
+    ref.currentTime = 0;
+    ref.muted = false;
+    void ref.play().catch(() => {
+      // Autoplay-with-sound rejection — let user retry with a tap.
+      setErrorMessage('tap the reference video to unmute and start the song');
+      setRunState('error');
     });
-    const attempt = store.recordAttempt(
-      dance.id,
-      Object.fromEntries(
-        Object.entries(result.perSkillScores).map(([k, v]) => [k, v]),
-      ),
-      result.overall,
-    );
-    bumpMastery();
-    router.replace(`/results/${attempt.attempt_id}`);
-  }, [runState, dance, bumpMastery, router, audio]);
+    setRunState('recording');
+  }, []);
 
+  const handleReferenceEnded = useCallback(() => {
+    if (runState !== 'recording') return;
+    const rec = recorderRef.current;
+    if (!rec) return;
+    const stopped = new Promise<void>((resolve) => {
+      rec.onstop = () => resolve();
+    });
+    rec.stop();
+    setRunState('uploading');
+    void (async () => {
+      try {
+        await stopped;
+        const blob = new Blob(recordedChunksRef.current, { type: rec.mimeType });
+        const score = await uploadAndScore(blob, dance?.video_url ?? null);
+        setResult(score);
+        setRunState('result');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setErrorMessage(message);
+        setRunState('error');
+      }
+    })();
+  }, [runState, dance?.video_url]);
+
+  const reset = useCallback(() => {
+    recorderRef.current = null;
+    recordedChunksRef.current = [];
+    setResult(null);
+    setErrorMessage(null);
+    setCountdownLeft(COUNTDOWN_SECONDS);
+    setRunState(camState === 'granted' ? 'ready' : 'waiting_for_camera');
+  }, [camState]);
+
+  const exitToLesson = useCallback(() => {
+    router.push(`/dance/${params.danceId}`);
+  }, [router, params.danceId]);
+
+  // Cleanup on unmount.
   useEffect(
     () => () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      audio.stop();
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        recorderRef.current.stop();
+      }
+      recorderRef.current = null;
     },
-    [audio],
+    [],
   );
+
+  // --- Render ---
 
   if (loading || !dance) {
     return (
-      <main className="flex h-full items-center justify-center text-ink-muted">
+      <main className="flex h-full items-center justify-center bg-black text-text-muted">
         Loading…
       </main>
     );
   }
 
-  const totalBeats = Math.round((dance.duration_seconds * dance.bpm) / 60);
+  if (runState === 'result' && result) {
+    return <DanceScoreResult score={result} onRetry={reset} onExit={exitToLesson} />;
+  }
+
+  const referenceUrl = dance.video_url;
 
   return (
-    <main className="relative flex h-full w-full flex-col bg-black">
-      <header className="safe-top relative z-30 flex items-center gap-3 px-4 pt-3 pb-2">
-        <BackHomeButton />
-        <div className="flex-1">
-          <ProgressBar progress={progress} beatCount={totalBeats} />
+    <main className="relative flex h-full w-full flex-col bg-black text-white">
+      <header className="safe-top flex items-center gap-3 px-4 pt-3 pb-2">
+        <button
+          type="button"
+          onClick={exitToLesson}
+          className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted hover:text-white"
+        >
+          ← exit
+        </button>
+        <div className="flex-1 text-center text-xs font-medium uppercase tracking-[0.18em]">
+          {dance.name} · final attempt
         </div>
-        <VolumeControl volume={volume} onChange={setVolume} />
+        <div className="w-10" aria-hidden />
       </header>
 
-      <div className="relative flex-1 overflow-hidden bg-bg-card">
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          autoPlay
-          className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
-        />
-        <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
-        {runState === 'running' && <FramingToast landmarks={landmarks} />}
-
-        <div className="absolute left-3 top-3 z-10">
-          <CorrectionToast hint={runState === 'running' ? hint : null} />
+      <div className="relative flex flex-1 overflow-hidden">
+        {/* Reference (left half) */}
+        <div className="relative h-full w-1/2 bg-bg-card">
+          {referenceUrl ? (
+            <video
+              ref={referenceVideoRef}
+              src={referenceUrl}
+              playsInline
+              preload="auto"
+              onEnded={handleReferenceEnded}
+              className="absolute inset-0 h-full w-full object-contain"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-text-muted">
+              no reference video
+            </div>
+          )}
+          <div className="absolute left-2 top-2 rounded-full bg-black/60 px-2 py-1 text-[10px] font-bold uppercase tracking-widest ring-1 ring-white/10">
+            reference
+          </div>
         </div>
 
-        {poseStatus !== 'ok' && runState === 'running' && (
-          <div className="absolute inset-x-0 top-14 z-10 mx-auto w-fit rounded-full bg-accent-amber/20 px-3 py-1.5 text-xs font-semibold text-accent-amber ring-1 ring-accent-amber/40 backdrop-blur-sm">
-            {poseStatus === 'lost'
-              ? 'pose tracking lost, repositioning…'
-              : 'pose tracker unavailable'}
+        {/* User (right half, mirrored) */}
+        <div className="relative h-full w-1/2 bg-bg-card">
+          <video
+            ref={userVideoRef}
+            playsInline
+            muted
+            autoPlay
+            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+          />
+          <div className="absolute left-2 top-2 rounded-full bg-black/60 px-2 py-1 text-[10px] font-bold uppercase tracking-widest ring-1 ring-white/10">
+            you
           </div>
-        )}
-
-        <div className="absolute left-1/2 -translate-x-1/2 bottom-3 z-10 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 ring-1 ring-white/10">
-          <span className="block h-2 w-2 rounded-full bg-white animate-pulse" />
-          <span className="text-[10px] font-bold uppercase tracking-widest">
-            full attempt
-          </span>
         </div>
 
-        {runState === 'preroll' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="text-xs uppercase tracking-widest text-text-muted">
-              Final run
-            </div>
-            <div className="mt-2 text-[120px] font-extrabold leading-none tabular-nums text-white">
-              {prerollLeft}
-            </div>
-            <div className="mt-3 text-base font-bold">{dance.name}</div>
-            <div className="text-xs text-text-muted">audio only · {dance.bpm} BPM</div>
-          </div>
-        )}
-
+        {/* Overlays per state */}
         {runState === 'waiting_for_camera' && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black p-8 text-center">
-            {camState === 'requesting' && (
-              <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-            )}
-            {camState === 'denied' && (
-              <>
-                <div className="text-2xl font-bold">Camera blocked</div>
-                <p className="mt-2 text-sm text-text-muted">
-                  Enable camera in browser settings and reload.
-                </p>
-              </>
-            )}
-            {camState === 'unavailable' && (
-              <div className="text-sm text-text-muted">camera unavailable</div>
-            )}
-            {camState === 'needs_tap' && (
+          <CameraOverlay state={camState} onTap={handleTapToStart} />
+        )}
+
+        {runState === 'ready' && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
+            <div className="text-xs uppercase tracking-widest text-text-muted">ready?</div>
+            <div className="mt-3 text-2xl font-bold">Dance the full routine</div>
+            <div className="mt-1 text-sm text-text-muted">
+              audio will play from the reference side
+            </div>
+            <button
+              type="button"
+              onClick={beginRun}
+              disabled={!referenceUrl}
+              className="mt-6 rounded-full bg-white px-8 py-3 text-sm font-bold uppercase tracking-[0.18em] text-black disabled:opacity-40 active:scale-95"
+            >
+              start
+            </button>
+          </div>
+        )}
+
+        {runState === 'countdown' && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
+            <div className="text-xs uppercase tracking-widest text-text-muted">starting in</div>
+            <div className="mt-2 text-[140px] font-extrabold leading-none tabular-nums">
+              {countdownLeft}
+            </div>
+          </div>
+        )}
+
+        {runState === 'recording' && (
+          <div className="absolute left-1/2 -translate-x-1/2 top-3 z-10 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 ring-1 ring-white/10">
+            <span className="block h-2 w-2 rounded-full bg-coral animate-pulse" />
+            <span className="text-[10px] font-bold uppercase tracking-widest">recording</span>
+          </div>
+        )}
+
+        {runState === 'uploading' && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
+            <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            <div className="mt-4 text-sm uppercase tracking-widest">scoring your dance…</div>
+            <div className="mt-1 text-xs text-text-muted">this takes 30–60 seconds</div>
+          </div>
+        )}
+
+        {runState === 'error' && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 p-6 text-center backdrop-blur-sm">
+            <div className="text-2xl font-bold">something went wrong</div>
+            <p className="mt-2 max-w-md text-sm text-text-muted">{errorMessage}</p>
+            <div className="mt-6 flex gap-3">
               <button
                 type="button"
-                onClick={handleTapToStart}
-                className="rounded-full bg-white px-6 py-3 text-sm font-bold text-black"
+                onClick={reset}
+                className="rounded-full bg-white px-6 py-2 text-sm font-bold uppercase tracking-[0.18em] text-black"
               >
-                Start
+                try again
               </button>
-            )}
-            {camState === 'granted' && (
-              <div className="text-sm text-text-muted">loading pose tracker…</div>
-            )}
+              <button
+                type="button"
+                onClick={exitToLesson}
+                className="rounded-full bg-white/10 px-6 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white ring-1 ring-white/20"
+              >
+                exit
+              </button>
+            </div>
           </div>
         )}
-      </div>
-
-      <div className="safe-bottom relative z-30 bg-black px-4 pt-3 pb-4">
-        <div className="mb-2 flex items-end justify-between">
-          <LiveScore score={liveScore} delta={null} />
-          <Link
-            href={`/dance/${dance.id}`}
-            className="text-[11px] font-bold uppercase tracking-widest text-text-muted"
-          >
-            cancel
-          </Link>
-        </div>
       </div>
     </main>
   );
+}
+
+function CameraOverlay({ state, onTap }: { state: CamState; onTap: () => void }) {
+  return (
+    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black p-8 text-center">
+      {state === 'requesting' && (
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+      )}
+      {state === 'denied' && (
+        <>
+          <div className="text-2xl font-bold">Camera blocked</div>
+          <p className="mt-2 text-sm text-text-muted">
+            Enable camera in browser settings and reload.
+          </p>
+        </>
+      )}
+      {state === 'unavailable' && (
+        <div className="text-sm text-text-muted">camera unavailable on this device</div>
+      )}
+      {state === 'needs_tap' && (
+        <button
+          type="button"
+          onClick={onTap}
+          className="rounded-full bg-white px-6 py-3 text-sm font-bold uppercase tracking-[0.18em] text-black"
+        >
+          allow camera
+        </button>
+      )}
+    </div>
+  );
+}
+
+async function uploadAndScore(blob: Blob, referenceUrl: string | null): Promise<DanceScore> {
+  if (!referenceUrl) throw new Error('no reference video on this dance');
+  const form = new FormData();
+  form.append('attempt', blob, 'attempt.webm');
+  form.append('referenceUrl', referenceUrl);
+  const res = await fetch('/api/score', { method: 'POST', body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`/api/score ${res.status}: ${text || res.statusText}`);
+  }
+  const payload = (await res.json()) as { score: DanceScore };
+  return payload.score;
 }

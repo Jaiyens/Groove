@@ -11,10 +11,6 @@ import ChunkPath, {
 } from '@/components/lesson/ChunkPath';
 import ProcessingState from '@/components/lesson/ProcessingState';
 import DanceThumb from '@/components/library/DanceThumb';
-import {
-  getDanceProgress,
-  isFullUnlocked,
-} from '@/lib/mastery/chunkProgress';
 import { recordContinueLearning } from '@/lib/mastery/continueLearning';
 import { markDanceStarted } from '@/lib/practiceStats';
 
@@ -46,31 +42,14 @@ export default function DanceOverviewPage({ params }: PageProps) {
     if (record?.status === 'ready') markDanceStarted(record.id);
   }, [record]);
 
-  // Re-read progress on mount + when window regains focus
-  const [progressTick, setProgressTick] = useState(0);
-  useEffect(() => {
-    const bump = () => setProgressTick((t) => t + 1);
-    window.addEventListener('focus', bump);
-    window.addEventListener('storage', bump);
-    return () => {
-      window.removeEventListener('focus', bump);
-      window.removeEventListener('storage', bump);
-    };
-  }, []);
-
+  // Per-chunk Gemini scoring was removed, so chunks no longer have a
+  // pass/lock state. Every chunk is freely available; the only progression
+  // is the user's choice of which to learn next.
   const items: ChunkPathItem[] = useMemo(() => {
     if (!dance || chunks.length === 0) return [];
-    const progress = getDanceProgress(dance.id);
-    return chunks.map((c) => {
-      let state: ChunkState;
-      if (progress.highestPassed >= c.index) state = 'passed';
-      else if (c.index === 0 || progress.highestPassed >= c.index - 1)
-        state = 'unlocked';
-      else state = 'locked';
-      return { chunk: c, state, lastScore: progress.lastScores[c.index] };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dance, chunks, progressTick]);
+    const unlocked: ChunkState = 'unlocked';
+    return chunks.map((c) => ({ chunk: c, state: unlocked }));
+  }, [dance, chunks]);
 
   useEffect(() => {
     if (notFound) router.replace('/');
@@ -107,11 +86,7 @@ export default function DanceOverviewPage({ params }: PageProps) {
   }
 
   const totalChunks = chunks.length;
-  const passedCount = items.filter((i) => i.state === 'passed').length;
-  const fullUnlocked = isFullUnlocked(dance.id, totalChunks);
-  const progressPercent = totalChunks > 0
-    ? Math.round((passedCount / totalChunks) * 100)
-    : 0;
+  const fullUnlocked = totalChunks > 0;
 
   return (
     <main className="theme-cream flex h-full w-full flex-col bg-cream">
@@ -178,21 +153,8 @@ export default function DanceOverviewPage({ params }: PageProps) {
                 </>
               )}
             </div>
-            <div className="mt-4">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-ink-muted">
-                  {passedCount} of {totalChunks} chunks
-                </span>
-                <span className="font-medium tabular-nums text-ink">
-                  {progressPercent}%
-                </span>
-              </div>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-cream-deep">
-                <div
-                  className="h-full bg-ink transition-[width] duration-300"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
+            <div className="mt-4 text-xs text-ink-muted">
+              {totalChunks > 0 ? `${totalChunks} chunks` : 'no chunks yet'}
             </div>
           </div>
         </section>

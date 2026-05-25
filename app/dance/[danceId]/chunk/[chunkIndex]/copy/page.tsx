@@ -282,9 +282,8 @@ export default function CopyAlongPage({ params }: PageProps) {
 
   // Drill-mode tier advance. Polls the loop counter every ~500ms and
   // when 3 loops at the current tier have completed, steps up — 0.5x
-  // → 0.75x → 1.0x → route to /test page to re-score just this
-  // window. Polling instead of event-driven because the underlying
-  // loop trigger lives in the video onTimeUpdate callback above.
+  // → 0.75x → 1.0x → back to the lesson page. (Per-chunk Gemini
+  // scoring was removed; the final test is now end-of-dance only.)
   useEffect(() => {
     if (!isDrillMode || !chunk || !dance) return;
     const id = window.setInterval(() => {
@@ -295,26 +294,11 @@ export default function CopyAlongPage({ params }: PageProps) {
         setDrillTier(nextTier);
         setRate(DRILL_TIERS[nextTier]!);
       } else {
-        // Done with all 3 tiers — back to Mode B for a re-score on this
-        // exact window. We append the drill range so the test page
-        // could later scope its scoring to it; today the test page
-        // doesn't read those params yet, but the route lands the user
-        // in the right place.
-        const url = `/dance/${dance.id}/chunk/${chunkIndex}/test?from=${effectiveStartMs}&to=${effectiveEndMs}`;
-        router.push(url);
+        router.push(`/dance/${dance.id}`);
       }
     }, 500);
     return () => window.clearInterval(id);
-  }, [
-    isDrillMode,
-    chunk,
-    dance,
-    drillTier,
-    chunkIndex,
-    router,
-    effectiveStartMs,
-    effectiveEndMs,
-  ]);
+  }, [isDrillMode, chunk, dance, drillTier, router]);
 
   // spec.md round-5 §Fix 3: live MediaPipe loop for the YOU panel's
   // skeleton overlay. Only runs while the skeleton toggle is on AND
@@ -637,15 +621,22 @@ export default function CopyAlongPage({ params }: PageProps) {
             <path d="M12 7v5M9 12h6M9 12l-3 7M15 12l3 7" />
           </svg>
         </button>
-        {/* spec.md round-5 §Fix 1: button (not Link) so the click
-            handler is explicit and traceable. */}
+        {/* Per-chunk Gemini testing was removed. The bottom CTA now
+            advances the user through the lesson: next chunk if there
+            is one, otherwise the end-of-dance final attempt. */}
         <button
           type="button"
-          onClick={() => router.push(`/dance/${dance.id}/chunk/${chunkIndex}/test`)}
-          data-testid="i-got-it-test"
+          onClick={() => {
+            const isLastChunk = chunkIndex >= chunks.length - 1;
+            const next = isLastChunk
+              ? `/dance/${dance.id}/full`
+              : `/dance/${dance.id}/chunk/${chunkIndex + 1}/copy`;
+            router.push(next);
+          }}
+          data-testid="copy-next-cta"
           className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
         >
-          <span>Test</span>
+          <span>{chunkIndex >= chunks.length - 1 ? 'Final attempt' : 'Next chunk'}</span>
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M5 12h14M13 5l7 7-7 7" />
           </svg>
