@@ -118,40 +118,53 @@ export default function MomentReplayCard({
 
       <div className="mt-3 overflow-hidden rounded-3xl bg-black shadow-soft">
         {attemptVideoUrl && referenceVideoUrl ? (
+          // Combined 9:8 wrapper = two 9:16 portrait frames side by
+          // side. Each frame uses object-cover so the webcam attempt
+          // gets a portrait crop and the reference fills naturally.
           <div className="flex aspect-[9/8] w-full bg-black">
-            <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
-              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <video
-                ref={attemptRef}
-                src={attemptVideoUrl}
-                playsInline
-                muted
-                preload="auto"
-                className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
-              />
-              <span
-                aria-hidden
-                className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+            <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
+              <div
+                className="relative w-full max-h-full overflow-hidden bg-zinc-950"
+                style={{ aspectRatio: '9 / 16' }}
               >
-                you
-              </span>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <video
+                  ref={attemptRef}
+                  src={attemptVideoUrl}
+                  playsInline
+                  muted
+                  preload="auto"
+                  className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+                />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+                >
+                  you
+                </span>
+              </div>
             </div>
-            <div className="relative h-full w-1/2 overflow-hidden bg-black">
-              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <video
-                ref={referenceRef}
-                src={referenceVideoUrl}
-                playsInline
-                muted
-                preload="auto"
-                className="absolute inset-0 h-full w-full object-contain"
-              />
-              <span
-                aria-hidden
-                className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+            <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
+              <div
+                className="relative w-full max-h-full overflow-hidden bg-black"
+                style={{ aspectRatio: '9 / 16' }}
               >
-                ref
-              </span>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <video
+                  ref={referenceRef}
+                  src={referenceVideoUrl}
+                  playsInline
+                  muted
+                  preload="auto"
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+                >
+                  ref
+                </span>
+              </div>
             </div>
           </div>
         ) : (

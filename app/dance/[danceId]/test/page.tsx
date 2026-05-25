@@ -313,39 +313,52 @@ export default function FinalTestPage({ params }: PageProps) {
           {attemptLocalUrl && referenceUrl && (
             <div className="relative flex w-full flex-1 items-center justify-center px-2">
               <div className="flex h-full w-full max-h-[70vh] gap-px bg-black">
-                <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
-                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                  <video
-                    src={attemptLocalUrl}
-                    playsInline
-                    muted
-                    autoPlay
-                    loop
-                    className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
-                  />
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+                {/* YOU panel — 9:16 portrait frame, attempt is webcam
+                    16:9 cropped to portrait via object-cover. */}
+                <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
+                  <div
+                    className="relative w-full max-h-full overflow-hidden bg-zinc-950"
+                    style={{ aspectRatio: '9 / 16' }}
                   >
-                    you
-                  </span>
+                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                    <video
+                      src={attemptLocalUrl}
+                      playsInline
+                      muted
+                      autoPlay
+                      loop
+                      className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+                    />
+                    <span
+                      aria-hidden
+                      className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+                    >
+                      you
+                    </span>
+                  </div>
                 </div>
-                <div className="relative h-full w-1/2 overflow-hidden bg-black">
-                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                  <video
-                    src={referenceUrl}
-                    playsInline
-                    muted
-                    autoPlay
-                    loop
-                    className="absolute inset-0 h-full w-full object-contain"
-                  />
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+                {/* REF panel — same 9:16 frame, reference fills naturally. */}
+                <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
+                  <div
+                    className="relative w-full max-h-full overflow-hidden bg-black"
+                    style={{ aspectRatio: '9 / 16' }}
                   >
-                    ref
-                  </span>
+                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                    <video
+                      src={referenceUrl}
+                      playsInline
+                      muted
+                      autoPlay
+                      loop
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                    <span
+                      aria-hidden
+                      className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+                    >
+                      ref
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
