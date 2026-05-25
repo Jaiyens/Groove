@@ -4,14 +4,20 @@
 // button just streams the dance's audio so the user can recognize
 // the song. Nothing about the image changes.
 //
-// Why audio-only:
-//   The previous "play the video on tap" version snapped the thumbnail
-//   out of view the moment the <video> element mounted, which left
-//   slow-loading cards looking blank. People recognize TikTok dances
-//   by the song anyway, so the audio is the part that matters.
+// Implementation notes:
 //
-// When a different card starts audio, every other instance stops
-// cleanly (no overlap). Implemented via a window-level custom event.
+//   - Uses a real <audio> element pointed at the dance's video URL.
+//     Browsers strip the video track and play the audio. This avoids
+//     the iOS Safari quirk where a <video> element parked offscreen
+//     (-9999px) silently refuses to play because it's "not visible."
+//
+//   - While the audio is playing we render an expanding `animate-ping`
+//     ring around the play button so the user can SEE the preview is
+//     alive even with the phone on silent.
+//
+//   - When a different card starts audio, every other instance stops
+//     cleanly (no overlap). Implemented via a window-level custom
+//     event.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
@@ -41,15 +47,20 @@ export default function PreviewablePoster({
   rounded = '2xl',
 }: PreviewablePosterProps) {
   const [phase, setPhase] = useState<'idle' | 'loading' | 'playing'>('idle');
-  // We use a <video> element behind the scenes because some mobile
-  // browsers don't expose audio tracks when the URL is a video and
-  // you mount <audio src>. Hidden <video> works everywhere.
-  const audioRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const loadingTimeoutRef = useRef<number | null>(null);
   const instanceIdRef = useRef<number>(0);
   if (instanceIdRef.current === 0) {
     previewSeq += 1;
     instanceIdRef.current = previewSeq;
   }
+
+  const clearLoadingWatchdog = () => {
+    if (loadingTimeoutRef.current !== null) {
+      window.clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
+    }
+  };
 
   const stopMyself = useCallback(() => {
     const a = audioRef.current;
@@ -57,6 +68,7 @@ export default function PreviewablePoster({
       a.pause();
       a.currentTime = 0;
     }
+    clearLoadingWatchdog();
     setPhase('idle');
   }, []);
 
@@ -80,6 +92,7 @@ export default function PreviewablePoster({
 
       if (phase === 'playing' || phase === 'loading') {
         a.pause();
+        clearLoadingWatchdog();
         setPhase('idle');
         return;
       }
@@ -91,17 +104,39 @@ export default function PreviewablePoster({
       a.currentTime = 0;
       const playPromise = a.play();
       if (playPromise && typeof playPromise.then === 'function') {
-        playPromise.catch(() => setPhase('idle'));
+        playPromise
+          .then(() => {
+            // Safari sometimes resolves play() before firing the
+            // 'playing' event. Flip the UI to playing if currentTime
+            // is already advancing.
+            if (a.currentTime > 0 || !a.paused) {
+              clearLoadingWatchdog();
+              setPhase('playing');
+            }
+          })
+          .catch(() => {
+            clearLoadingWatchdog();
+            setPhase('idle');
+          });
       }
       setPhase('loading');
+      // Watchdog: if neither the play() promise nor the 'playing'
+      // event has put us into 'playing' within 8s, give up and reset
+      // so the user isn't staring at a forever-spinner.
+      clearLoadingWatchdog();
+      loadingTimeoutRef.current = window.setTimeout(() => {
+        if (a.paused) {
+          setPhase('idle');
+        }
+      }, 8000);
     },
     [dance.video_url, phase],
   );
 
-  // Stop cleanly when the component unmounts (e.g. user navigates
-  // away). iOS holds the audio session until the element is cleared.
+  // Stop cleanly when the component unmounts.
   useEffect(() => {
     return () => {
+      clearLoadingWatchdog();
       const a = audioRef.current;
       if (a) {
         a.pause();
@@ -135,41 +170,59 @@ export default function PreviewablePoster({
       className={`relative block overflow-hidden ${radius} ${className}`}
     >
       <DanceThumb dance={dance} rounded={rounded} className="h-full w-full" />
-      {/* Hidden audio player — the thumbnail stays visible at all
-          times so the card never goes blank during buffer. */}
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <video
+      <audio
         ref={audioRef}
         src={dance.video_url}
-        playsInline
         preload="metadata"
-        onEnded={() => setPhase('idle')}
-        onPlaying={() => setPhase('playing')}
+        onEnded={() => {
+          clearLoadingWatchdog();
+          setPhase('idle');
+        }}
+        onPlaying={() => {
+          clearLoadingWatchdog();
+          setPhase('playing');
+        }}
         onPause={() => {
           const a = audioRef.current;
           if (a && !a.ended) {
             setPhase((p) => (p === 'playing' ? 'idle' : p));
           }
         }}
-        className="pointer-events-none absolute -left-[9999px] top-0 h-1 w-1 opacity-0"
-        aria-hidden
       />
+      {/* The play button — wrapped in a relative span so the
+          animate-ping ring can sit BEHIND it without offsetting the
+          icon. */}
       <span
         aria-hidden
-        className="pointer-events-none absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-black/65 text-white ring-1 ring-white/15 backdrop-blur-sm"
+        className="pointer-events-none absolute right-2 top-2 flex h-9 w-9 items-center justify-center"
       >
-        {phase === 'playing' ? (
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="5" width="4" height="14" rx="1" />
-            <rect x="14" y="5" width="4" height="14" rx="1" />
-          </svg>
-        ) : phase === 'loading' ? (
-          <span className="block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-        ) : (
-          <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor">
-            <path d="M3 1.5v9l8-4.5z" />
-          </svg>
+        {phase === 'playing' && (
+          <>
+            <span className="absolute inset-0 animate-ping rounded-full bg-coral/70" />
+            <span className="absolute inset-[-4px] animate-pulse rounded-full bg-coral/30" />
+          </>
         )}
+        <span
+          className={`relative flex h-9 w-9 items-center justify-center rounded-full ring-1 ring-white/15 backdrop-blur-sm ${
+            phase === 'playing'
+              ? 'bg-coral text-white'
+              : 'bg-black/65 text-white'
+          }`}
+        >
+          {phase === 'playing' ? (
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : phase === 'loading' ? (
+            <span className="block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          ) : (
+            <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor">
+              <path d="M3 1.5v9l8-4.5z" />
+            </svg>
+          )}
+        </span>
       </span>
     </button>
   );
