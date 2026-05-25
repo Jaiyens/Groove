@@ -1,14 +1,34 @@
 'use client';
 
-// Tap-to-hear preview. The thumbnail is ALWAYS visible — a real
-// <video> element sits BEHIND the thumbnail so audio plays without
-// ever swapping the image, and the browser doesn't throttle it the
-// way it does an offscreen/zero-size player.
+// SPECK §Fix 1: tap-the-card preview with sound.
 //
-// The click target is the small play button in the corner, NOT the
-// whole poster. Keeping it small means there's no ambiguity about
-// which element captures the tap and no chance of an absolutely-
-// positioned sibling intercepting it.
+// Previous behavior (the bug the spec was filed against): a small play
+// icon triggered a 3-second muted looping preview that snapped back
+// to a static thumbnail. People recognize TikTok dances by the song,
+// so a silent 3-second preview made the library unusable.
+//
+// New behavior:
+//   - Tapping the thumbnail starts the reference video with audio.
+//     The autoplay-with-sound is allowed because .play() is called
+//     synchronously inside the click handler.
+//   - Plays continuously through the whole reference clip; no auto-
+//     stop, no loop.
+//   - Tap again → pause. Tap again → resume.
+//   - When a DIFFERENT card starts a preview, this one stops cleanly
+//     (no audio bleed). Implemented via a window-level custom event;
+//     each instance listens, the originator skips its own event.
+//   - The <video> uses `playsInline` so iOS Safari renders inline
+//     instead of going fullscreen. It is NOT `muted`.
+//
+// Why the <video> is always mounted (instead of lazy-mounting on tap):
+//   iOS Safari only honors autoplay-with-sound when the .play() call
+//   happens *synchronously inside* the user-gesture event handler.
+//   Lazy-mounting forces .play() to wait for the next React render,
+//   which Safari interprets as a non-gesture programmatic play and
+//   blocks. preload="none" keeps the network cost zero until tap.
+//
+// Navigation: this component is no longer the navigation surface.
+// Card components wire their own "practice" link separately.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
@@ -18,8 +38,6 @@ interface PreviewablePosterProps {
   dance: Pick<DanceListItem, 'id' | 'title' | 'display_name' | 'thumbnail_url' | 'video_url'>;
   className?: string;
   rounded?: 'lg' | 'xl' | '2xl' | '3xl';
-  // Kept for backwards compatibility with callers — ignored.
-  autoPlay?: boolean;
 }
 
 const PREVIEW_EVENT = 'groove:preview-start';
@@ -37,21 +55,13 @@ export default function PreviewablePoster({
   className = '',
   rounded = '2xl',
 }: PreviewablePosterProps) {
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'playing'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'playing' | 'paused'>('idle');
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const loadingTimeoutRef = useRef<number | null>(null);
   const instanceIdRef = useRef<number>(0);
   if (instanceIdRef.current === 0) {
     previewSeq += 1;
     instanceIdRef.current = previewSeq;
   }
-
-  const clearLoadingWatchdog = () => {
-    if (loadingTimeoutRef.current !== null) {
-      window.clearTimeout(loadingTimeoutRef.current);
-      loadingTimeoutRef.current = null;
-    }
-  };
 
   const stopMyself = useCallback(() => {
     const v = videoRef.current;
@@ -59,10 +69,10 @@ export default function PreviewablePoster({
       v.pause();
       v.currentTime = 0;
     }
-    clearLoadingWatchdog();
     setPhase('idle');
   }, []);
 
+  // Listen for sibling previews kicking on; if it's not us, stop.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id: number }>).detail;
@@ -73,74 +83,40 @@ export default function PreviewablePoster({
     return () => window.removeEventListener(PREVIEW_EVENT, handler);
   }, [stopMyself]);
 
-  const handleTap = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      // Diagnostic — confirms the click reached the handler. Look in
-      // DevTools console after tapping. Remove once playback is
-      // confirmed working.
-      // eslint-disable-next-line no-console
-      console.log('[preview]', dance.id, 'tap', phase, 'video=', !!videoRef.current);
-      const v = videoRef.current;
-      if (!dance.video_url) {
-        // eslint-disable-next-line no-console
-        console.warn('[preview]', dance.id, 'no video_url on dance');
-        return;
-      }
-      if (!v) {
-        // eslint-disable-next-line no-console
-        console.warn('[preview]', dance.id, 'video ref not mounted');
-        return;
-      }
+  const handleTap = useCallback(() => {
+    const v = videoRef.current;
+    if (!dance.video_url || !v) return;
 
-      if (phase === 'playing' || phase === 'loading') {
-        v.pause();
-        clearLoadingWatchdog();
+    if (phase === 'playing') {
+      v.pause();
+      setPhase('paused');
+      return;
+    }
+
+    // Either resuming from paused or kicking off the first play.
+    // Either way: dispatch the stop-others event and call .play()
+    // synchronously inside this click so Safari honors the gesture.
+    window.dispatchEvent(
+      new CustomEvent(PREVIEW_EVENT, { detail: { id: instanceIdRef.current } }),
+    );
+    if (phase === 'idle') {
+      v.currentTime = 0;
+    }
+    const playPromise = v.play();
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise.catch(() => {
+        // Safari can reject if it decides the gesture didn't apply.
+        // Leave the state as 'idle' so the user can re-tap.
         setPhase('idle');
-        return;
-      }
+      });
+    }
+    setPhase('playing');
+  }, [dance.video_url, phase]);
 
-      window.dispatchEvent(
-        new CustomEvent(PREVIEW_EVENT, { detail: { id: instanceIdRef.current } }),
-      );
-      v.muted = false;
-      v.volume = 1;
-      try { v.currentTime = 0; } catch { /* metadata not ready */ }
-      setPhase('loading');
-      const playPromise = v.play();
-      if (playPromise && typeof playPromise.then === 'function') {
-        playPromise
-          .then(() => {
-            // eslint-disable-next-line no-console
-            console.log('[preview]', dance.id, 'play() resolved, paused=', v.paused);
-            if (!v.paused) {
-              clearLoadingWatchdog();
-              setPhase('playing');
-            }
-          })
-          .catch((err) => {
-            // eslint-disable-next-line no-console
-            console.error('[preview]', dance.id, 'play() rejected', err);
-            clearLoadingWatchdog();
-            setPhase('idle');
-          });
-      }
-      clearLoadingWatchdog();
-      loadingTimeoutRef.current = window.setTimeout(() => {
-        if (v.paused) {
-          // eslint-disable-next-line no-console
-          console.warn('[preview]', dance.id, 'watchdog: still paused after 8s');
-          setPhase('idle');
-        }
-      }, 8000);
-    },
-    [dance.video_url, dance.id, phase],
-  );
-
+  // Stop cleanly when the component unmounts (e.g. user navigates
+  // away). iOS holds the audio session until the element is cleared.
   useEffect(() => {
     return () => {
-      clearLoadingWatchdog();
       const v = videoRef.current;
       if (v) {
         v.pause();
@@ -151,83 +127,60 @@ export default function PreviewablePoster({
   }, []);
 
   const radius = ROUNDED_CLASS[rounded];
+  const showVideo = phase !== 'idle' && !!dance.video_url;
   const name = displayNameFor(dance, '');
 
   return (
-    <div className={`relative block overflow-hidden ${radius} ${className}`}>
-      {dance.video_url && (
-        <>
-          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <video
-            ref={videoRef}
-            src={dance.video_url}
-            playsInline
-            preload="metadata"
-            onPlaying={() => {
-              clearLoadingWatchdog();
-              setPhase('playing');
-            }}
-            onWaiting={() => setPhase((p) => (p === 'playing' ? 'loading' : p))}
-            onEnded={() => {
-              clearLoadingWatchdog();
-              setPhase('idle');
-            }}
-            onPause={() => {
-              const v = videoRef.current;
-              if (v && !v.ended) {
-                setPhase((p) => (p === 'playing' ? 'idle' : p));
-              }
-            }}
-            className="pointer-events-none absolute inset-0 h-full w-full object-cover"
-          />
-        </>
-      )}
+    <button
+      type="button"
+      onClick={handleTap}
+      aria-label={
+        phase === 'playing'
+          ? `pause ${name || 'dance'} preview`
+          : `play ${name || 'dance'} preview`
+      }
+      aria-pressed={phase === 'playing'}
+      className={`relative block overflow-hidden ${radius} ${className}`}
+    >
       <DanceThumb
         dance={dance}
         rounded={rounded}
-        className="pointer-events-none relative h-full w-full select-none"
+        className={`h-full w-full ${showVideo ? 'invisible' : ''}`}
       />
-      {/* THE CLICK TARGET — only this button. No ambiguity about which
-          element captures the tap. */}
       {dance.video_url && (
-        <button
-          type="button"
-          onClick={handleTap}
-          aria-label={
-            phase === 'playing'
-              ? `pause ${name || 'dance'} audio`
-              : `play ${name || 'dance'} audio`
-          }
-          aria-pressed={phase === 'playing'}
-          className="absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center"
-        >
-          {phase === 'playing' && (
-            <>
-              <span aria-hidden className="absolute inset-2 animate-ping rounded-full bg-coral/70" />
-              <span aria-hidden className="absolute inset-1 animate-pulse rounded-full bg-coral/30" />
-            </>
-          )}
-          <span
-            aria-hidden
-            className={`relative flex h-9 w-9 items-center justify-center rounded-full ring-1 ring-white/15 backdrop-blur-sm ${
-              phase === 'playing' ? 'bg-coral text-white' : 'bg-black/70 text-white'
-            }`}
-          >
-            {phase === 'playing' ? (
-              <svg width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : phase === 'loading' ? (
-              <span className="block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-            ) : (
-              <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor">
-                <path d="M3 1.5v9l8-4.5z" />
-              </svg>
-            )}
-          </span>
-        </button>
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <video
+          ref={videoRef}
+          src={dance.video_url}
+          // Not muted: audio is the point — TikTok dances are
+          // recognized by the song.
+          playsInline
+          preload="none"
+          onEnded={() => setPhase('idle')}
+          onPause={() => {
+            // Sync state if the underlying media pauses for reasons
+            // other than our handler (e.g. iOS interrupt). Don't
+            // touch state when the video actually ended.
+            const v = videoRef.current;
+            if (v && !v.ended) {
+              setPhase((p) => (p === 'playing' ? 'paused' : p));
+            }
+          }}
+          className={`absolute inset-0 h-full w-full object-cover ${radius} ${
+            showVideo ? '' : 'invisible'
+          }`}
+        />
       )}
-    </div>
+      {dance.video_url && phase === 'idle' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/15 backdrop-blur-sm"
+        >
+          <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+            <path d="M3 1.5v9l8-4.5z" />
+          </svg>
+        </span>
+      )}
+    </button>
   );
 }
