@@ -1,20 +1,14 @@
 'use client';
 
 // Tap-to-hear preview. The thumbnail is ALWAYS visible — a real
-// <video> element sits BEHIND the thumbnail at full card size so
-// audio plays without ever swapping the image, and the browser
-// doesn't throttle it the way it does an offscreen / zero-size
-// player.
+// <video> element sits BEHIND the thumbnail so audio plays without
+// ever swapping the image, and the browser doesn't throttle it the
+// way it does an offscreen/zero-size player.
 //
-// Layout:
-//   button (relative, overflow-hidden)
-//     └ <video> absolute inset-0  — full card, but covered
-//     └ <img>   relative h-full   — thumbnail, paints on top
-//     └ play button overlay
-//
-// While playing, an animated coral ring expands around the play
-// button (animate-ping) so the user can see the preview is alive
-// even with the phone on silent.
+// The click target is the small play button in the corner, NOT the
+// whole poster. Keeping it small means there's no ambiguity about
+// which element captures the tap and no chance of an absolutely-
+// positioned sibling intercepting it.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
@@ -69,7 +63,6 @@ export default function PreviewablePoster({
     setPhase('idle');
   }, []);
 
-  // Listen for sibling previews kicking on; if it's not us, stop.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id: number }>).detail;
@@ -84,8 +77,22 @@ export default function PreviewablePoster({
     (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
+      // Diagnostic — confirms the click reached the handler. Look in
+      // DevTools console after tapping. Remove once playback is
+      // confirmed working.
+      // eslint-disable-next-line no-console
+      console.log('[preview]', dance.id, 'tap', phase, 'video=', !!videoRef.current);
       const v = videoRef.current;
-      if (!dance.video_url || !v) return;
+      if (!dance.video_url) {
+        // eslint-disable-next-line no-console
+        console.warn('[preview]', dance.id, 'no video_url on dance');
+        return;
+      }
+      if (!v) {
+        // eslint-disable-next-line no-console
+        console.warn('[preview]', dance.id, 'video ref not mounted');
+        return;
+      }
 
       if (phase === 'playing' || phase === 'loading') {
         v.pause();
@@ -99,31 +106,38 @@ export default function PreviewablePoster({
       );
       v.muted = false;
       v.volume = 1;
-      v.currentTime = 0;
+      try { v.currentTime = 0; } catch { /* metadata not ready */ }
+      setPhase('loading');
       const playPromise = v.play();
       if (playPromise && typeof playPromise.then === 'function') {
         playPromise
           .then(() => {
-            if (v.currentTime > 0 || !v.paused) {
+            // eslint-disable-next-line no-console
+            console.log('[preview]', dance.id, 'play() resolved, paused=', v.paused);
+            if (!v.paused) {
               clearLoadingWatchdog();
               setPhase('playing');
             }
           })
-          .catch(() => {
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error('[preview]', dance.id, 'play() rejected', err);
             clearLoadingWatchdog();
             setPhase('idle');
           });
       }
-      setPhase('loading');
       clearLoadingWatchdog();
       loadingTimeoutRef.current = window.setTimeout(() => {
-        if (v.paused) setPhase('idle');
+        if (v.paused) {
+          // eslint-disable-next-line no-console
+          console.warn('[preview]', dance.id, 'watchdog: still paused after 8s');
+          setPhase('idle');
+        }
       }, 8000);
     },
-    [dance.video_url, phase],
+    [dance.video_url, dance.id, phase],
   );
 
-  // Stop cleanly when the component unmounts.
   useEffect(() => {
     return () => {
       clearLoadingWatchdog();
@@ -139,90 +153,81 @@ export default function PreviewablePoster({
   const radius = ROUNDED_CLASS[rounded];
   const name = displayNameFor(dance, '');
 
-  if (!dance.video_url) {
-    return (
-      <div className={`relative block overflow-hidden ${radius} ${className}`}>
-        <DanceThumb dance={dance} rounded={rounded} className="h-full w-full" />
-      </div>
-    );
-  }
-
   return (
-    <button
-      type="button"
-      onClick={handleTap}
-      aria-label={
-        phase === 'playing'
-          ? `pause ${name || 'dance'} audio`
-          : `play ${name || 'dance'} audio`
-      }
-      aria-pressed={phase === 'playing'}
-      className={`relative block overflow-hidden ${radius} ${className}`}
-    >
-      {/* Video lives underneath the thumbnail — full card size so the
-          browser doesn't throttle it (the offscreen / zero-size hack
-          made Safari refuse to play). Thumbnail sits on top via DOM
-          order. */}
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <video
-        ref={videoRef}
-        src={dance.video_url}
-        playsInline
-        preload="metadata"
-        onPlaying={() => {
-          clearLoadingWatchdog();
-          setPhase('playing');
-        }}
-        onWaiting={() => setPhase((p) => (p === 'playing' ? 'loading' : p))}
-        onEnded={() => {
-          clearLoadingWatchdog();
-          setPhase('idle');
-        }}
-        onPause={() => {
-          const v = videoRef.current;
-          if (v && !v.ended) {
-            setPhase((p) => (p === 'playing' ? 'idle' : p));
-          }
-        }}
-        className="absolute inset-0 h-full w-full object-cover"
-      />
+    <div className={`relative block overflow-hidden ${radius} ${className}`}>
+      {dance.video_url && (
+        <>
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            ref={videoRef}
+            src={dance.video_url}
+            playsInline
+            preload="metadata"
+            onPlaying={() => {
+              clearLoadingWatchdog();
+              setPhase('playing');
+            }}
+            onWaiting={() => setPhase((p) => (p === 'playing' ? 'loading' : p))}
+            onEnded={() => {
+              clearLoadingWatchdog();
+              setPhase('idle');
+            }}
+            onPause={() => {
+              const v = videoRef.current;
+              if (v && !v.ended) {
+                setPhase((p) => (p === 'playing' ? 'idle' : p));
+              }
+            }}
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+          />
+        </>
+      )}
       <DanceThumb
         dance={dance}
         rounded={rounded}
-        className="relative h-full w-full"
+        className="pointer-events-none relative h-full w-full select-none"
       />
-      {/* Play button + animated ring. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute right-2 top-2 flex h-9 w-9 items-center justify-center"
-      >
-        {phase === 'playing' && (
-          <>
-            <span className="absolute inset-0 animate-ping rounded-full bg-coral/70" />
-            <span className="absolute inset-[-4px] animate-pulse rounded-full bg-coral/30" />
-          </>
-        )}
-        <span
-          className={`relative flex h-9 w-9 items-center justify-center rounded-full ring-1 ring-white/15 backdrop-blur-sm ${
+      {/* THE CLICK TARGET — only this button. No ambiguity about which
+          element captures the tap. */}
+      {dance.video_url && (
+        <button
+          type="button"
+          onClick={handleTap}
+          aria-label={
             phase === 'playing'
-              ? 'bg-coral text-white'
-              : 'bg-black/65 text-white'
-          }`}
+              ? `pause ${name || 'dance'} audio`
+              : `play ${name || 'dance'} audio`
+          }
+          aria-pressed={phase === 'playing'}
+          className="absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center"
         >
-          {phase === 'playing' ? (
-            <svg width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="5" width="4" height="14" rx="1" />
-              <rect x="14" y="5" width="4" height="14" rx="1" />
-            </svg>
-          ) : phase === 'loading' ? (
-            <span className="block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-          ) : (
-            <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor">
-              <path d="M3 1.5v9l8-4.5z" />
-            </svg>
+          {phase === 'playing' && (
+            <>
+              <span aria-hidden className="absolute inset-2 animate-ping rounded-full bg-coral/70" />
+              <span aria-hidden className="absolute inset-1 animate-pulse rounded-full bg-coral/30" />
+            </>
           )}
-        </span>
-      </span>
-    </button>
+          <span
+            aria-hidden
+            className={`relative flex h-9 w-9 items-center justify-center rounded-full ring-1 ring-white/15 backdrop-blur-sm ${
+              phase === 'playing' ? 'bg-coral text-white' : 'bg-black/70 text-white'
+            }`}
+          >
+            {phase === 'playing' ? (
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            ) : phase === 'loading' ? (
+              <span className="block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <svg width={14} height={14} viewBox="0 0 12 12" fill="currentColor">
+                <path d="M3 1.5v9l8-4.5z" />
+              </svg>
+            )}
+          </span>
+        </button>
+      )}
+    </div>
   );
 }
