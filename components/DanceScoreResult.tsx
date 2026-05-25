@@ -201,7 +201,11 @@ function SideBySideReplay({
 
   return (
     <section className="overflow-hidden rounded-3xl bg-black shadow-soft">
-      <div className="flex aspect-[3/2] w-full bg-black">
+      {/* Matches the live full-dance duet layout: two natural 9:16
+          portrait panels side by side, centered, with black space
+          wrapping the pair. Aspect 9:8 = two 9:16 portraits glued
+          together horizontally. */}
+      <div className="flex aspect-[9/8] w-full items-center justify-center bg-black">
         <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
           {/* Student attempt — mirrored so the body orientation matches
               what they saw in the live duet view. */}
@@ -212,7 +216,7 @@ function SideBySideReplay({
             playsInline
             muted
             preload="metadata"
-            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+            className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
           />
           <span
             aria-hidden
@@ -228,7 +232,7 @@ function SideBySideReplay({
             src={referenceVideoUrl}
             playsInline
             preload="metadata"
-            className="absolute inset-0 h-full w-full object-cover"
+            className="absolute inset-0 h-full w-full object-contain"
           />
           <span
             aria-hidden

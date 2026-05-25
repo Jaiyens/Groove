@@ -207,82 +207,87 @@ export default function FullCopyAlongPage({ params }: PageProps) {
         <div className="h-11 w-11" aria-hidden />
       </header>
 
-      {/* TikTok duet split: two equal portrait panels filling the screen.
-          The reference on the LEFT and the user on the RIGHT mirrors
-          TikTok's native duet layout so the comparison reads naturally. */}
-      <div className="relative flex flex-1 overflow-hidden bg-black">
-        {/* REF panel */}
-        <div className="relative h-full w-1/2 overflow-hidden bg-black ring-1 ring-white/5">
-          {refSrc ? (
-            <video
-              ref={refVideoRef}
-              src={refSrc}
-              playsInline
-              preload="auto"
-              loop={false}
-              onError={() => setRefMissing(true)}
-              className={`absolute inset-0 h-full w-full object-cover ${
-                mirrorRef ? '[transform:scaleX(-1)]' : ''
-              }`}
-              aria-label={`${dance.name} reference`}
-            />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
-              reference video unavailable
-            </div>
-          )}
-
-          {refMissing && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
-              <div className="text-xs uppercase tracking-widest text-white/70">
+      {/* TikTok duet — two natural 9:16 portrait panels side by side,
+          centered. NOT full-bleed: the pair is sized to fit the
+          available area (capped by either screen height or screen
+          width) so the videos keep their real aspect and nothing is
+          cropped or stretched. Black space wraps the pair the way a
+          native TikTok duet does. */}
+      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
+        <div className="flex aspect-[9/8] max-h-full max-w-full gap-px bg-black">
+          {/* REF panel — natural 9:16 portrait */}
+          <div className="relative h-full w-1/2 overflow-hidden bg-black">
+            {refSrc ? (
+              <video
+                ref={refVideoRef}
+                src={refSrc}
+                playsInline
+                preload="auto"
+                loop={false}
+                onError={() => setRefMissing(true)}
+                className={`absolute inset-0 h-full w-full object-contain ${
+                  mirrorRef ? '[transform:scaleX(-1)]' : ''
+                }`}
+                aria-label={`${dance.name} reference`}
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
                 reference video unavailable
               </div>
-            </div>
-          )}
+            )}
 
-          <div
-            aria-hidden
-            className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
-          >
-            ref
+            {refMissing && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
+                <div className="text-xs uppercase tracking-widest text-white/70">
+                  reference video unavailable
+                </div>
+              </div>
+            )}
+
+            <div
+              aria-hidden
+              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+            >
+              ref
+            </div>
+
+            {needsUnmuteTap && (
+              <button
+                type="button"
+                onClick={handleUnmuteTap}
+                aria-label="tap for sound"
+                className="absolute right-2 top-12 z-20 flex h-10 items-center gap-1.5 rounded-full bg-black/85 px-3 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+              >
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M3 10v4h4l5 5V5L7 10H3z" />
+                </svg>
+                sound
+              </button>
+            )}
           </div>
 
-          {needsUnmuteTap && (
-            <button
-              type="button"
-              onClick={handleUnmuteTap}
-              aria-label="tap for sound"
-              className="absolute right-2 top-12 z-20 flex h-10 items-center gap-1.5 rounded-full bg-black/85 px-3 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
-            >
-              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M3 10v4h4l5 5V5L7 10H3z" />
-              </svg>
-              sound
-            </button>
-          )}
-        </div>
-
-        {/* YOU panel — same dimensions, mirrored. */}
-        <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
-          <video
-            ref={camVideoRef}
-            playsInline
-            muted
-            autoPlay
-            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
-          />
-          {camState !== 'granted' && (
-            <CameraPermissionBanner
-              state={camState}
-              onRequest={startCamera}
-              compact
+          {/* YOU panel — natural 9:16 portrait, mirrored. */}
+          <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
+            <video
+              ref={camVideoRef}
+              playsInline
+              muted
+              autoPlay
+              className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
             />
-          )}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
-          >
-            you
+            {camState !== 'granted' && (
+              <CameraPermissionBanner
+                state={camState}
+                onRequest={startCamera}
+                compact
+              />
+            )}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+            >
+              you
+            </div>
           </div>
         </div>
       </div>
