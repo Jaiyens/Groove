@@ -221,6 +221,7 @@ export default function FinalTestPage({ params }: PageProps) {
         onExit={exitToLesson}
         attemptVideoUrl={attemptLocalUrl}
         referenceVideoUrl={dance.video_url ?? null}
+        dance={dance}
       />
     );
   }

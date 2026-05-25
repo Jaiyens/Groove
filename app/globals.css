@@ -328,3 +328,40 @@ button {
     display: none;
   }
 }
+
+/* Results carousel confetti — tiny squares rain from above the
+   viewport, fade out near the bottom, and never trigger when the
+   user prefers reduced motion. */
+.confetti-piece {
+  position: absolute;
+  top: -8%;
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0;
+  animation-name: confetti-fall;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0.4, 1);
+  animation-iteration-count: 1;
+  animation-fill-mode: forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(105vh) rotate(540deg);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confetti-piece {
+    display: none;
+  }
+}

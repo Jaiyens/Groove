@@ -33,7 +33,30 @@ export default function DrillPage({ params }: PageProps) {
   const router = useRouter();
   const search = useSearchParams();
   const { graph, bumpMastery } = useGraph();
-  const fromAttempt = search.get('from');
+  const fromParam = search.get('from');
+  // Two `from` shapes are supported. The results carousel sends
+  // `dance:<id>` so on done we route into the re-attempt flow; the
+  // legacy /results/[sessionId] path still passes a raw attempt id.
+  const returnTarget = useMemo(() => {
+    if (!fromParam) {
+      return { kind: 'home' as const, href: '/', label: 'Done' };
+    }
+    if (fromParam.startsWith('dance:')) {
+      const danceId = fromParam.slice('dance:'.length);
+      if (danceId) {
+        return {
+          kind: 'reAttempt' as const,
+          href: `/dance/${danceId}/test`,
+          label: 'Re-attempt the dance',
+        };
+      }
+    }
+    return {
+      kind: 'legacyResults' as const,
+      href: `/results/${fromParam}`,
+      label: 'Back to run',
+    };
+  }, [fromParam]);
 
   const skill = graph?.nodes.find((n) => n.id === params.skillId);
 
@@ -61,9 +84,9 @@ export default function DrillPage({ params }: PageProps) {
 
   useEffect(() => {
     if (typeof window === 'undefined' || isFramingCalibrated()) return;
-    const here = `/drill/${params.skillId}${fromAttempt ? `?from=${fromAttempt}` : ''}`;
+    const here = `/drill/${params.skillId}${fromParam ? `?from=${fromParam}` : ''}`;
     router.replace(`/onboarding/frame-check?return=${encodeURIComponent(here)}`);
-  }, [params.skillId, fromAttempt, router]);
+  }, [params.skillId, fromParam, router]);
 
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -215,7 +238,7 @@ export default function DrillPage({ params }: PageProps) {
             if (typeof window !== 'undefined' && window.history.length > 1) {
               router.back();
             } else {
-              router.push(fromAttempt ? `/results/${fromAttempt}` : '/');
+              router.push(returnTarget.href);
             }
           }}
           aria-label="Back"
@@ -329,10 +352,10 @@ export default function DrillPage({ params }: PageProps) {
         ) : (
           <div className="space-y-2">
             <Link
-              href={fromAttempt ? `/results/${fromAttempt}` : '/'}
+              href={returnTarget.href}
               className="block w-full rounded-full bg-white py-4 text-center text-base font-bold text-black"
             >
-              {fromAttempt ? 'Back to run' : 'Done'}
+              {returnTarget.label}
             </Link>
             <Link
               href="/"
