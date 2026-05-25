@@ -15,6 +15,7 @@ import DanceScoreResult from '@/components/DanceScoreResult';
 import StartOverlay from '@/components/StartOverlay';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { markCameraGranted } from '@/lib/preferences/cameraGrant';
 import type { DanceScore } from '@/lib/scoring/gemini/score-attempt';
 
 type RunState = 'idle' | 'recording' | 'uploading' | 'result' | 'error';
@@ -40,6 +41,11 @@ export default function FinalTestPage({ params }: PageProps) {
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('idle');
   const [result, setResult] = useState<DanceScore | null>(null);
+  // Local-only blob URL for the user's just-recorded attempt. Lets the
+  // results screen render the attempt side-by-side with the reference
+  // without re-downloading from blob storage (we delete the blob server-
+  // side after scoring for privacy).
+  const [attemptLocalUrl, setAttemptLocalUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // --- Camera setup ---
@@ -62,7 +68,9 @@ export default function FinalTestPage({ params }: PageProps) {
         return;
       }
       const playing = await attachStream(v, stream);
-      setCamState(playing ? 'granted' : 'needs_tap');
+      const nextState: CamState = playing ? 'granted' : 'needs_tap';
+      setCamState(nextState);
+      if (nextState === 'granted') markCameraGranted();
     } catch {
       setCamState('denied');
     }
@@ -119,6 +127,14 @@ export default function FinalTestPage({ params }: PageProps) {
       try {
         await stopped;
         const blob = new Blob(recordedChunksRef.current, { type: rec.mimeType });
+        // Hold on to the local bytes for the side-by-side replay on the
+        // results screen. Cheap (createObjectURL) and stays valid until
+        // we revokeObjectURL on reset or unmount.
+        const localUrl = URL.createObjectURL(blob);
+        setAttemptLocalUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return localUrl;
+        });
         const score = await uploadAndScore(blob, dance?.video_url ?? null);
         setResult(score);
         setRunState('result');
@@ -134,6 +150,10 @@ export default function FinalTestPage({ params }: PageProps) {
     recorderRef.current = null;
     recordedChunksRef.current = [];
     setResult(null);
+    setAttemptLocalUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
     setErrorMessage(null);
     setRunState('idle');
   }, []);
@@ -154,6 +174,13 @@ export default function FinalTestPage({ params }: PageProps) {
     },
     [],
   );
+  // Free the local attempt URL when this page unmounts so we don't leak
+  // the blob bytes after navigating away.
+  useEffect(() => {
+    return () => {
+      if (attemptLocalUrl) URL.revokeObjectURL(attemptLocalUrl);
+    };
+  }, [attemptLocalUrl]);
 
   if (loading || !dance) {
     return (
@@ -164,7 +191,15 @@ export default function FinalTestPage({ params }: PageProps) {
   }
 
   if (runState === 'result' && result) {
-    return <DanceScoreResult score={result} onRetry={reset} onExit={exitToLesson} />;
+    return (
+      <DanceScoreResult
+        score={result}
+        onRetry={reset}
+        onExit={exitToLesson}
+        attemptVideoUrl={attemptLocalUrl}
+        referenceVideoUrl={dance.video_url ?? null}
+      />
+    );
   }
 
   const referenceUrl = dance.video_url;

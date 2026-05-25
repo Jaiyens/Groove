@@ -4,16 +4,27 @@
 // no scoring logic. Shows boosted scores (the function already applies the
 // +10/cap-100 boost server-side).
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DanceScore } from '@/lib/scoring/gemini/score-attempt';
 
 interface Props {
   score: DanceScore;
   onRetry: () => void;
   onExit: () => void;
+  // Optional — when present, the result screen shows a side-by-side
+  // replay of the student's attempt next to the reference. Lets the
+  // user actually SEE what the score is talking about.
+  attemptVideoUrl?: string | null;
+  referenceVideoUrl?: string | null;
 }
 
-export default function DanceScoreResult({ score, onRetry, onExit }: Props) {
+export default function DanceScoreResult({
+  score,
+  onRetry,
+  onExit,
+  attemptVideoUrl,
+  referenceVideoUrl,
+}: Props) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const overall = score.scores.overall;
   const tier = tierFor(overall);
@@ -35,7 +46,14 @@ export default function DanceScoreResult({ score, onRetry, onExit }: Props) {
       </header>
 
       <div className="flex-1 px-5 pb-8">
-        <section className="rounded-3xl bg-cream-card p-6 shadow-soft">
+        {attemptVideoUrl && referenceVideoUrl && (
+          <SideBySideReplay
+            attemptVideoUrl={attemptVideoUrl}
+            referenceVideoUrl={referenceVideoUrl}
+          />
+        )}
+
+        <section className="mt-5 rounded-3xl bg-cream-card p-6 shadow-soft">
           <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted">
             {tier.label}
           </div>
@@ -115,6 +133,157 @@ export default function DanceScoreResult({ score, onRetry, onExit }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Synchronized side-by-side replay of the student's attempt next to the
+// reference choreography. Matches the test screen's earlier debug-mode
+// behavior: both videos play in lockstep, the user can scrub or pause to
+// study a moment, audio comes from the reference track so the rhythm
+// reads. Camera attempt is mirrored to match the duet view.
+function SideBySideReplay({
+  attemptVideoUrl,
+  referenceVideoUrl,
+}: {
+  attemptVideoUrl: string;
+  referenceVideoUrl: string;
+}) {
+  const attemptRef = useRef<HTMLVideoElement | null>(null);
+  const referenceRef = useRef<HTMLVideoElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(true);
+
+  const togglePlay = () => {
+    const a = attemptRef.current;
+    const r = referenceRef.current;
+    if (!a || !r) return;
+    if (playing) {
+      a.pause();
+      r.pause();
+    } else {
+      // Re-sync from zero on every replay so the comparison stays honest.
+      a.currentTime = 0;
+      r.currentTime = 0;
+      a.muted = true; // attempt has no audio anyway, but be explicit
+      r.muted = muted;
+      void a.play().catch(() => {});
+      void r.play().catch(() => {});
+    }
+    setPlaying((p) => !p);
+  };
+
+  const toggleMute = () => {
+    setMuted((m) => {
+      const next = !m;
+      const r = referenceRef.current;
+      if (r) r.muted = next;
+      return next;
+    });
+  };
+
+  // Pause both whenever either one ends so the controls stay in sync.
+  useEffect(() => {
+    const a = attemptRef.current;
+    const r = referenceRef.current;
+    if (!a || !r) return;
+    const handleEnd = () => {
+      a.pause();
+      r.pause();
+      setPlaying(false);
+    };
+    a.addEventListener('ended', handleEnd);
+    r.addEventListener('ended', handleEnd);
+    return () => {
+      a.removeEventListener('ended', handleEnd);
+      r.removeEventListener('ended', handleEnd);
+    };
+  }, []);
+
+  return (
+    <section className="overflow-hidden rounded-3xl bg-black shadow-soft">
+      <div className="flex aspect-[3/2] w-full bg-black">
+        <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
+          {/* Student attempt — mirrored so the body orientation matches
+              what they saw in the live duet view. */}
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            ref={attemptRef}
+            src={attemptVideoUrl}
+            playsInline
+            muted
+            preload="metadata"
+            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+          />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+          >
+            you
+          </span>
+        </div>
+        <div className="relative h-full w-1/2 overflow-hidden bg-black">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            ref={referenceRef}
+            src={referenceVideoUrl}
+            playsInline
+            preload="metadata"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+          >
+            ref
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 bg-zinc-950 px-3 py-2 text-white">
+        <button
+          type="button"
+          onClick={togglePlay}
+          className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-xs font-bold uppercase tracking-widest text-black active:scale-95"
+          aria-label={playing ? 'pause replay' : 'play replay'}
+        >
+          {playing ? (
+            <>
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+              pause
+            </>
+          ) : (
+            <>
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              replay
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={toggleMute}
+          aria-label={muted ? 'unmute reference' : 'mute reference'}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white ring-1 ring-white/15 active:scale-95"
+        >
+          {muted ? (
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M11 5L6 9H3v6h3l5 4V5z" />
+              <line x1="22" y1="9" x2="16" y2="15" />
+              <line x1="16" y1="9" x2="22" y2="15" />
+            </svg>
+          ) : (
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M11 5L6 9H3v6h3l5 4V5z" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+            </svg>
+          )}
+        </button>
+      </div>
+    </section>
   );
 }
 
