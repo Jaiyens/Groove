@@ -22,7 +22,6 @@ export default function TrendingScroll({ dances }: TrendingScrollProps) {
               dance={dance}
               rounded="2xl"
               className="h-[200px] w-[160px] shadow-soft"
-              autoPlay
             />
             <Link href={`/dance/${dance.id}`} className="mt-2 flex flex-1 flex-col px-1">
               <div className="line-clamp-2 min-h-10 text-sm font-semibold leading-5 text-ink">

@@ -19,7 +19,6 @@ export default function HeroCard({ dance }: HeroCardProps) {
         dance={dance}
         rounded="lg"
         className="aspect-[4/3] w-full rounded-none"
-        autoPlay
       />
       <div className="px-5 pt-3 pb-4">
         <div className="text-[11px] font-normal uppercase tracking-[0.18em] text-ink-muted">
