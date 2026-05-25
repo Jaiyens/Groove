@@ -207,14 +207,13 @@ export default function FullCopyAlongPage({ params }: PageProps) {
         <div className="h-11 w-11" aria-hidden />
       </header>
 
-      {/* TikTok duet — two natural 9:16 portrait panels side by side,
-          centered. NOT full-bleed: the pair is sized to fit the
-          available area (capped by either screen height or screen
-          width) so the videos keep their real aspect and nothing is
-          cropped or stretched. Black space wraps the pair the way a
-          native TikTok duet does. */}
-      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
-        <div className="flex aspect-[9/8] max-h-full max-w-full gap-px bg-black">
+      {/* TikTok duet — two natural 9:16 portrait panels side by side.
+          Each panel takes half the screen width and full container
+          height; the videos inside render with object-contain so they
+          keep their natural aspect, with black space wrapping each
+          video the way a native TikTok duet looks. */}
+      <div className="relative flex flex-1 overflow-hidden bg-black">
+        <div className="flex h-full w-full gap-px bg-black">
           {/* REF panel — natural 9:16 portrait */}
           <div className="relative h-full w-1/2 overflow-hidden bg-black">
             {refSrc ? (
