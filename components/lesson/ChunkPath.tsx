@@ -38,36 +38,50 @@ export default function ChunkPath({ danceId, items, fullUnlocked }: ChunkPathPro
       </ol>
 
       <Link
-        href={fullUnlocked ? `/dance/${danceId}/full` : '#'}
-        aria-disabled={!fullUnlocked}
-        onClick={(e) => {
-          if (!fullUnlocked) e.preventDefault();
-        }}
+        href={`/dance/${danceId}/full`}
         className={`mt-5 flex items-center justify-between rounded-3xl p-5 transition-transform ${
           fullUnlocked
-            ? 'bg-ink text-cream-card shadow-lift active:scale-[0.99]'
-            : 'bg-cream-deep text-ink-dim'
+            ? 'bg-cream-card text-ink shadow-soft active:scale-[0.99]'
+            : 'bg-cream-deep text-ink-dim pointer-events-none'
         }`}
       >
         <div>
-          <div className={`text-[10px] font-medium uppercase tracking-[0.18em] ${fullUnlocked ? 'text-cream-card/80' : 'text-ink-dim'}`}>
-            Final
+          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted">
+            practice
           </div>
-          <div className={`text-xl font-medium leading-tight ${fullUnlocked ? 'text-cream-card' : 'text-ink-dim'}`}>
-            full attempt
+          <div className="text-xl font-medium leading-tight">
+            full dance copy-along
           </div>
-          <div className={`mt-0.5 text-xs ${fullUnlocked ? 'text-cream-card/80' : 'text-ink-dim'}`}>
-            {fullUnlocked
-              ? 'audio only · full scoring'
-              : 'unlocks when every chunk is passed'}
+          <div className="mt-0.5 text-xs text-ink-muted">
+            rehearse the whole routine with the reference
           </div>
         </div>
-        <div
-          className={`flex h-12 w-12 items-center justify-center rounded-full ${
-            fullUnlocked ? 'bg-cream-card text-ink' : 'bg-cream-card text-ink-dim'
-          }`}
-        >
-          {fullUnlocked ? <PlayIcon /> : <LockIcon />}
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-ink text-cream-card">
+          <PlayIcon />
+        </div>
+      </Link>
+
+      <Link
+        href={`/dance/${danceId}/test`}
+        className={`mt-3 flex items-center justify-between rounded-3xl p-5 transition-transform ${
+          fullUnlocked
+            ? 'bg-ink text-cream-card shadow-lift active:scale-[0.99]'
+            : 'bg-cream-deep text-ink-dim pointer-events-none'
+        }`}
+      >
+        <div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-cream-card/80">
+            final
+          </div>
+          <div className="text-xl font-medium leading-tight">
+            take the test
+          </div>
+          <div className="mt-0.5 text-xs text-cream-card/80">
+            you dance alone · scored by AI
+          </div>
+        </div>
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-cream-card text-ink">
+          <PlayIcon />
         </div>
       </Link>
     </div>
