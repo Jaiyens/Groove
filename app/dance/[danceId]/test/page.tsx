@@ -159,8 +159,31 @@ export default function FinalTestPage({ params }: PageProps) {
   }, []);
 
   const exitToLesson = useCallback(() => {
-    router.push(`/dance/${params.danceId}`);
-  }, [router, params.danceId]);
+    // Stop the camera + recorder + drop the local attempt URL BEFORE
+    // we navigate away. Otherwise the next page boots while the
+    // <video src="blob:..."> elements in DanceScoreResult are still
+    // mounted, and Safari sometimes throws on those when the
+    // navigation tears them down mid-decode. Using router.replace so
+    // browser-back doesn't dump the user back onto a torn-down score
+    // screen.
+    try {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        recorderRef.current.stop();
+      }
+    } catch {
+      /* ignore */
+    }
+    if (attemptLocalUrl) {
+      try { URL.revokeObjectURL(attemptLocalUrl); } catch { /* ignore */ }
+    }
+    router.replace(`/dance/${params.danceId}`);
+  }, [router, params.danceId, attemptLocalUrl]);
 
   // Cleanup on unmount.
   useEffect(
@@ -273,10 +296,65 @@ export default function FinalTestPage({ params }: PageProps) {
       )}
 
       {runState === 'uploading' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-          <div className="mt-4 text-sm uppercase tracking-widest">scoring your dance…</div>
-          <div className="mt-1 text-xs text-white/60">this takes 30–60 seconds</div>
+        <div className="absolute inset-0 z-40 flex flex-col items-center bg-black/95 backdrop-blur-sm">
+          <div className="safe-top w-full px-4 pt-6 text-center">
+            <div className="text-[10px] uppercase tracking-[0.22em] text-white/60">
+              scoring your dance
+            </div>
+            <div className="mt-1 text-sm text-white/85">
+              this takes 30–60 seconds
+            </div>
+          </div>
+          {/* Side-by-side: the user's just-recorded attempt next to
+              the reference, same TikTok-duet layout as the live
+              follow-along. Gives them something to watch instead of a
+              naked spinner. */}
+          {attemptLocalUrl && referenceUrl && (
+            <div className="relative flex w-full flex-1 items-center justify-center px-2">
+              <div className="flex h-full w-full max-h-[70vh] gap-px bg-black">
+                <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <video
+                    src={attemptLocalUrl}
+                    playsInline
+                    muted
+                    autoPlay
+                    loop
+                    className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
+                  />
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+                  >
+                    you
+                  </span>
+                </div>
+                <div className="relative h-full w-1/2 overflow-hidden bg-black">
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <video
+                    src={referenceUrl}
+                    playsInline
+                    muted
+                    autoPlay
+                    loop
+                    className="absolute inset-0 h-full w-full object-contain"
+                  />
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+                  >
+                    ref
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="safe-bottom flex w-full items-center justify-center gap-3 px-4 pb-6 pt-3">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            <span className="text-xs uppercase tracking-[0.18em] text-white/75">
+              gemini is grading
+            </span>
+          </div>
         </div>
       )}
 
