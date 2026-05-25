@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import DraggableCornerPiP from '@/components/DraggableCornerPiP';
 import SpeedToggle from '@/components/SpeedToggle';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
@@ -559,12 +560,15 @@ export default function CopyAlongPage({ params }: PageProps) {
           </div>
         </div>
 
-        {/* User camera PiP — fixed slot in the lower-left at ~28%
-            of the viewport width. The CameraPermissionBanner +
-            "you" tag swap INSIDE this frame, so the parent layout
-            never reflows whether the camera is granted or not. */}
-        <div className="pointer-events-none absolute bottom-3 left-3 z-10 w-[28%] max-w-[160px]">
-          <div className="pointer-events-auto relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
+        {/* User camera PiP — FaceTime-style draggable, snaps to the
+            nearest corner. CameraPermissionBanner + "you" tag swap
+            INSIDE this frame so the parent layout never reflows
+            whether the camera is granted or not. */}
+        <DraggableCornerPiP
+          storageKey="groove.pip-corner.v1"
+          className="w-[28%] max-w-[160px]"
+        >
+          <div className="relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
             <video
               ref={camVideoRef}
               playsInline
@@ -596,7 +600,7 @@ export default function CopyAlongPage({ params }: PageProps) {
               you
             </div>
           </div>
-        </div>
+        </DraggableCornerPiP>
       </div>
 
       {/* spec.md §Fix 3 controls: SINGLE row at the bottom, gap-3

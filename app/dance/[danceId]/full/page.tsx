@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation';
 import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
+import DraggableCornerPiP from '@/components/DraggableCornerPiP';
 import SpeedToggle from '@/components/SpeedToggle';
 import StartOverlay from '@/components/StartOverlay';
 import { useDance } from '@/lib/dances/useDance';
@@ -269,11 +270,14 @@ export default function FullCopyAlongPage({ params }: PageProps) {
           </div>
         </div>
 
-        {/* User camera PiP — fixed slot in the lower-left at ~28% of the
-            viewport width. Same aspect-[9/16] container as the reference
-            so both panels read as matched portrait videos. */}
-        <div className="pointer-events-none absolute bottom-3 left-3 z-10 w-[28%] max-w-[160px]">
-          <div className="pointer-events-auto relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
+        {/* User camera PiP — FaceTime-style draggable, snaps to nearest
+            corner. Same aspect-[9/16] as the reference so both panels
+            read as matched portrait videos. */}
+        <DraggableCornerPiP
+          storageKey="groove.pip-corner.v1"
+          className="w-[28%] max-w-[160px]"
+        >
+          <div className="relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
             <video
               ref={camVideoRef}
               playsInline
@@ -295,7 +299,7 @@ export default function FullCopyAlongPage({ params }: PageProps) {
               you
             </div>
           </div>
-        </div>
+        </DraggableCornerPiP>
       </div>
 
       <div className="safe-bottom relative z-30 flex h-[88px] items-center gap-3 bg-black px-4">
