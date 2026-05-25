@@ -55,7 +55,7 @@ export default function PreviewablePoster({
   className = '',
   rounded = '2xl',
 }: PreviewablePosterProps) {
-  const [phase, setPhase] = useState<'idle' | 'playing' | 'paused'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle');
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const instanceIdRef = useRef<number>(0);
   if (instanceIdRef.current === 0) {
@@ -110,7 +110,11 @@ export default function PreviewablePoster({
         setPhase('idle');
       });
     }
-    setPhase('playing');
+    // 'loading' until the browser actually has enough data to play. The
+    // onPlaying handler flips us to 'playing'. Without this the user sees
+    // a frozen card during the buffer fetch and assumes the button is
+    // broken.
+    setPhase('loading');
   }, [dance.video_url, phase]);
 
   // Stop cleanly when the component unmounts (e.g. user navigates
@@ -155,8 +159,14 @@ export default function PreviewablePoster({
           // Not muted: audio is the point — TikTok dances are
           // recognized by the song.
           playsInline
-          preload="none"
+          // 'metadata' seeds the duration + first-frame index on mount.
+          // Cost is small (a single Range request per card) but it lets
+          // playback start almost instantly when the user taps, instead
+          // of the multi-second cold buffer that 'none' produced.
+          preload="metadata"
           onEnded={() => setPhase('idle')}
+          onPlaying={() => setPhase('playing')}
+          onWaiting={() => setPhase((p) => (p === 'playing' ? 'loading' : p))}
           onPause={() => {
             // Sync state if the underlying media pauses for reasons
             // other than our handler (e.g. iOS interrupt). Don't
@@ -170,6 +180,14 @@ export default function PreviewablePoster({
             showVideo ? '' : 'invisible'
           }`}
         />
+      )}
+      {phase === 'loading' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40"
+        >
+          <span className="block h-7 w-7 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+        </span>
       )}
       {dance.video_url && phase === 'idle' && (
         <span
