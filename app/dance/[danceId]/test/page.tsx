@@ -274,7 +274,7 @@ export default function FinalTestPage({ params }: PageProps) {
           totalChunks={1}
           chunkLabel={dance.name}
           subtitle="dance to the music — no reference shown"
-          ctaLabel="start test"
+          skipIdle
           onStart={() => {
             if (camState === 'idle' || camState === 'denied') startCamera();
           }}

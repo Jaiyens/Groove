@@ -30,6 +30,10 @@ interface StartOverlayProps {
   // Fires once when the countdown lands on zero. Parent starts the
   // video/scoring clock here so the first move is in sync with audio.
   onGo: () => void;
+  // Skip the press-start gesture and auto-fire the 3-2-1 countdown on
+  // mount. Used when the user already pressed Start/Next on the
+  // previous screen — pressing Start again is just friction.
+  skipIdle?: boolean;
 }
 
 type Phase = 'idle' | 'counting' | 'go' | 'done';
@@ -42,8 +46,16 @@ export default function StartOverlay({
   ctaLabel = 'start',
   onStart,
   onGo,
+  skipIdle = false,
 }: StartOverlayProps) {
-  const [phase, setPhase] = useState<Phase>('idle');
+  const [phase, setPhase] = useState<Phase>(skipIdle ? 'counting' : 'idle');
+  // When skipIdle is set we need to fire onStart once on mount — same
+  // contract as the manual "start" button — so the parent can do the
+  // camera-grant / audio-resume work.
+  useEffect(() => {
+    if (skipIdle) onStart?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [count, setCount] = useState(3);
   const goFiredRef = useRef(false);
 

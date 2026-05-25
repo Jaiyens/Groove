@@ -123,10 +123,13 @@ export default function CopyAlongPage({ params }: PageProps) {
   // remounts the page. (The framing-check gate that used to seed this
   // to true was removed in spec.md §Fix 2 — the user is now told to
   // stand back on the setup screen instead.)
-  // Drill mode: the user came from a tap on the Mode B results screen,
-  // which counts as the "ready" gesture. Skip the start-overlay
-  // countdown and roll straight into the looped clip.
-  const [started, setStarted] = useState(isDrillMode);
+  // Auto-start when the user already pressed Start on a previous screen
+  // — that gesture chain shouldn't be broken by an extra Start tap.
+  //   - Drill mode: came from results screen
+  //   - chunkIndex > 0: came from chunk N-1's "Next" CTA
+  // Chunk 0 (first chunk) keeps the StartOverlay so the user can read
+  // the section label before committing.
+  const [started, setStarted] = useState(isDrillMode || chunkIndex > 0);
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -449,7 +452,7 @@ export default function CopyAlongPage({ params }: PageProps) {
       <header className="safe-top relative z-30 flex h-14 items-center gap-3 px-4">
         <button
           type="button"
-          onClick={() => router.push(`/dance/${dance.id}`)}
+          onClick={() => router.push(`/dance/${params.danceId}`)}
           aria-label="Back to lesson"
           className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
         >
@@ -661,7 +664,9 @@ export default function CopyAlongPage({ params }: PageProps) {
           data-testid="copy-next-cta"
           className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
         >
-          <span>{chunkIndex >= chunks.length - 1 ? 'Full copy-along' : 'Next chunk'}</span>
+          <span className="whitespace-nowrap">
+            {chunkIndex >= chunks.length - 1 ? 'Full run' : 'Next'}
+          </span>
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M5 12h14M13 5l7 7-7 7" />
           </svg>
@@ -673,7 +678,7 @@ export default function CopyAlongPage({ params }: PageProps) {
           Drill mode: skip the gate — the user just came from the Mode B
           results screen and tapping a trouble spot is its own
           "I'm ready" gesture. */}
-      {!started && !isDrillMode && (
+      {!started && !isDrillMode && chunkIndex === 0 && (
         <StartOverlay
           chunkNumber={chunkIndex + 1}
           totalChunks={chunks.length}

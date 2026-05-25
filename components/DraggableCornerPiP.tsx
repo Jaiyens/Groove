@@ -76,7 +76,10 @@ export default function DraggableCornerPiP({
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     pointerStartRef.current = { x: e.clientX, y: e.clientY };
     didDragRef.current = false;
-    wrapperRef.current?.setPointerCapture(e.pointerId);
+    // Don't setPointerCapture here — if we capture on every press, an iOS
+    // Safari pointerup-drop leaves a stuck capture that blocks clicks on
+    // other elements (e.g. the header back button). Capture lazily, only
+    // once the user has actually crossed the drag threshold.
   }, []);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -86,6 +89,9 @@ export default function DraggableCornerPiP({
     const dy = e.clientY - start.y;
     if (!didDragRef.current && Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
       didDragRef.current = true;
+      try {
+        wrapperRef.current?.setPointerCapture(e.pointerId);
+      } catch { /* already captured or invalid pointer */ }
     }
     if (didDragRef.current) setDragOffset({ x: dx, y: dy });
   }, []);

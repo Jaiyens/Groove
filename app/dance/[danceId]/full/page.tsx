@@ -17,7 +17,6 @@ import CameraPermissionBanner, {
 } from '@/components/CameraPermissionBanner';
 import DraggableCornerPiP from '@/components/DraggableCornerPiP';
 import SpeedToggle from '@/components/SpeedToggle';
-import StartOverlay from '@/components/StartOverlay';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
 import {
@@ -56,7 +55,10 @@ export default function FullCopyAlongPage({ params }: PageProps) {
   }, []);
 
   const [camState, setCamState] = useState<CamState>('idle');
-  const [started, setStarted] = useState(false);
+  // Auto-start: the user reached this page by tapping "Next" on the
+  // last chunk, which is gesture enough. Reference video tries autoplay
+  // with sound; if iOS blocks it, falls back to muted + tap-to-unmute.
+  const [started, setStarted] = useState(true);
   const [muted, setMuted] = useState(false);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
   const [refMissing, setRefMissing] = useState(false);
@@ -167,14 +169,6 @@ export default function FullCopyAlongPage({ params }: PageProps) {
     void v.play().catch(() => {});
   }, []);
 
-  const handleOverlayStart = useCallback(() => {
-    if (camState === 'idle' || camState === 'denied') startCamera();
-  }, [camState, startCamera]);
-
-  const handleOverlayGo = useCallback(() => {
-    setStarted(true);
-  }, []);
-
   // Cleanup on unmount.
   useEffect(
     () => () => {
@@ -199,7 +193,7 @@ export default function FullCopyAlongPage({ params }: PageProps) {
       <header className="safe-top relative z-30 flex h-14 items-center gap-3 px-4">
         <button
           type="button"
-          onClick={() => router.push(`/dance/${dance.id}`)}
+          onClick={() => router.push(`/dance/${params.danceId}`)}
           aria-label="Back to lesson"
           className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
         >
@@ -323,26 +317,16 @@ export default function FullCopyAlongPage({ params }: PageProps) {
         </button>
         <button
           type="button"
-          onClick={() => router.push(`/dance/${dance.id}/test`)}
+          onClick={() => router.push(`/dance/${params.danceId}/test`)}
           className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
         >
-          <span>Take the test</span>
+          <span className="whitespace-nowrap">Test</span>
           <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M5 12h14M13 5l7 7-7 7" />
           </svg>
         </button>
       </div>
 
-      {!started && (
-        <StartOverlay
-          chunkNumber={1}
-          totalChunks={1}
-          chunkLabel={dance.name}
-          subtitle="dance the whole routine"
-          onStart={handleOverlayStart}
-          onGo={handleOverlayGo}
-        />
-      )}
     </main>
   );
 }
