@@ -1,10 +1,10 @@
 'use client';
 
-// Full-dance copy-along (Mode A++): same TikTok-duet layout as the chunk
-// copy-along — reference video full-bleed, user webcam in a small bottom-
-// left PiP — but playing the entire routine instead of a single chunk
-// window. No Gemini scoring here; this is the step where the user
-// rehearses the whole dance once before taking the actual test.
+// Full-dance copy-along (Mode A++) — TikTok duet layout. The screen is
+// split 50/50 vertically: reference choreography on the left, the
+// student's mirrored webcam on the right. Both panels are vertical
+// portraits that fill their column so the student sees themselves as
+// large as the reference, side-by-side, like a TikTok duet.
 //
 // Speed progression mirrors the chunk copy page: starts at 0.5x, auto-
 // bumps to 0.75x after 2 loops, then to 1.0x after 2 more, then sticks
@@ -15,10 +15,10 @@ import { useRouter } from 'next/navigation';
 import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
-import DraggableCornerPiP from '@/components/DraggableCornerPiP';
 import SpeedToggle from '@/components/SpeedToggle';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
+import { markCameraGranted } from '@/lib/preferences/cameraGrant';
 import {
   getMirrorEnabled,
   onMirrorChanged,
@@ -43,8 +43,6 @@ export default function FullCopyAlongPage({ params }: PageProps) {
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Auto-progression state. Same rules as the chunk copy page so the
-  // experience feels continuous.
   const [rate, setRate] = useState(0.5);
   const loopsAtCurrentRateRef = useRef(0);
   const userChoseSpeedRef = useRef(false);
@@ -72,7 +70,6 @@ export default function FullCopyAlongPage({ params }: PageProps) {
     });
   }, []);
 
-  // Camera setup. Same flow as the chunk copy page.
   const startCamera = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setCamState('unavailable');
@@ -91,7 +88,9 @@ export default function FullCopyAlongPage({ params }: PageProps) {
         return;
       }
       const playing = await attachStream(v, stream);
-      setCamState(playing ? 'granted' : 'needs_tap');
+      const nextState: CamState = playing ? 'granted' : 'needs_tap';
+      setCamState(nextState);
+      if (nextState === 'granted') markCameraGranted();
     } catch {
       setCamState('denied');
     }
@@ -101,7 +100,6 @@ export default function FullCopyAlongPage({ params }: PageProps) {
     if (camState === 'idle' && !loading && dance) startCamera();
   }, [camState, loading, dance, startCamera]);
 
-  // Reference video chunk loop — full dance window.
   useEffect(() => {
     const v = refVideoRef.current;
     if (!v || !dance) return;
@@ -169,7 +167,6 @@ export default function FullCopyAlongPage({ params }: PageProps) {
     void v.play().catch(() => {});
   }, []);
 
-  // Cleanup on unmount.
   useEffect(
     () => () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -201,99 +198,93 @@ export default function FullCopyAlongPage({ params }: PageProps) {
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex-1 text-center">
+        <div className="min-w-0 flex-1 text-center">
           <div className="text-[10px] uppercase tracking-widest text-white/50">
-            full dance · copy along
+            duet · full dance
           </div>
           <div className="truncate text-sm font-semibold">{dance.name}</div>
         </div>
         <div className="h-11 w-11" aria-hidden />
       </header>
 
-      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
-        <div className="relative flex h-full w-full items-center justify-center">
-          {/* Reference video — single largest element, 9/16 aspect, centered. */}
-          <div className="relative aspect-[9/16] h-full max-h-full w-auto overflow-hidden bg-black">
-            {refSrc ? (
-              <video
-                ref={refVideoRef}
-                src={refSrc}
-                playsInline
-                preload="auto"
-                loop={false}
-                onError={() => setRefMissing(true)}
-                className={`absolute inset-0 h-full w-full object-contain ${
-                  mirrorRef ? '[transform:scaleX(-1)]' : ''
-                }`}
-                aria-label={`${dance.name} reference`}
-              />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
+      {/* TikTok duet split: two equal portrait panels filling the screen.
+          The reference on the LEFT and the user on the RIGHT mirrors
+          TikTok's native duet layout so the comparison reads naturally. */}
+      <div className="relative flex flex-1 overflow-hidden bg-black">
+        {/* REF panel */}
+        <div className="relative h-full w-1/2 overflow-hidden bg-black ring-1 ring-white/5">
+          {refSrc ? (
+            <video
+              ref={refVideoRef}
+              src={refSrc}
+              playsInline
+              preload="auto"
+              loop={false}
+              onError={() => setRefMissing(true)}
+              className={`absolute inset-0 h-full w-full object-cover ${
+                mirrorRef ? '[transform:scaleX(-1)]' : ''
+              }`}
+              aria-label={`${dance.name} reference`}
+            />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-white/50">
+              reference video unavailable
+            </div>
+          )}
+
+          {refMissing && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
+              <div className="text-xs uppercase tracking-widest text-white/70">
                 reference video unavailable
               </div>
-            )}
-
-            {refMissing && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-black to-zinc-900 p-6 text-center">
-                <div className="text-xs uppercase tracking-widest text-white/70">
-                  reference video unavailable
-                </div>
-              </div>
-            )}
-
-            <div
-              aria-hidden
-              className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
-            >
-              ref
             </div>
+          )}
 
-            {needsUnmuteTap && (
-              <button
-                type="button"
-                onClick={handleUnmuteTap}
-                aria-label="tap for sound"
-                className="absolute right-3 top-12 z-20 flex h-11 items-center gap-1.5 rounded-full bg-black/85 px-3.5 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
-              >
-                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M3 10v4h4l5 5V5L7 10H3z" />
-                </svg>
-                tap for sound
-              </button>
-            )}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
+          >
+            ref
           </div>
+
+          {needsUnmuteTap && (
+            <button
+              type="button"
+              onClick={handleUnmuteTap}
+              aria-label="tap for sound"
+              className="absolute right-2 top-12 z-20 flex h-10 items-center gap-1.5 rounded-full bg-black/85 px-3 text-xs font-semibold text-white ring-1 ring-white/20 active:scale-95"
+            >
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M3 10v4h4l5 5V5L7 10H3z" />
+              </svg>
+              sound
+            </button>
+          )}
         </div>
 
-        {/* User camera PiP — FaceTime-style draggable, snaps to nearest
-            corner. Same aspect-[9/16] as the reference so both panels
-            read as matched portrait videos. */}
-        <DraggableCornerPiP
-          storageKey="groove.pip-corner.v1"
-          className="w-[28%] max-w-[160px]"
-        >
-          <div className="relative aspect-[9/16] overflow-hidden rounded-2xl bg-zinc-950 ring-2 ring-white/20 shadow-[0_8px_30px_rgba(0,0,0,0.5)]">
-            <video
-              ref={camVideoRef}
-              playsInline
-              muted
-              autoPlay
-              className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+        {/* YOU panel — same dimensions, mirrored. */}
+        <div className="relative h-full w-1/2 overflow-hidden bg-zinc-950">
+          <video
+            ref={camVideoRef}
+            playsInline
+            muted
+            autoPlay
+            className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+          />
+          {camState !== 'granted' && (
+            <CameraPermissionBanner
+              state={camState}
+              onRequest={startCamera}
+              compact
             />
-            {camState !== 'granted' && (
-              <CameraPermissionBanner
-                state={camState}
-                onRequest={startCamera}
-                compact
-              />
-            )}
-            <div
-              aria-hidden
-              className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
-            >
-              you
-            </div>
+          )}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
+          >
+            you
           </div>
-        </DraggableCornerPiP>
+        </div>
       </div>
 
       <div className="safe-bottom relative z-30 flex h-[88px] items-center gap-3 bg-black px-4">
@@ -318,10 +309,10 @@ export default function FullCopyAlongPage({ params }: PageProps) {
         <button
           type="button"
           onClick={() => router.push(`/dance/${params.danceId}/test`)}
-          className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
+          className="ml-auto flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-coral px-3 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
         >
-          <span className="whitespace-nowrap">Test</span>
-          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <span className="truncate">Test</span>
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
             <path d="M5 12h14M13 5l7 7-7 7" />
           </svg>
         </button>
