@@ -10,6 +10,8 @@
 // The HTTPS hint is the load-bearing one: visiting the LAN dev URL over
 // http:// silently blocks getUserMedia on iOS Safari / Android Chrome.
 
+import { wasCameraGranted } from '@/lib/preferences/cameraGrant';
+
 export type CamState =
   | 'idle'
   | 'requesting'
@@ -42,6 +44,25 @@ export default function CameraPermissionBanner({
   compact = false,
 }: Props) {
   if (state === 'granted') return null;
+  // If we already granted the camera earlier in this session, the
+  // browser will silently re-attach on the next chunk. Don't flash the
+  // "enable camera" CTA — just show a tiny spinner while the stream
+  // reconnects. Only kick the full banner back in if the state goes to a
+  // real error (denied/insecure/unavailable).
+  const silentReattach =
+    (state === 'idle' || state === 'requesting' || state === 'needs_tap') &&
+    wasCameraGranted();
+  if (silentReattach) {
+    return (
+      <div
+        className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
+        role="status"
+        aria-label="Reconnecting camera"
+      >
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+      </div>
+    );
+  }
   const padding = compact ? 'p-4' : 'p-8';
   const titleSize = compact ? 'text-base font-semibold' : 'text-xl font-semibold';
   const subSize = compact ? 'text-xs' : 'text-sm';
