@@ -13,15 +13,25 @@ import { readFile } from 'node:fs/promises';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 
-const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine.
+const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine. You are measuring how closely Video 2 matches Video 1 — similarity to the reference, not the student's absolute dance skill.
 
-Score the attempt 0–100 on:
-- timing (on beat vs early/late)
-- shape (body positions match)
-- energy (sharpness, hits, pauses match)
-- flow (smooth transitions)
+Use these calibration anchors for every score (timing, shape, energy, flow, overall):
+- 90–100: Moves match the reference's directions, body parts, and beats with clean execution. Minor stylistic differences are fine.
+- 75–89: Clearly the same dance. Most moves land on the right beats with the right body parts; some timing slips or reduced amplitude. A sincere, practiced attempt by a non-professional belongs here.
+- 60–74: Attempting the choreography but missing significant moves or beats. Overall shape recognizable, execution loose.
+- 40–59: Moving to the music but not actually doing the reference choreography. Motion present, alignment absent.
+- Below 40: Standing still, barely moving, flailing randomly, or doing something unrelated to the reference.
 
-Then give the top 3 moments to fix and 1 thing they did well. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.
+Score down ONLY for moves that don't match the reference: wrong direction, wrong body part, wrong beat, or skipped entirely. Personal style, slightly smaller amplitude, and minor execution imperfections are NOT errors. Do not default to 50–60 out of caution — if the student is clearly doing the same dance, the score belongs in 75–89 or higher.
+
+Axes:
+- timing: on-beat-ness of the moves
+- shape: body positions and directions matching the reference
+- energy: sharpness, hits, and pauses matching (not raw motion amount)
+- flow: smoothness of transitions between moves
+- overall: holistic similarity using the same anchors
+
+Give the top 3 moments to fix and 1 thing they did well. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.
 
 Return only this JSON:
 
