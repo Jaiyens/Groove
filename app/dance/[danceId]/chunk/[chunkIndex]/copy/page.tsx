@@ -193,7 +193,11 @@ export default function CopyAlongPage({ params }: PageProps) {
         audio: false,
       });
       streamRef.current = stream;
-      const v = camVideoRef.current;
+      // The video element might not be in the DOM yet on first mount
+      // (the page short-circuits to "loading…" until useDance resolves).
+      // Wait for it to appear up to ~1.5s rather than bailing to
+      // 'needs_tap' and stranding the granted stream.
+      const v = await waitForRef(camVideoRef, 1500);
       if (!v) {
         setCamState('needs_tap');
         return;
@@ -232,17 +236,25 @@ export default function CopyAlongPage({ params }: PageProps) {
   // Also auto-start when the camera was already granted earlier in
   // this session — there's no reason to make the user re-confirm on
   // every chunk. The browser silently re-attaches.
+  //
+  // Crucially, this only fires once `dance` + `chunk` are loaded. The
+  // earlier "loading…" early-return skips rendering the video element,
+  // so calling startCamera before dance is ready would acquire the
+  // stream (camera green light ON) but find `camVideoRef.current ===
+  // null` and bail to 'needs_tap', leaving the page stuck on the
+  // re-attach spinner forever.
+  const cameraAutoStartedRef = useRef(false);
   useEffect(() => {
+    if (cameraAutoStartedRef.current) return;
+    if (!dance || !chunk) return;
     if (camState !== 'idle') return;
     const grantedThisSession =
       typeof window !== 'undefined' &&
       window.sessionStorage.getItem('groove.camera-granted.v1') === '1';
-    if (started || grantedThisSession) {
-      void startCamera();
-    }
-    // Run-once intent; subsequent state changes are handled elsewhere.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!started && !grantedThisSession) return;
+    cameraAutoStartedRef.current = true;
+    void startCamera();
+  }, [dance, chunk, camState, started, startCamera]);
 
   // Reference-video chunk loop. Drives video playback within [startMs, endMs]
   // at the chosen rate. Audio is the video's own audio track. Gated on
@@ -742,4 +754,29 @@ function parseSpeedParam(raw: string | null | undefined): number | null {
   if (!Number.isFinite(n)) return null;
   if (n < 0.25 || n > 1.5) return null;
   return n;
+}
+
+// Poll a ref until it points at something or the timeout elapses. Used
+// when the camera permission flow finishes before the <video> element
+// has mounted (page rendered a "loading…" early-return).
+async function waitForRef<T>(
+  ref: React.MutableRefObject<T | null>,
+  timeoutMs: number,
+): Promise<T | null> {
+  if (ref.current) return ref.current;
+  const start = performance.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (ref.current) {
+        resolve(ref.current);
+        return;
+      }
+      if (performance.now() - start >= timeoutMs) {
+        resolve(null);
+        return;
+      }
+      setTimeout(tick, 60);
+    };
+    tick();
+  });
 }
