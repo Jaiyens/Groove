@@ -25,3 +25,4 @@ seed_urls.txt
 worker/venv/
 worker/out_test/
 worker/out/
+.env*
