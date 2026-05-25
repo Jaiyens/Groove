@@ -1,22 +1,27 @@
 // POST /api/score — single end-of-dance scoring endpoint.
 //
-// Input (multipart/form-data):
-//   - attempt: Blob (user's recorded video, typically video/webm from MediaRecorder)
+// Input (JSON):
+//   - attemptBlobUrl: string (Vercel Blob URL — client uploaded the
+//     webcam recording directly to Blob storage, bypassing the 4.5MB
+//     serverless body limit)
+//   - attemptContentType?: string (defaults to 'video/webm')
 //   - referenceUrl: string (dance.video_url; absolute URL or /data/ path)
 //
 // Output:
 //   200 { score: DanceScore, latencyMs: number }
 //   4xx/5xx { error: string }
 //
-// Flow: write attempt Blob to /tmp/{uuid}.webm, transcode to mp4 (Gemini
-// rejects webm), resolve reference (fetch URL or read from public/),
-// call scoreDanceAttempt, return result.
+// Flow: fetch the user's video from blob storage, transcode WebM→MP4
+// (Gemini rejects webm), resolve the reference (fetch URL or read from
+// public/), call scoreDanceAttempt, return result. The user's blob is
+// deleted in the finally block — privacy + storage cost.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { del } from '@vercel/blob';
 
 import { scoreDanceAttempt } from '@/lib/scoring/gemini/score-attempt';
 import { transcodeWebmToMp4Path } from '@/lib/video/transcode';
@@ -27,25 +32,32 @@ export const maxDuration = 120;
 export async function POST(req: NextRequest) {
   const t0 = Date.now();
   const cleanup: Array<() => Promise<void>> = [];
+  let attemptBlobUrl: string | null = null;
 
   try {
-    const form = await req.formData();
-    const attemptFile = form.get('attempt');
-    const referenceUrl = form.get('referenceUrl');
+    const body = (await req.json()) as {
+      attemptBlobUrl?: string;
+      attemptContentType?: string;
+      referenceUrl?: string;
+    };
 
-    if (!(attemptFile instanceof Blob)) {
-      return NextResponse.json({ error: 'attempt file missing' }, { status: 400 });
+    if (!body.attemptBlobUrl) {
+      return NextResponse.json({ error: 'attemptBlobUrl missing' }, { status: 400 });
     }
-    if (typeof referenceUrl !== 'string' || !referenceUrl) {
+    if (!body.referenceUrl) {
       return NextResponse.json({ error: 'referenceUrl missing' }, { status: 400 });
     }
 
-    // Resolve reference: fetch if remote, read from public/ if local path.
-    const referencePath = await resolveReferencePath(referenceUrl, cleanup);
+    attemptBlobUrl = body.attemptBlobUrl;
+    const mimeType = body.attemptContentType ?? 'video/webm';
 
-    // Save + transcode attempt.
-    const attemptBuf = Buffer.from(await attemptFile.arrayBuffer());
-    const mimeType = attemptFile.type || 'video/webm';
+    const attemptRes = await fetch(attemptBlobUrl);
+    if (!attemptRes.ok) {
+      throw new Error(`attempt blob fetch failed: ${attemptRes.status} ${attemptRes.statusText}`);
+    }
+    const attemptBuf = Buffer.from(await attemptRes.arrayBuffer());
+
+    const referencePath = await resolveReferencePath(body.referenceUrl, cleanup);
 
     let attemptMp4Path: string;
     if (mimeType.startsWith('video/webm') || !mimeType.startsWith('video/mp4')) {
@@ -66,6 +78,16 @@ export async function POST(req: NextRequest) {
     console.error('[/api/score]', message);
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {
+    // Delete the user's video from blob storage (best-effort). Failure
+    // here doesn't change the score response — orphan blobs eventually
+    // get reaped if you set a TTL policy on the bucket.
+    if (attemptBlobUrl) {
+      try {
+        await del(attemptBlobUrl);
+      } catch (e) {
+        console.warn('[/api/score] blob delete failed', e);
+      }
+    }
     await Promise.allSettled(cleanup.map((c) => c()));
   }
 }
@@ -74,8 +96,6 @@ async function resolveReferencePath(
   referenceUrl: string,
   cleanup: Array<() => Promise<void>>,
 ): Promise<string> {
-  // Remote URL → fetch to a temp file. Server-side fetch keeps the client
-  // from having to re-upload the reference video (which it already loaded).
   if (referenceUrl.startsWith('http://') || referenceUrl.startsWith('https://')) {
     const res = await fetch(referenceUrl);
     if (!res.ok) {
@@ -89,9 +109,8 @@ async function resolveReferencePath(
   }
 
   // Local path (e.g. /data/reference_dances/foo.mp4) → resolve under public/.
-  // No cleanup since we're not creating a copy.
   const rel = referenceUrl.startsWith('/') ? referenceUrl.slice(1) : referenceUrl;
   const abs = path.join(process.cwd(), 'public', rel);
-  await fs.access(abs); // throw if missing
+  await fs.access(abs);
   return abs;
 }

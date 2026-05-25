@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { upload } from '@vercel/blob/client';
 import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
@@ -286,10 +287,27 @@ export default function FinalTestPage({ params }: PageProps) {
 
 async function uploadAndScore(blob: Blob, referenceUrl: string | null): Promise<DanceScore> {
   if (!referenceUrl) throw new Error('no reference video on this dance');
-  const form = new FormData();
-  form.append('attempt', blob, 'attempt.webm');
-  form.append('referenceUrl', referenceUrl);
-  const res = await fetch('/api/score', { method: 'POST', body: form });
+
+  // Direct-to-blob upload from the browser. Bypasses Vercel's 4.5MB body
+  // limit and keeps the serverless function from spinning while bytes
+  // transfer. The token route at /api/upload-token signs the request.
+  const contentType = blob.type || 'video/webm';
+  const fileName = `attempts/${crypto.randomUUID()}.webm`;
+  const uploaded = await upload(fileName, blob, {
+    access: 'public',
+    handleUploadUrl: '/api/upload-token',
+    contentType,
+  });
+
+  const res = await fetch('/api/score', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      attemptBlobUrl: uploaded.url,
+      attemptContentType: contentType,
+      referenceUrl,
+    }),
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`/api/score ${res.status}: ${text || res.statusText}`);
