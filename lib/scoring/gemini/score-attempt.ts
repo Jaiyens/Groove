@@ -22,16 +22,22 @@ const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the stud
 
 First, in the \`reasoning\` field, walk through the reference's moves in order. For each move, state whether the student did roughly the same move (right body part, right direction, right beat) or missed it / did something different. Use MM:SS timestamps and name specific body parts. This grounds the score — do it before assigning numbers.
 
-Then score using these anchors:
-- 90–100: Nearly every move matches in direction, body part, and beat. Clean execution.
-- 75–89: Most moves match. A practiced attempt with timing slips or soft execution belongs here.
-- 60–74: Several moves missing or in the wrong direction. Shape still recognizable.
-- 40–59: Doing different moves to the music, not the reference's choreography.
+CRITICAL RUBRIC — read carefully:
+
+A student "following the main structure" means they attempted the same moves in roughly the same order — same arms, same directions, same beat windows — even if execution is rough, soft, or behind tempo. **Following the main structure of the routine ALWAYS earns AT LEAST 75 on every axis.** If your reasoning concludes the student followed the main structure with decent rhythm, you MUST score 75 or higher. Anything below 75 is reserved for attempts that DO NOT follow the structure.
+
+Score anchors (apply consistently to every axis):
+- 90–100: Nearly every move matches in direction, body part, and beat. Clean, confident execution.
+- 75–89: Main structure followed. The student attempted each reference move in roughly the right order with recognizable shapes, even with timing slips, soft execution, smaller amplitude, or imperfect posture. THIS IS THE FLOOR FOR "FOLLOWED THE ROUTINE."
+- 60–74: Structure mostly followed but with one or two whole sections skipped or done in the wrong direction. Shape still recognizable across the rest.
+- 40–59: Doing different moves to the music — only a few reference moves attempted. Not following the choreography.
 - Below 40: Standing still, flailing randomly, or doing something unrelated to the reference.
 
-DO NOT lower the score for: weak/soft motion of the right move, slightly rushed transitions, imperfect posture, hand/finger detail, smaller amplitude, or stylistic variation. ONLY lower for STRUCTURAL mismatches: wrong direction, wrong body part, wrong beat, or skipped/different move.
+DO NOT lower the score for: weak/soft motion of the right move, slightly rushed transitions, imperfect posture, hand/finger detail, smaller amplitude, stylistic variation, or facing the camera differently. ONLY lower for STRUCTURAL mismatches: wrong direction, wrong body part, wrong beat, or skipped/different move across multiple sections.
 
-Axes (all 0–100, using the same anchors):
+Self-check before committing the score: does my reasoning say the student followed the routine's main structure? If yes, every axis must be 75+. If you wrote "successfully followed the main structure" anywhere in reasoning, you are NOT allowed to score below 75.
+
+Axes (all 0–100, using the anchors above):
 - timing: on-beat-ness
 - shape: body positions and directions matching (not how cleanly executed)
 - energy: sharpness/hits/pauses matching (not raw motion amount)
