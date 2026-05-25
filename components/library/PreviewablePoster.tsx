@@ -1,23 +1,20 @@
 'use client';
 
-// Tap-to-hear preview. The thumbnail is ALWAYS visible — the play
-// button just streams the dance's audio so the user can recognize
-// the song. Nothing about the image changes.
+// Tap-to-hear preview. The thumbnail is ALWAYS visible — a real
+// <video> element sits BEHIND the thumbnail at full card size so
+// audio plays without ever swapping the image, and the browser
+// doesn't throttle it the way it does an offscreen / zero-size
+// player.
 //
-// Implementation notes:
+// Layout:
+//   button (relative, overflow-hidden)
+//     └ <video> absolute inset-0  — full card, but covered
+//     └ <img>   relative h-full   — thumbnail, paints on top
+//     └ play button overlay
 //
-//   - Uses a real <audio> element pointed at the dance's video URL.
-//     Browsers strip the video track and play the audio. This avoids
-//     the iOS Safari quirk where a <video> element parked offscreen
-//     (-9999px) silently refuses to play because it's "not visible."
-//
-//   - While the audio is playing we render an expanding `animate-ping`
-//     ring around the play button so the user can SEE the preview is
-//     alive even with the phone on silent.
-//
-//   - When a different card starts audio, every other instance stops
-//     cleanly (no overlap). Implemented via a window-level custom
-//     event.
+// While playing, an animated coral ring expands around the play
+// button (animate-ping) so the user can see the preview is alive
+// even with the phone on silent.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { displayNameFor, type DanceListItem } from '@/lib/dances/types';
@@ -47,7 +44,7 @@ export default function PreviewablePoster({
   rounded = '2xl',
 }: PreviewablePosterProps) {
   const [phase, setPhase] = useState<'idle' | 'loading' | 'playing'>('idle');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const loadingTimeoutRef = useRef<number | null>(null);
   const instanceIdRef = useRef<number>(0);
   if (instanceIdRef.current === 0) {
@@ -63,10 +60,10 @@ export default function PreviewablePoster({
   };
 
   const stopMyself = useCallback(() => {
-    const a = audioRef.current;
-    if (a) {
-      a.pause();
-      a.currentTime = 0;
+    const v = videoRef.current;
+    if (v) {
+      v.pause();
+      v.currentTime = 0;
     }
     clearLoadingWatchdog();
     setPhase('idle');
@@ -87,11 +84,11 @@ export default function PreviewablePoster({
     (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      const a = audioRef.current;
-      if (!dance.video_url || !a) return;
+      const v = videoRef.current;
+      if (!dance.video_url || !v) return;
 
       if (phase === 'playing' || phase === 'loading') {
-        a.pause();
+        v.pause();
         clearLoadingWatchdog();
         setPhase('idle');
         return;
@@ -100,16 +97,14 @@ export default function PreviewablePoster({
       window.dispatchEvent(
         new CustomEvent(PREVIEW_EVENT, { detail: { id: instanceIdRef.current } }),
       );
-      a.muted = false;
-      a.currentTime = 0;
-      const playPromise = a.play();
+      v.muted = false;
+      v.volume = 1;
+      v.currentTime = 0;
+      const playPromise = v.play();
       if (playPromise && typeof playPromise.then === 'function') {
         playPromise
           .then(() => {
-            // Safari sometimes resolves play() before firing the
-            // 'playing' event. Flip the UI to playing if currentTime
-            // is already advancing.
-            if (a.currentTime > 0 || !a.paused) {
+            if (v.currentTime > 0 || !v.paused) {
               clearLoadingWatchdog();
               setPhase('playing');
             }
@@ -120,14 +115,9 @@ export default function PreviewablePoster({
           });
       }
       setPhase('loading');
-      // Watchdog: if neither the play() promise nor the 'playing'
-      // event has put us into 'playing' within 8s, give up and reset
-      // so the user isn't staring at a forever-spinner.
       clearLoadingWatchdog();
       loadingTimeoutRef.current = window.setTimeout(() => {
-        if (a.paused) {
-          setPhase('idle');
-        }
+        if (v.paused) setPhase('idle');
       }, 8000);
     },
     [dance.video_url, phase],
@@ -137,11 +127,11 @@ export default function PreviewablePoster({
   useEffect(() => {
     return () => {
       clearLoadingWatchdog();
-      const a = audioRef.current;
-      if (a) {
-        a.pause();
-        a.removeAttribute('src');
-        a.load();
+      const v = videoRef.current;
+      if (v) {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
       }
     };
   }, []);
@@ -169,30 +159,39 @@ export default function PreviewablePoster({
       aria-pressed={phase === 'playing'}
       className={`relative block overflow-hidden ${radius} ${className}`}
     >
-      <DanceThumb dance={dance} rounded={rounded} className="h-full w-full" />
+      {/* Video lives underneath the thumbnail — full card size so the
+          browser doesn't throttle it (the offscreen / zero-size hack
+          made Safari refuse to play). Thumbnail sits on top via DOM
+          order. */}
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <audio
-        ref={audioRef}
+      <video
+        ref={videoRef}
         src={dance.video_url}
+        playsInline
         preload="metadata"
-        onEnded={() => {
-          clearLoadingWatchdog();
-          setPhase('idle');
-        }}
         onPlaying={() => {
           clearLoadingWatchdog();
           setPhase('playing');
         }}
+        onWaiting={() => setPhase((p) => (p === 'playing' ? 'loading' : p))}
+        onEnded={() => {
+          clearLoadingWatchdog();
+          setPhase('idle');
+        }}
         onPause={() => {
-          const a = audioRef.current;
-          if (a && !a.ended) {
+          const v = videoRef.current;
+          if (v && !v.ended) {
             setPhase((p) => (p === 'playing' ? 'idle' : p));
           }
         }}
+        className="absolute inset-0 h-full w-full object-cover"
       />
-      {/* The play button — wrapped in a relative span so the
-          animate-ping ring can sit BEHIND it without offsetting the
-          icon. */}
+      <DanceThumb
+        dance={dance}
+        rounded={rounded}
+        className="relative h-full w-full"
+      />
+      {/* Play button + animated ring. */}
       <span
         aria-hidden
         className="pointer-events-none absolute right-2 top-2 flex h-9 w-9 items-center justify-center"
