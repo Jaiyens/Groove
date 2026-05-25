@@ -12,6 +12,7 @@ import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
 import DanceScoreResult from '@/components/DanceScoreResult';
+import ScoringSideBySide from '@/components/results/ScoringSideBySide';
 import StartOverlay from '@/components/StartOverlay';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
@@ -306,62 +307,14 @@ export default function FinalTestPage({ params }: PageProps) {
               this takes 30–60 seconds
             </div>
           </div>
-          {/* Side-by-side: the user's just-recorded attempt next to
-              the reference, same TikTok-duet layout as the live
-              follow-along. Gives them something to watch instead of a
-              naked spinner. */}
+          {/* Synced side-by-side with reference audio. ScoringSideBySide
+              starts both videos on the same frame and unmutes the
+              reference so the user hears the song while they wait. */}
           {attemptLocalUrl && referenceUrl && (
-            <div className="relative flex w-full flex-1 items-center justify-center px-2">
-              <div className="flex h-full w-full max-h-[70vh] gap-px bg-black">
-                {/* YOU panel — 9:16 portrait frame, attempt is webcam
-                    16:9 cropped to portrait via object-cover. */}
-                <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
-                  <div
-                    className="relative w-full max-h-full overflow-hidden bg-zinc-950"
-                    style={{ aspectRatio: '9 / 16' }}
-                  >
-                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                    <video
-                      src={attemptLocalUrl}
-                      playsInline
-                      muted
-                      autoPlay
-                      loop
-                      className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
-                    />
-                    <span
-                      aria-hidden
-                      className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-coral ring-1 ring-white/10"
-                    >
-                      you
-                    </span>
-                  </div>
-                </div>
-                {/* REF panel — same 9:16 frame, reference fills naturally. */}
-                <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
-                  <div
-                    className="relative w-full max-h-full overflow-hidden bg-black"
-                    style={{ aspectRatio: '9 / 16' }}
-                  >
-                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                    <video
-                      src={referenceUrl}
-                      playsInline
-                      muted
-                      autoPlay
-                      loop
-                      className="absolute inset-0 h-full w-full object-cover"
-                    />
-                    <span
-                      aria-hidden
-                      className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white ring-1 ring-white/10"
-                    >
-                      ref
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <ScoringSideBySide
+              attemptVideoUrl={attemptLocalUrl}
+              referenceVideoUrl={referenceUrl}
+            />
           )}
           <div className="safe-bottom flex w-full items-center justify-center gap-3 px-4 pb-6 pt-3">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />

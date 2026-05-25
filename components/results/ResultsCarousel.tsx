@@ -64,9 +64,20 @@ export default function ResultsCarousel({ cards, onExit }: Props) {
   // Touch / mouse swipe handlers. Tracks horizontal delta only; if
   // the vertical delta dominates we ignore the gesture so vertical
   // scrolls inside a card aren't hijacked.
+  //
+  // Critically: if the pointerdown lands on an interactive control
+  // (link, button, anything with role=button), we DON'T track the
+  // gesture at all. Pointer capture from a half-completed swipe was
+  // eating link clicks on iOS Safari, leaving the user with only the
+  // <button> CTAs working and every <Link> dead.
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('a, button, [role="button"], input, textarea, select')) {
+        pointerStartRef.current = null;
+        return;
+      }
       pointerStartRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId };
       containerWidthRef.current = trackRef.current?.parentElement?.clientWidth ?? 0;
     },

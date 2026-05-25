@@ -2,13 +2,13 @@
 
 // Card 5 of the results carousel — the action stack.
 //
-// Three CTAs in a stable order so the user always knows where the
-// "do it again" button is:
-//   1. Try this dance again (primary, dark filled)
-//   2. Drill the weakest skill (secondary, only when one exists)
-//   3. Back to library (tertiary, text-only)
+// All three navigation CTAs use router.push directly instead of
+// <Link>. Pointer-capture from the carousel swipe handler used to
+// eat the link's native click on iOS, leaving the user staring at
+// dead navigation. Going through onClick + router.push fires through
+// React's synthetic event system, which never gets eaten.
 
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { SkillNode } from '@/lib/graph/types';
 
 interface Props {
@@ -24,6 +24,7 @@ export default function WhatsNextCard({
   weakestSkill,
   onRetry,
 }: Props) {
+  const router = useRouter();
   return (
     <section className="flex h-full flex-col">
       <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-ink/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-ink-muted">
@@ -47,27 +48,32 @@ export default function WhatsNextCard({
         </button>
 
         {weakestSkill && (
-          <Link
-            href={`/drill/${weakestSkill.id}?from=dance:${danceId}`}
+          <button
+            type="button"
+            onClick={() =>
+              router.push(`/drill/${weakestSkill.id}?from=dance:${danceId}`)
+            }
             className="block truncate rounded-full bg-cream-card px-5 py-4 text-center text-sm font-bold uppercase tracking-[0.18em] text-ink ring-1 ring-cream-deep active:scale-[0.99]"
           >
             drill {weakestSkill.name.toLowerCase()}
-          </Link>
+          </button>
         )}
 
-        <Link
-          href={`/dance/${danceId}`}
+        <button
+          type="button"
+          onClick={() => router.push(`/dance/${danceId}`)}
           className="rounded-full bg-cream-card px-5 py-4 text-center text-sm font-bold uppercase tracking-[0.18em] text-ink ring-1 ring-cream-deep active:scale-[0.99]"
         >
           back to the lesson
-        </Link>
+        </button>
 
-        <Link
-          href="/"
-          className="py-3 text-center text-sm text-ink-muted underline-offset-4 hover:text-ink hover:underline"
+        <button
+          type="button"
+          onClick={() => router.push('/')}
+          className="rounded-full bg-cream-card px-5 py-4 text-center text-sm font-bold uppercase tracking-[0.18em] text-ink ring-1 ring-cream-deep active:scale-[0.99]"
         >
           back to library
-        </Link>
+        </button>
       </div>
     </section>
   );

@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import FramingToast from '@/components/FramingToast';
 import LiveScore from '@/components/LiveScore';
@@ -272,12 +271,31 @@ export default function DrillPage({ params }: PageProps) {
           />
           <SkeletonOverlay landmarks={landmarks} videoRef={videoRef} mirror staleAfterMs={400} />
           {runState === 'running' && <FramingToast landmarks={landmarks} />}
+          {/* Live instructions while the drill is running — the
+              user kept saying "I don't know what to do." The drill
+              description sits in a low-opacity card at the top so
+              they can read it without it covering the skeleton. */}
+          {runState === 'running' && (
+            <div className="pointer-events-none absolute left-3 right-3 top-3 z-20 rounded-2xl bg-black/65 px-3 py-2 text-white backdrop-blur-sm">
+              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-coral">
+                what to do
+              </div>
+              <div className="mt-0.5 text-xs leading-snug">
+                {skill.drill_description}
+              </div>
+            </div>
+          )}
           {runState === 'preroll' && camState === 'granted' && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
-              <div className="text-text-muted text-xs uppercase tracking-widest">Drill starts in</div>
-              <div className="mt-2 text-[110px] font-extrabold leading-none tabular-nums text-white">
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 px-6 text-center backdrop-blur-sm">
+              <div className="text-text-muted text-xs uppercase tracking-widest">
+                {skill.name}
+              </div>
+              <div className="mt-3 text-[100px] font-extrabold leading-none tabular-nums text-white">
                 {prerollLeft}
               </div>
+              <p className="mt-4 max-w-xs text-sm leading-snug text-white/85">
+                {skill.drill_description}
+              </p>
             </div>
           )}
           {camState !== 'granted' && (
@@ -327,42 +345,52 @@ export default function DrillPage({ params }: PageProps) {
           )}
         </div>
       ) : (
-        <div className="flex-1 flex flex-col items-center justify-center px-6">
-          <div className="text-text-muted text-xs uppercase tracking-widest">Drill complete</div>
-          <div className={`mt-2 text-[88px] font-extrabold tabular-nums ${colorClass}`}>
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <div className="text-[10px] uppercase tracking-[0.22em] text-text-muted">
+            drill complete
+          </div>
+          <div className="mt-2 text-2xl font-bold uppercase tracking-[0.16em] text-white">
+            nice work
+          </div>
+          <div className={`mt-5 text-[88px] font-extrabold tabular-nums ${colorClass}`}>
             {Math.round(finalScore ?? 0)}
           </div>
-          <p className="text-center text-text-muted text-sm max-w-xs mt-2">
-            Mastery for <span className="text-white font-semibold">{skill.name}</span> updated.
+          <p className="mt-4 max-w-xs text-sm leading-snug text-white/80">
+            Mastery for <span className="text-white font-semibold">{skill.name}</span> bumped.
+            Keep stacking reps if it still feels rough.
           </p>
         </div>
       )}
 
       <div className="safe-bottom px-4 pt-3 pb-4 bg-black">
         {runState !== 'finished' ? (
-          <>
-            <div className="mb-3 flex items-end justify-between">
-              <LiveScore score={liveScore} label="effort" />
-              <div className="text-right max-w-[160px]">
-                <div className="text-[10px] uppercase tracking-widest text-text-muted">Focus</div>
-                <div className="text-xs text-text-muted line-clamp-2">{skill.description}</div>
-              </div>
+          <div className="mb-3 flex items-end justify-between">
+            <LiveScore score={liveScore} label="effort" />
+            <div className="text-right max-w-[160px]">
+              <div className="text-[10px] uppercase tracking-widest text-text-muted">Focus</div>
+              <div className="text-xs text-text-muted line-clamp-2">{skill.description}</div>
             </div>
-          </>
+          </div>
         ) : (
+          // All exits go through router.push so the click never gets
+          // eaten on iOS (the link version had this problem). Order:
+          // primary action first (re-attempt / return to whatever
+          // brought us here), then a Home shortcut.
           <div className="space-y-2">
-            <Link
-              href={returnTarget.href}
-              className="block w-full rounded-full bg-white py-4 text-center text-base font-bold text-black"
+            <button
+              type="button"
+              onClick={() => router.push(returnTarget.href)}
+              className="block w-full rounded-full bg-white py-4 text-center text-base font-bold text-black active:scale-[0.99]"
             >
               {returnTarget.label}
-            </Link>
-            <Link
-              href="/"
-              className="block w-full text-center text-sm text-text-muted py-2"
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/')}
+              className="block w-full rounded-full bg-white/10 py-3 text-center text-sm font-bold uppercase tracking-[0.18em] text-white ring-1 ring-white/15 active:scale-[0.99]"
             >
               Home
-            </Link>
+            </button>
           </div>
         )}
       </div>
