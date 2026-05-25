@@ -13,25 +13,39 @@ import { readFile } from 'node:fs/promises';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 
-const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine. You are measuring how closely Video 2 matches Video 1 — similarity to the reference, not the student's absolute dance skill.
+const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine. You are measuring how closely Video 2 matches Video 1 — similarity to the reference, not the student's absolute dance skill or execution polish.
 
-Use these calibration anchors for every score (timing, shape, energy, flow, overall):
-- 90–100: Moves match the reference's directions, body parts, and beats with clean execution. Minor stylistic differences are fine.
-- 75–89: Clearly the same dance. Most moves land on the right beats with the right body parts; some timing slips or reduced amplitude. A sincere, practiced attempt by a non-professional belongs here.
-- 60–74: Attempting the choreography but missing significant moves or beats. Overall shape recognizable, execution loose.
-- 40–59: Moving to the music but not actually doing the reference choreography. Motion present, alignment absent.
-- Below 40: Standing still, barely moving, flailing randomly, or doing something unrelated to the reference.
+SCORING PROCEDURE
+Decide the score by counting MOVE MATCHES, not by judging execution polish.
+1. Walk through the reference's choreography and identify the distinct moves (each hit, arm pattern, hip motion, body roll, etc.).
+2. For each move, check whether the student did roughly the same move, with roughly the right body part, in roughly the right direction, on roughly the right beat.
+3. Pick the tier based on what fraction of moves match:
 
-Score down ONLY for moves that don't match the reference: wrong direction, wrong body part, wrong beat, or skipped entirely. Personal style, slightly smaller amplitude, and minor execution imperfections are NOT errors. Do not default to 50–60 out of caution — if the student is clearly doing the same dance, the score belongs in 75–89 or higher.
+- 90–100: Nearly every move matches in direction, body part, and beat. Clean execution.
+- 75–89: Most moves match. Some timing slips, reduced amplitude, or soft execution. THIS IS THE DEFAULT for a student who clearly learned the dance and is performing it — start here and only move DOWN if moves are actually missing, wrong, or in the wrong order.
+- 60–74: Several moves missing or in the wrong direction. Overall shape still recognizable.
+- 40–59: Moving to the music but not actually doing the reference choreography. Wrong moves, wrong order, or improvising.
+- Below 40: Standing still, barely moving, flailing randomly, or doing something unrelated.
 
-Axes:
+EXECUTION QUALITY IS NOT AN ERROR
+Do NOT lower the score for any of these:
+- Weak, soft, or small motion when the correct move is happening
+- Slightly rushed or collapsed transitions when the correct move is being attempted
+- Imperfect posture, "lacking sharpness", "lacking distinct angles", "lacking crispness"
+- Hand or finger details (exact finger curls, hand shapes, gestures)
+- Amplitude differences (smaller version of the right move)
+- Stylistic choices that don't change which move is being done
+
+Only lower the score for STRUCTURAL mismatches: wrong direction, wrong body part, wrong beat, or skipped move entirely. A student who does all the right moves with soft execution scores in the 80s, NOT the 60s.
+
+Axes (all 0-100, all using the same anchors above):
 - timing: on-beat-ness of the moves
-- shape: body positions and directions matching the reference
-- energy: sharpness, hits, and pauses matching (not raw motion amount)
+- shape: body positions and directions matching the reference (not how cleanly executed)
+- energy: how well sharpness, hits, and pauses match the reference's energy profile (not raw motion amount)
 - flow: smoothness of transitions between moves
-- overall: holistic similarity using the same anchors
+- overall: holistic similarity
 
-Give the top 3 moments to fix and 1 thing they did well. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.
+Give the top 3 moments to fix and 1 thing they did well. Fixes may be polish-level (sharpness, extension, finger detail) — that's coaching, not a reason to lower the score. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.
 
 Return only this JSON:
 
