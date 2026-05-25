@@ -81,7 +81,18 @@ export default function CopyAlongPage({ params }: PageProps) {
   const userExtractorRef = useRef<PoseExtractor | null>(null);
   const userExtractorRafRef = useRef<number | null>(null);
 
-  const [rate, setRate] = useState(() => drillSpeed ?? 0.6);
+  // Normal mode starts at 0.5x and auto-progresses: 2 loops at each tier
+  // bumps to the next, until 1.0x. The user can override at any time by
+  // tapping a speed pill — once they do, auto-progression stops for the
+  // rest of the session and the chosen rate sticks.
+  const [rate, setRate] = useState(() => drillSpeed ?? 0.5);
+  const loopsAtCurrentRateRef = useRef(0);
+  const userChoseSpeedRef = useRef(false);
+  const handleSpeedChange = useCallback((next: number) => {
+    userChoseSpeedRef.current = true;
+    loopsAtCurrentRateRef.current = 0;
+    setRate(next);
+  }, []);
   const [camState, setCamState] = useState<CamState>('idle');
   const [refMissing, setRefMissing] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -235,7 +246,17 @@ export default function CopyAlongPage({ params }: PageProps) {
         v.currentTime = effectiveStartMs / 1000;
         if (isDrillMode) {
           drillLoopCountRef.current += 1;
+          return;
         }
+        // Auto speed progression in normal mode. Only ticks if the user
+        // hasn't manually overridden the speed. Two loops at 0.5x → 0.75x,
+        // two at 0.75x → 1.0x, then sticks at 1.0x.
+        if (userChoseSpeedRef.current) return;
+        loopsAtCurrentRateRef.current += 1;
+        if (loopsAtCurrentRateRef.current < 2) return;
+        loopsAtCurrentRateRef.current = 0;
+        if (rate < 0.75) setRate(0.75);
+        else if (rate < 1) setRate(1);
       }
     };
     const seekToStart = () => {
@@ -587,7 +608,7 @@ export default function CopyAlongPage({ params }: PageProps) {
           controls here. Duration/speed read-out is dropped — the
           speed pill already shows the active rate. */}
       <div className="safe-bottom relative z-30 flex h-[88px] items-center gap-3 bg-black px-4">
-        <SpeedToggle rate={rate} onChange={setRate} options={SPEED_OPTIONS} />
+        <SpeedToggle rate={rate} onChange={handleSpeedChange} options={SPEED_OPTIONS} />
         <button
           type="button"
           onClick={handleToggleMirror}

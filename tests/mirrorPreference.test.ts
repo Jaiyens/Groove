@@ -82,8 +82,8 @@ describe('getMirrorEnabled', () => {
     (globalThis as { localStorage?: { clear: () => void } }).localStorage?.clear();
   });
 
-  it('defaults to true when no value is stored (first-run user)', () => {
-    assert.equal(getMirrorEnabled(), true);
+  it('defaults to false when no value is stored (first-run user)', () => {
+    assert.equal(getMirrorEnabled(), false);
   });
 
   it('returns true when the stored value is the string "true"', () => {
@@ -102,17 +102,13 @@ describe('getMirrorEnabled', () => {
     assert.equal(getMirrorEnabled(), false);
   });
 
-  it('treats malformed values as default-on (forgiving, not strict)', () => {
-    // The spec frames default-on as the right answer for a first-run
-    // user; a corrupted localStorage value is the same situation from
-    // the user's perspective. Don't make them stare at an unmirrored
-    // reference because their storage got mangled.
+  it('treats any non-"true" stored value as false (strict, not forgiving)', () => {
     (globalThis as { localStorage: Storage }).localStorage.setItem(
       MIRROR_PREFERENCE_STORAGE_KEY,
       'YES',
     );
     assert.equal(getMirrorEnabled(), false, 'anything other than "true" reads as false');
-    // Spec: `v === null ? true : v === 'true'`. Pin the rule explicitly.
+    // Spec: `v === null ? false : v === 'true'`. Pin the rule explicitly.
   });
 });
 

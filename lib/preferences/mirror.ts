@@ -17,24 +17,23 @@
 // SSR safety: `getMirrorEnabled` is called during component initializers
 // (useState(() => getMirrorEnabled())). It must not throw and must not
 // touch `window` or `localStorage` directly when running on the server.
-// Default ON because almost every dance student wants the reference
-// mirrored — the live front-camera attempt is naturally mirrored, so
-// flipping the reference makes left/right correspondence direct.
+// Default OFF — users see the reference in its natural orientation;
+// the toggle lets them mirror it if that's easier to follow.
 
 const STORAGE_KEY = 'groov_mirror_enabled';
 const EVENT_NAME = 'groov:mirror-changed';
 
-// Returns the current persisted preference, or true on first run / SSR.
+// Returns the current persisted preference, or false on first run / SSR.
 // Cheap, synchronous — safe to call from render.
 export function getMirrorEnabled(): boolean {
-  if (typeof localStorage === 'undefined') return true;
+  if (typeof localStorage === 'undefined') return false;
   try {
     const v = localStorage.getItem(STORAGE_KEY);
-    return v === null ? true : v === 'true';
+    return v === null ? false : v === 'true';
   } catch {
     // localStorage can throw in private-mode iOS Safari or when storage
-    // is disabled. Treat the failure as "no preference set" → default on.
-    return true;
+    // is disabled. Treat the failure as "no preference set" → default off.
+    return false;
   }
 }
 
