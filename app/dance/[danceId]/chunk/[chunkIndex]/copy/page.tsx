@@ -124,13 +124,16 @@ export default function CopyAlongPage({ params }: PageProps) {
   // remounts the page. (The framing-check gate that used to seed this
   // to true was removed in spec.md §Fix 2 — the user is now told to
   // stand back on the setup screen instead.)
-  // Auto-start when the user already pressed Start on a previous screen
-  // — that gesture chain shouldn't be broken by an extra Start tap.
-  //   - Drill mode: came from results screen
-  //   - chunkIndex > 0: came from chunk N-1's "Next" CTA
-  // Chunk 0 (first chunk) keeps the StartOverlay so the user can read
-  // the section label before committing.
-  const [started, setStarted] = useState(isDrillMode || chunkIndex > 0);
+  //
+  // Overlay rules:
+  //   - Drill mode skips the overlay entirely (user came from results
+  //     and tapped a trouble spot — that's gesture enough).
+  //   - Chunk 0 shows the press-start variant so the user can read the
+  //     section label before committing.
+  //   - Chunks 1+ skip the start button and auto-fire the 3-2-1
+  //     countdown on mount, since tapping "Next" on the prior chunk
+  //     was the user gesture.
+  const [started, setStarted] = useState(isDrillMode);
 
   // Bail if dance / chunk vanish.
   useEffect(() => {
@@ -723,13 +726,16 @@ export default function CopyAlongPage({ params }: PageProps) {
           top of the duet so the user sees the layout behind it.
           Drill mode: skip the gate — the user just came from the Mode B
           results screen and tapping a trouble spot is its own
-          "I'm ready" gesture. */}
-      {!started && !isDrillMode && chunkIndex === 0 && (
+          "I'm ready" gesture. Chunks 1+ skip the start button (Next on
+          the previous chunk was the gesture) and go straight to the
+          3-2-1 countdown. */}
+      {!started && !isDrillMode && (
         <StartOverlay
           chunkNumber={chunkIndex + 1}
           totalChunks={chunks.length}
           chunkLabel={chunk.label ?? `section ${chunkIndex + 1}`}
           subtitle="watch first, then copy"
+          skipIdle={chunkIndex > 0}
           onStart={handleOverlayStart}
           onGo={handleOverlayGo}
         />
