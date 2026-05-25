@@ -291,7 +291,14 @@ async function uploadAndScore(blob: Blob, referenceUrl: string | null): Promise<
   // Direct-to-blob upload from the browser. Bypasses Vercel's 4.5MB body
   // limit and keeps the serverless function from spinning while bytes
   // transfer. The token route at /api/upload-token signs the request.
-  const contentType = blob.type || 'video/webm';
+  //
+  // Strip the codec suffix from blob.type before passing to upload() —
+  // MediaRecorder emits "video/webm;codecs=vp9" but Vercel Blob's
+  // allowedContentTypes check is exact-string and rejects the suffix.
+  // The codec is preserved inside the bytes themselves, so storage and
+  // downstream transcoding both work fine on the base MIME.
+  const rawType = blob.type || 'video/webm';
+  const contentType = rawType.split(';')[0]!.trim() || 'video/webm';
   const fileName = `attempts/${crypto.randomUUID()}.webm`;
   const uploaded = await upload(fileName, blob, {
     access: 'public',
