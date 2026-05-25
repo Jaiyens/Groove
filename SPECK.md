@@ -1,246 +1,181 @@
-# spec.md
+# OVERNIGHT_SPEC.md — Groove, two-track run
 
-# Groove scoring + callout simplification
+You are running unattended for ~8 hours. Read this whole file before you start.
 
-## Context
+You're working on Groove (Next.js, TypeScript, Tailwind, Supabase, deployed to Vercel at `groove-eight.vercel.app`). The user is asleep. There is no one to answer questions. Behave accordingly.
 
-After hours of iteration we shipped a corrected Gemini prompt pipeline (commits d6c03f8, 984eee7, aba9542 on the `score-restoration` branch). The current state:
+---
 
-- Composite generation works (browser produces a side-by-side WebM)
-- Side-by-side prompt with calibration anchors and JSON schema is in place
-- Motion-onset detection works (logs show correct onset values)
-- The Gemini API rejects our composite with `400 INVALID_ARGUMENT` because we send `video/webm;codecs=vp9,opus` and the standard `generateContent` endpoint only accepts `video/mp4`, `video/mpeg`, `video/quicktime`, `video/avi`, `video/x-flv`. WebM is not on the official supported list.
-- The motion-onset value never lands meaningfully in Gemini's scoring — when Gemini does respond (via legacy fallback) it still grades the camera walk-back at the start
-- Live MediaPipe + DTW callouts during the attempt are inconsistent and not worth more debugging
+## Operating rules (non-negotiable)
 
-This spec consolidates the three remaining fixes. All three ship together in a single coherent change.
+1. **Work on a fresh feature branch off `main`.** Name it `overnight/<YYYY-MM-DD>-results-teaching-surface`. Never push to `main`. Never force-push. When you finish, leave the branch local and unpushed — the user reviews before pushing.
 
-## Goal
+2. **One commit per logical task.** Conventional commits (`feat:`, `fix:`, `refactor:`, `chore:`, `docs:`). The user must be able to revert any single commit cleanly in the morning. No 300-file mega-commits.
 
-Make scoring work end-to-end with a sincere attempt landing 70-85, and make the live callouts feel responsive without depending on real-time scoring.
+3. **Verification loop is mandatory.** After every code change, before committing:
+   - `pnpm typecheck` (or `npx tsc --noEmit` if no script)
+   - `pnpm lint`
+   - `pnpm test` if a test exists for the touched file or its imports
+   - `pnpm build` — must succeed at least once per track before that track is "done"
 
-## Non-negotiables
+   If any of these fail, you fix them before moving on. You do **not** commit broken code and call it done. You do **not** use `// @ts-ignore` or `// eslint-disable` to make errors go away — fix the underlying issue. The one exception is genuine third-party type bugs, which must be commented with `// LIBRARY BUG:` and logged in `OVERNIGHT_STATUS.md`.
 
-- A sincere ~7s attempt MUST return a score in the 70-85 range
-- The Gemini composite call MUST succeed (no more 400 INVALID_ARGUMENT)
-- The first 1.5s of chunk 1 MUST be excluded from scoring (camera walk-back)
-- Chunks 2+ MUST be scored from t=0 (no exclusion — the dancing is continuous)
-- Live callouts MUST cycle through GROOVY / PERFECT / GOOD on a beat-driven cadence (every 2-3 beats) regardless of real scoring
-- Live callouts MUST NOT repeat the same word twice in a row
+4. **Write `OVERNIGHT_STATUS.md` continuously.** Update it after every task. Sections:
+   - **Shipped** — what landed, with commit SHA and one-line description
+   - **Skipped** — tasks you decided not to do and why
+   - **Blocked** — anything you couldn't figure out, with the specific question for the user
+   - **Surprises** — anywhere you deviated from this spec and why
+   - **Untested** — anything that compiled but you couldn't actually verify end-to-end
+   - **Morning checklist** — the 3-5 things the user should check first when they wake up
 
-## Change 1 — Transcode composite WebM to MP4 before Gemini
+5. **Write `DECISIONS.md` for any ambiguous call.** Format: question, what I chose, why, what the alternative was, how to undo. Use this when the spec is silent — don't freeze, don't ask, decide and log it.
 
-### The bug
+6. **Tiebreaker for ambiguity.** When the spec doesn't tell you what to do, default to: (a) the option that makes the results screen *more pedagogical* (teaches the user something) rather than *more decorative*, (b) the option that's reversible over the one that's a one-way door, (c) the option that ships a working slice over the one that ships a half-built grander version.
 
-Browser MediaRecorder outputs `video/webm;codecs=vp9,opus`. Gemini's standard inline-data video API does not accept WebM on `gemini-2.5-flash`. We confirmed this via direct curl probe (`__debug.errorBody` returns `INVALID_ARGUMENT` with the WebM payload but succeeds with an ffmpeg-generated MP4 in Claude Code's verification probe #3).
+7. **Persistence.** Your context will auto-compact as you approach the limit — that's expected, keep working. Do not stop early due to token budget concerns. Before the context window refreshes, save your current progress and state to `OVERNIGHT_STATUS.md` and `DECISIONS.md` so the next context can pick up cleanly. Keep going until either every task in TRACK A is done or you hit a real, logged blocker on every remaining task.
 
-### The fix
+8. **No scope invention.** Everything you do must trace back to a task in this spec. If you find a bug or a tempting refactor not in scope, write it to `FOLLOWUPS.md` and move on. The single biggest failure mode for overnight runs is the 4am refactor spree. Don't.
 
-In `app/api/score-gemini-composite/route.ts`, transcode the inbound base64 WebM to MP4/H.264 before calling Gemini.
+---
 
-Implementation steps:
+## LOCKED — do not touch
 
-1. Add dependency if not already present:
-   - `fluent-ffmpeg` + `@ffmpeg-installer/ffmpeg` (the second package bundles the ffmpeg binary so this works on Vercel and locally without requiring system-installed ffmpeg)
-   - If a different ffmpeg setup already exists in the project, use that instead
+These files/directories are off-limits this run. Touching them is a hard fail.
 
-2. In the route handler, BEFORE the Gemini call:
-   - Detect if `compositeMimeType` starts with `video/webm`
-   - If yes, transcode:
-     - Decode `compositeVideoBase64` to a Buffer
-     - Write to `os.tmpdir() + crypto.randomUUID() + '.webm'`
-     - Run ffmpeg with these settings:
-       - Video codec: `libx264`
-       - Pixel format: `yuv420p` (broad compatibility, required by many decoders)
-       - Audio: `-an` (strip audio entirely — Gemini doesn't need it for dance scoring, saves bytes, removes a failure mode)
-       - Preset: `ultrafast` (latency matters more than file size here)
-       - Movflags: `+faststart` (so the file is parseable without seeking, which Gemini may require)
-     - Read the MP4 output back as a Buffer, re-encode to base64
-     - Delete both temp files
-   - Replace `compositeVideoBase64` with the new MP4 base64
-   - Replace `compositeMimeType` with `video/mp4`
+- `lib/scoring/**` — scoring pipeline
+- `lib/pose/**` — pose extraction
+- `app/api/scoring/**`, `app/api/score/**`, any scoring API routes
+- `app/debug/**` — the eval harness from the last overnight run. Untouchable.
+- `lib/mirror*` — mirror state lib
+- `worker/**` and anything Supabase server-side ingest related
+- `lib/dances/fixtures.ts` and the knowledge graph JSON file itself (you can READ it, never WRITE it)
 
-3. Wrap the transcode in try/catch. On failure, log via `[composite-route-error]` with `errorMessage="webm to mp4 transcode failed: <reason>"` and return the existing `__debug` structure with `reason: 'transcode_failed'`.
+If you genuinely need to change something locked to ship a task, **stop that task**, log it to `BLOCKERS.md`, move to the next task. Do not work around the lock.
 
-4. Add log lines:
-   - Before: `[composite-route-transcode] start mime=<x> bytes=<n>`
-   - After: `[composite-route-transcode] done newBytes=<n> elapsedMs=<n>`
+---
 
-5. If `compositeMimeType` is already `video/mp4` or any other MP4-compatible MIME, skip the transcode and call Gemini directly. (Future-proofing for when composite.ts might output MP4 natively.)
+## In scope
 
-### Verification
+- The results screen (post-attempt) — full redesign as a teaching surface
+- New "drill" route(s) and the loop between results → drill → re-attempt
+- Wiring the knowledge graph into the results screen and drill recommendations
+- UI polish on library, dance picker, framing screen (parallel safe track)
+- Any new shared components needed for the above (cards, score visualizations, skill chips, progress bars)
+- `lib/graph/**` — readers, selectors, and recommender logic that *consume* the graph (you can write to this dir; you cannot modify the graph data file itself)
 
-After implementation, run:
+---
 
-```bash
-ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=10 -c:v libvpx -b:v 500k -an -y /tmp/test.webm
-B64=$(base64 -i /tmp/test.webm)
-curl -X POST http://localhost:3000/api/score-gemini-composite \
-  -H "Content-Type: application/json" \
-  -d "{\"compositeVideoBase64\":\"$B64\",\"compositeMimeType\":\"video/webm\",\"motionOnsetSec\":0.1,\"legsVisible\":true,\"mirror\":false}"
-```
+# TRACK A — Results screen as a teaching surface (primary)
 
-Expected: HTTP 200 with a valid `GeminiSpecScore` response. If Gemini returns a real score on a test pattern WebM that gets transcoded to MP4, the fix is working.
+This is the priority. If you finish nothing else, finish this.
 
-## Change 2 — Replace motion-onset trimming with hardcoded chunk-1 offset
+## The problem
 
-### The bug
+Today, after a user dances, they see a score and a per-move breakdown. It's a report card. Daniel and the user both want it to be a **teaching surface** — the user should leave the results screen knowing (a) what skills they're weak at *by name from the knowledge graph*, (b) what specific drill will fix the weakest one, and (c) why this matters for the next dance they'll try. The drill loop has to actually fire — tap weak move → land in a 60–90s drill → finish drill → return to a re-attempt CTA.
 
-Motion onset detection technically works (logs show `onsetSec: 0.16` etc.) but the trimming-then-passing-to-Gemini path is fragile, and even when it works Gemini still grades content before the onset. The user's walk-back from camera at the start of chunk 1 keeps tanking scores.
+## Phase 1 — Design spec first (do this BEFORE any UI code)
 
-Additionally, this is a chunk-1-specific problem. Chunks 2+ start with the user already in dancing position — there's no walk-back to skip.
+Create `docs/results-screen-spec.md`. In it:
 
-### The fix
+1. Read the current results screen end-to-end. List every piece of data it currently has access to (overall score, per-segment scores, motion onsets, mirror state, attempt video URL if any, reference video URL, dance ID, chunk index, etc.). Use grep + actual file reads — don't guess.
 
-Stop trimming based on motion onset. Hardcode a fixed offset that applies only to chunk 1.
+2. Read the knowledge graph JSON. List the node shape, edge shape, and what fields exist on a node (id, name, layer, prerequisites, drills, etc.). You're going to reference this constantly.
 
-Implementation steps:
+3. Read the dance fixtures. Understand how a dance maps to skill graph nodes. If the mapping doesn't exist yet, that's a real finding — log it as the first blocker for Phase 2 and propose the mapping shape in the spec.
 
-1. In `lib/scoring/gemini/client.ts` `scoreWithGemini`:
-   - Remove the motion-onset-based trim logic for the user attempt video
-   - Add a new constant near the top of the file:
-     ```ts
-     const CHUNK_1_SCORING_OFFSET_SEC = 1.5;
-     ```
-   - If `chunkIndex === 0` (first chunk, zero-indexed), trim the user attempt video to start at `CHUNK_1_SCORING_OFFSET_SEC` instead of motion onset
-   - For all other chunks (`chunkIndex >= 1`), do NOT trim — pass the video to composite generation as-is from t=0
-
-2. The reference video trimming logic stays as-is (reference videos don't have walk-back issues — they're pro footage that starts on the beat).
-
-3. In `composite.ts`, no changes needed — it just composites whatever bytes it receives.
-
-4. In the route's `buildCompositePrompt`, REMOVE the motion onset section entirely:
-   - Delete the `{motionOnsetSec}s` interpolation
-   - Delete the "Ignore everything in the user's video before that timestamp" paragraph
-   - The composite is now pre-trimmed (for chunk 1) or untrimmed (for chunks 2+), so the prompt should simply say:
-     ```
-     Grade the entire user video against the entire reference video.
-     Both have been pre-trimmed to align with each other.
-     ```
-
-5. The motion-onset DETECTION code in `client.ts` lines 265-389 stays in place. We may want it for debug capture or future use. Just stop FEEDING it into the scoring pipeline.
-
-6. Update or delete the `motionOnsetSec` parameter from the request body / route. The route should no longer require it. If kept for backward compat, ignore the value.
-
-### Verification
-
-- For chunk 1: composite generation should produce a video where the user's first 1.5s is missing, and the composite is correctly aligned with the (also trimmed) reference video.
-- For chunks 2+: composite generation should use the full attempt video.
-- The prompt sent to Gemini should NOT mention motion onset anywhere.
-
-## Change 3 — Hardcoded live callouts on beat cadence
-
-### The bug
-
-Live MediaPipe + DTW scoring during the attempt is inconsistent — `createCalloutEngine` either shows nothing, shows the same callout repeatedly, or shows "GROOVY" regardless of what the user is doing. The infrastructure exists but the signal is unreliable, and we've sunk hours trying to fix it.
-
-### The fix
-
-Bypass real-time scoring for the live callouts. Drive them purely off the beat clock with a randomized cycle through three positive words.
-
-Implementation steps:
-
-1. Find where live callouts are dispatched. This is likely in:
-   - `app/dance/[danceId]/chunk/[chunkIndex]/test/page.tsx`, OR
-   - `lib/scoring/calloutEngine.ts` (or wherever `createCalloutEngine` lives)
-
-2. Replace the existing real-time callout logic with this:
-   ```ts
-   const CALLOUT_WORDS = ['GROOVY', 'PERFECT', 'GOOD'] as const;
-   const BEATS_PER_CALLOUT_MIN = 2;
-   const BEATS_PER_CALLOUT_MAX = 3;
-   
-   function makeCalloutCycler() {
-     let lastWord: string | null = null;
-     let beatsUntilNext = 0;
-     
-     return function onBeat(): string | null {
-       if (beatsUntilNext > 0) {
-         beatsUntilNext -= 1;
-         return null;
-       }
-       
-       // Pick a word that's not the same as the last one
-       const candidates = CALLOUT_WORDS.filter(w => w !== lastWord);
-       const word = candidates[Math.floor(Math.random() * candidates.length)];
-       
-       lastWord = word;
-       beatsUntilNext = BEATS_PER_CALLOUT_MIN + Math.floor(
-         Math.random() * (BEATS_PER_CALLOUT_MAX - BEATS_PER_CALLOUT_MIN + 1)
-       ) - 1; // -1 because this beat counts as the display beat
-       
-       return word;
-     };
-   }
-   ```
-
-3. Wire `makeCalloutCycler()` into the `BeatTracker`'s `onBeat` callback (or wherever beat events fire during the test page). When the cycler returns a word, dispatch it to whatever component shows the callout overlay.
-
-4. The cycler maintains state:
-   - `lastWord`: ensures no two callouts in a row are the same word
-   - `beatsUntilNext`: skips 2-3 beats between displays, randomized
-   - Words are chosen randomly from the candidates set
-
-5. Visual treatment: keep whatever animation/timing the existing callout UI uses. Just change the SOURCE of the word from "DTW score → tier" to "cycler → randomized word."
-
-6. REMOVE the existing real-time DTW scoring path for callouts. The DTW score computation can stay (it's used elsewhere for fallback scoring), but its output should no longer drive the live callout UI.
-
-### Verification
-
-During a test attempt:
-- Callout overlay shows GROOVY, PERFECT, or GOOD
-- Each callout appears every 2-3 beats, not on every beat
-- The same word never appears twice in a row
-- The user can stand completely still and still see positive callouts (this is the trade-off — we accept it because the post-attempt Gemini score is what actually matters)
-
-## What NOT to touch
-
-- The Gemini prompt's side-by-side framing, calibration anchors, JSON schema, and tier definitions. All correct, all working in probe #3.
-- `composite.ts` — the WebM output stays WebM at the composite layer. Only the route transcodes to MP4 before Gemini.
-- The MediaPipe fallback scoring path. We want Gemini to succeed; we want the fallback as a safety net.
-- The debug capture infrastructure.
-- The motion-onset detection code itself (we just stop USING it for scoring).
-- The reference video trimming (only attempt trimming changes).
-- The 5-field response schema (`score`, `tier`, `did_well`, `work_on`, `visibility_notes`).
-- Any UI in `ResultsCard.tsx` or downstream.
-
-## Implementation order
-
-The changes are independent but should ship together. Recommended order within a single commit:
-
-1. Change 1 first (transcode) — this is the actual unlock. Without it, nothing else matters.
-2. Change 2 second (chunk-1 offset + remove motion-onset from prompt) — once transcode works, this makes the scoring not get tanked.
-3. Change 3 last (hardcoded callouts) — pure UX, doesn't affect scoring at all.
-
-## Validation flow
-
-After all three changes commit on the `score-restoration` branch:
-
-1. Restart dev server (`Ctrl+C`, then `npm run dev`)
-2. Run the curl verification from Change 1 — expect HTTP 200 with a real score
-3. Open the app in the browser
-4. Do a sincere ~7s attempt on chunk 1
-5. During the attempt: verify callouts cycle through GROOVY/PERFECT/GOOD every 2-3 beats, no repeats
-6. After the attempt: verify score lands 70-85
-7. Repeat for chunk 2 (if available) — verify no first-1.5s trim happens, scoring still works
-8. If any step fails, capture the `__debug` from the network tab response and report back
-
-## Failure modes to report
-
-- Score below 60 on a sincere chunk 1 attempt → calibration anchors not landing despite working transcode
-- Score above 95 on a flailing attempt → anchors too lenient
-- HTTP 200 from composite endpoint but score is suspiciously low → check that chunk-1 offset is being applied
-- Callouts not cycling → beat clock not firing, or cycler not wired up
-- Same callout twice in a row → `lastWord` filter not working
-- 502 still firing on composite endpoint → transcode failed silently; check `[composite-route-transcode]` logs for completion line
-- New error type from Gemini in `__debug.errorBody` → MP4 still has something Gemini doesn't like (codec params, container, duration). Report errorBody contents.
-
-## Deliverables
-
-- Updated `app/api/score-gemini-composite/route.ts` with transcode logic
-- Updated `lib/scoring/gemini/client.ts` with chunk-1 offset logic and removed motion-onset path
-- Updated `buildCompositePrompt` in `lib/scoring/gemini/prompt.ts` (or wherever it lives) with motion-onset section removed
-- Updated `BeatTracker` / `createCalloutEngine` / test page (wherever live callouts dispatch) with the hardcoded cycler
-- Single commit on `score-restoration` branch with message: "feat(score-restoration): mp4 transcode + chunk-1 offset + hardcoded callouts"
-- Status doc at `docs/score-restoration-status.md` updated to reflect this is the third major iteration on the score-restoration branch
-- Do not push
+4. Design the results screen as five stacked sections, top-to-bottom on mobile:
+   - **Header** — score, dance title, one-line "what this means" (e.g., "Solid — your isolations landed, footwork drifted")
+   - **The skill breakdown** — not "Move 1: 72%" but "Hip isolation: 78% · Travel step on 4: 54% · Arm wave decay: 81%" — *skill names from the graph*, not move indices
+   - **The teach card** — the single weakest skill, expanded: what it is, why it matters, what dances unlock when you nail it, one-tap CTA to drill it
+   - **Other skills to work on** — 2 more weak skills as smaller cards
+   - **Next step** — re-attempt this dance / try a recommended next dance / view library
+
+   Define for each section: what data feeds it, what graph fields it pulls from, what happens on tap, the mobile dimensions, the visual hierarchy, what makes it pedagogical vs decorative. Keep it text + ASCII layout — don't try to design pixel-perfect.
+
+5. Define the drill route. URL shape, what's on the page, how it loops back. A drill is: a short looping reference clip of the weak skill in isolation, the user mimics it, optional re-score on the drill itself, then a CTA back to re-attempt the full dance.
+
+6. Commit this spec as the first commit of the run: `docs(results): design spec for teaching surface`.
+
+## Phase 2 — Graph + recommender layer
+
+In `lib/graph/`:
+
+1. `loader.ts` — typed reader of the graph JSON, with Zod validation. If it exists, extend it; don't replace it.
+2. `recommender.ts` — given a results object (overall + per-skill scores) and the graph, return `{ weakestSkill, nextTwoWeak, recommendedDance, drillCandidates }`. Pure function, no UI. Unit tests in `lib/graph/__tests__/recommender.test.ts` covering: all-strong case, all-weak case, mixed case, missing skill mapping (graceful fallback).
+3. `dance-skill-map.ts` — if the mapping from dance→skill-nodes doesn't exist yet, create a lightweight one. Start with the 3 reference dances mapping to their primary skill nodes. Make it a typed lookup, not hardcoded JSX.
+
+Commit each file separately. Verify tests pass before committing.
+
+## Phase 3 — Results screen rebuild
+
+Build the five sections from the spec. Components go in `components/results/` (or wherever existing results components live — match the convention). Each section is its own component, composable, mobile-first. Tailwind only — no new dependencies for this.
+
+Order of build:
+1. Header
+2. Skill breakdown (consumes recommender output)
+3. Teach card (the big one — this is the teaching surface)
+4. Other weak skills
+5. Next step CTA row
+
+After each section: typecheck + lint + commit. After all five: build + manual sanity (run dev server, hit the route, screenshot the page state into `docs/screenshots/results-after.png` if possible via Playwright; if Playwright isn't installed, skip the screenshot and note it in STATUS).
+
+## Phase 4 — Drill route + loop
+
+1. Add the drill route — `app/dance/[danceId]/drill/[skillId]/page.tsx` (or match existing route patterns).
+2. The drill page: looping reference clip of the skill, the user records or mimics, a "done" CTA back to re-attempt. If the looping reference doesn't exist as data yet, the drill page uses a placeholder + a clear "drill content coming" state — do not block on missing video assets. Log the missing assets to `FOLLOWUPS.md`.
+3. Wire the results screen's "drill this" CTA to the drill route.
+4. Wire the drill's "done, try again" CTA to the dance's Mode B re-attempt.
+
+The point isn't perfect drill content tonight — the point is the **loop closes**. Tap weak move → drill route loads → tap done → back to re-attempt. That whole sequence has to work end-to-end before this track is "done."
+
+## Phase 5 — Verify the full loop
+
+Spin up the dev server. Walk the path: library → pick a dance → Mode A → Mode B → score → results (new) → tap weakest → drill → done → re-attempt. Document every break in `OVERNIGHT_STATUS.md` under Untested or Blocked. Don't fake "works" — if a step is broken and you can't fix it cleanly, log it.
+
+---
+
+# TRACK B — Safe UI polish (parallel, lower priority)
+
+Only touch this once TRACK A Phase 3 is complete. Do not interleave TRACK B with TRACK A's results-screen build — context-switching wastes the run.
+
+Scope: library screen, dance picker screen, framing screen. **Not** the results screen (that's TRACK A's territory) and **not** Mode A or Mode B (those are scoring-adjacent — locked).
+
+For each screen, in this order:
+1. Read the screen file. Audit for: spacing inconsistencies (mixing `gap-2`, `gap-3`, `gap-4` arbitrarily), color tokens not matching design tokens, ad-hoc font sizes, missing hover/active states on tappable elements, missing accessibility (aria-labels on icon buttons, focus rings), broken responsive at <380px width.
+2. Write findings to `docs/polish-audit.md` as a list with severity (HIGH/MED/LOW).
+3. Apply only HIGH and MED fixes. Skip LOW. One commit per screen.
+4. Do not refactor structure. Do not introduce new components. Do not change behavior. Visual fixes only.
+
+Hard stop on TRACK B if any of: (a) a fix would require touching a locked file, (b) a fix would change behavior, (c) you've spent more than 90 minutes total on TRACK B. Log the cutoff in STATUS and move on.
+
+---
+
+## Definition of done for the run
+
+You can stop and consider the run successful if:
+
+- ✅ `docs/results-screen-spec.md` exists and is real (not a stub).
+- ✅ `lib/graph/recommender.ts` exists, is tested, tests pass.
+- ✅ Results screen has the five sections, builds cleanly, renders on the dev server.
+- ✅ Drill route exists, results→drill→re-attempt loop closes.
+- ✅ `OVERNIGHT_STATUS.md` is complete and honest — including everything that didn't work.
+- ✅ All commits are on the feature branch, none pushed.
+- ✅ `pnpm build` succeeds at HEAD of the branch.
+
+TRACK B is a bonus. TRACK A is the run.
+
+---
+
+## How to stop
+
+When you're done (or genuinely stuck on every remaining task):
+
+1. Final `pnpm typecheck && pnpm lint && pnpm build`. If any fail, fix or revert until the branch builds clean.
+2. Final commit: `chore: overnight run complete — see OVERNIGHT_STATUS.md`.
+3. Print to console: branch name, commit count, status doc path, the 3-5 things the user should check first. Then end.
+
+Do not push. Do not open a PR. The user does that.
+
+---
+
+Begin.
