@@ -32,6 +32,7 @@ import { attachStream } from '@/lib/pose/cameraAttach';
 import { isFramingCalibrated } from '@/lib/pose/framingCalibration';
 import { PoseExtractor } from '@/lib/pose/poseExtractor';
 import { landmarkAt, useReferencePose } from '@/lib/pose/referencePose';
+import { markCameraGranted } from '@/lib/preferences/cameraGrant';
 import {
   getMirrorEnabled,
   onMirrorChanged,
@@ -198,7 +199,9 @@ export default function CopyAlongPage({ params }: PageProps) {
         return;
       }
       const playing = await attachStream(v, stream);
-      setCamState(playing ? 'granted' : 'needs_tap');
+      const nextState: CamState = playing ? 'granted' : 'needs_tap';
+      setCamState(nextState);
+      if (nextState === 'granted') markCameraGranted();
     } catch (err) {
       const name = (err as { name?: string } | null)?.name;
       if (name === 'NotAllowedError' || name === 'SecurityError') {
@@ -225,8 +228,16 @@ export default function CopyAlongPage({ params }: PageProps) {
   // itself, since the user never tapped the StartOverlay's start
   // button. Browsers remember the framing-check page's getUserMedia
   // grant for this origin so the call doesn't re-prompt.
+  //
+  // Also auto-start when the camera was already granted earlier in
+  // this session — there's no reason to make the user re-confirm on
+  // every chunk. The browser silently re-attaches.
   useEffect(() => {
-    if (started && camState === 'idle') {
+    if (camState !== 'idle') return;
+    const grantedThisSession =
+      typeof window !== 'undefined' &&
+      window.sessionStorage.getItem('groove.camera-granted.v1') === '1';
+    if (started || grantedThisSession) {
       void startCamera();
     }
     // Run-once intent; subsequent state changes are handled elsewhere.
@@ -450,23 +461,46 @@ export default function CopyAlongPage({ params }: PageProps) {
           back affordance (Apple HIG min tap target). Spacer on the
           right keeps the title visually centred without shifting. */}
       <header className="safe-top relative z-30 flex h-14 items-center gap-3 px-4">
+        {/* Back to the previous chunk (or the lesson overview when we're
+            on chunk 1). Going all the way back to the lesson from chunk N
+            >0 makes the user re-tap their way back in — usually they
+            want to re-watch the prior chunk. */}
         <button
           type="button"
-          onClick={() => router.push(`/dance/${params.danceId}`)}
-          aria-label="Back to lesson"
+          onClick={() => {
+            if (chunkIndex > 0) {
+              router.push(`/dance/${params.danceId}/chunk/${chunkIndex - 1}/copy`);
+            } else {
+              router.push(`/dance/${params.danceId}`);
+            }
+          }}
+          aria-label={chunkIndex > 0 ? 'Previous chunk' : 'Back to lesson'}
           className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 active:scale-95"
         >
           <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex-1 text-center">
+        <div className="min-w-0 flex-1 text-center">
           <div className="text-[10px] uppercase tracking-widest text-white/50">
             copy along · {chunkIndex + 1}/{chunks.length}
           </div>
           <div className="truncate text-sm font-semibold">{chunk.label}</div>
         </div>
-        <div className="h-11 w-11" aria-hidden />
+        {/* Exit-to-lesson shortcut — preserves the old behavior for users
+            who actually want to leave the chunk loop entirely. */}
+        <button
+          type="button"
+          onClick={() => router.push(`/dance/${params.danceId}`)}
+          aria-label="Exit to lesson"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white/70 ring-1 ring-white/15 active:scale-95"
+        >
+          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <path d="M16 17l5-5-5-5" />
+            <path d="M21 12H9" />
+          </svg>
+        </button>
       </header>
 
       {/* spec.md §Fix 3 hierarchy: the reference video is the largest
@@ -662,12 +696,12 @@ export default function CopyAlongPage({ params }: PageProps) {
             router.push(next);
           }}
           data-testid="copy-next-cta"
-          className="ml-auto flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-coral px-4 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
+          className="ml-auto flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-coral px-3 text-sm font-semibold text-white shadow-lg shadow-coral/25 active:scale-[0.98]"
         >
-          <span className="whitespace-nowrap">
-            {chunkIndex >= chunks.length - 1 ? 'Full run' : 'Next'}
+          <span className="truncate">
+            {chunkIndex >= chunks.length - 1 ? 'Run' : 'Next'}
           </span>
-          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
             <path d="M5 12h14M13 5l7 7-7 7" />
           </svg>
         </button>

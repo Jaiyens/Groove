@@ -32,7 +32,7 @@ export default function SpeedToggle({
             role="radio"
             aria-checked={active}
             onClick={() => onChange(opt)}
-            className={`flex h-full min-w-[44px] items-center justify-center rounded-full px-3 text-xs font-bold tabular-nums transition-colors ${
+            className={`flex h-full min-w-[36px] items-center justify-center rounded-full px-2 text-xs font-bold tabular-nums transition-colors ${
               active
                 ? 'bg-white text-black'
                 : 'text-white/70 hover:text-white'
