@@ -115,19 +115,9 @@ export async function scoreDanceAttempt(
     ],
   });
 
-  // Hardcoded feel-good boost: scores above 65 get +10 (clamped to 100).
-  // Applied to every score field so components stay consistent with overall.
-  // Target band for genuine attempts is 80–95; raw Gemini parks real attempts
-  // around 76–80 which feels punishing to users.
-  const boost = (s: number) => (s > 65 ? Math.min(100, s + 10) : s);
-  return {
-    ...object,
-    scores: {
-      timing: boost(object.scores.timing),
-      shape: boost(object.scores.shape),
-      energy: boost(object.scores.energy),
-      flow: boost(object.scores.flow),
-      overall: boost(object.scores.overall),
-    },
-  };
+  // Raw Gemini scores pass through here. The user-facing +10 boost
+  // lives in lib/scoring/displayBoost.ts and is applied at render time
+  // in ScoreRevealCard, so mastery + the per-skill projection track
+  // the true signal.
+  return object;
 }

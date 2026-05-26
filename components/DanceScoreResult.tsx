@@ -6,14 +6,13 @@
 //
 // The carousel itself handles swipe / button nav / progress dots.
 // This component is the data wiring layer: it pulls the dance from
-// the parent, the graph from useGraph(), the previous score from
-// the mastery store, and feeds each card the props it needs.
+// the parent, the graph + projection + recommendation from
+// useRecordDanceAttempt (which also persists the attempt to mastery
+// once per mount), and feeds each card the props it needs.
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import type { Dance } from '@/lib/dances/types';
-import { useGraph } from '@/lib/graph/context';
-import { recommendNextDrill } from '@/lib/graph/recommender';
-import { getMasteryStore } from '@/lib/mastery/store';
+import { useRecordDanceAttempt } from '@/lib/mastery/useRecordDanceAttempt';
 import type { DanceScore } from '@/lib/scoring/gemini/score-attempt';
 import DrillRecommendationCard from './results/DrillRecommendationCard';
 import MomentReplayCard from './results/MomentReplayCard';
@@ -39,49 +38,9 @@ export default function DanceScoreResult({
   referenceVideoUrl,
   dance,
 }: Props) {
-  const { graph, mastery, bumpMastery } = useGraph();
-
-  // Look up the previous attempt's score (so card 1 can show "+12
-  // vs last attempt"). Run once on mount — the new attempt gets
-  // persisted below, so reading after persist would always pull the
-  // attempt we just saved.
-  const previousScoreRef = useRef<number | null>(null);
-  if (previousScoreRef.current === null && dance) {
-    try {
-      const prev = getMasteryStore().getLatestAttempt(dance.id);
-      previousScoreRef.current = prev ? prev.overall_score : null;
-    } catch {
-      previousScoreRef.current = null;
-    }
-  }
-  const previousScore = previousScoreRef.current;
-
-  // Persist this attempt to the mastery store (once). The dance's
-  // required_skills get the boosted overall score. The recommender
-  // and "vs last attempt" delta read from the store on the next
-  // mount.
-  const persistedRef = useRef(false);
-  useEffect(() => {
-    if (!dance || persistedRef.current) return;
-    persistedRef.current = true;
-    try {
-      const skillScores: Record<string, number> = {};
-      for (const skillId of dance.required_skills) {
-        skillScores[skillId] = score.scores.overall;
-      }
-      getMasteryStore().recordAttempt(dance.id, skillScores, score.scores.overall);
-      bumpMastery();
-    } catch {
-      /* private browsing or storage disabled — fine */
-    }
-  }, [dance, score.scores.overall, bumpMastery]);
-
-  // The weakest skill, used by the WhatsNextCard's secondary CTA.
-  const weakestSkill = useMemo(() => {
-    if (!dance || !graph) return null;
-    const rec = recommendNextDrill({ dance, graph, mastery });
-    return rec?.skill ?? null;
-  }, [dance, graph, mastery]);
+  const outcome = useRecordDanceAttempt(dance, score);
+  const { recommendation, previousScore, tierCrossing } = outcome;
+  const weakest = recommendation.weakestSkill;
 
   const cards = useMemo<CarouselCard[]>(() => {
     const list: CarouselCard[] = [];
@@ -90,8 +49,9 @@ export default function DanceScoreResult({
       content: (
         <ScoreRevealCard
           overall={score.scores.overall}
-          summary={score.summary}
+          summary={recommendation.headline || score.summary}
           previousScore={previousScore}
+          skillRows={recommendation.skillRows}
         />
       ),
     });
@@ -133,7 +93,7 @@ export default function DanceScoreResult({
     if (dance) {
       list.push({
         key: 'drill',
-        content: <DrillRecommendationCard dance={dance} />,
+        content: <DrillRecommendationCard dance={dance} weakest={weakest} />,
       });
     }
 
@@ -144,7 +104,8 @@ export default function DanceScoreResult({
           <WhatsNextCard
             danceId={dance.id}
             danceName={dance.name}
-            weakestSkill={weakestSkill}
+            weakestSkill={weakest?.skill ?? null}
+            tierCrossing={tierCrossing}
             onRetry={onRetry}
           />
         ),
@@ -193,7 +154,9 @@ export default function DanceScoreResult({
     attemptVideoUrl,
     referenceVideoUrl,
     dance,
-    weakestSkill,
+    weakest,
+    recommendation,
+    tierCrossing,
     onRetry,
     onExit,
   ]);

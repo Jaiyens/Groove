@@ -12,45 +12,39 @@
 
 import Link from 'next/link';
 import type { Dance } from '@/lib/dances/types';
-import { useGraph } from '@/lib/graph/context';
-import { recommendNextDrill, type Recommendation } from '@/lib/graph/recommender';
-import { useMemo } from 'react';
+import type { SkillRow } from '@/lib/graph/teachingRecommender';
 
 interface Props {
   dance: Dance;
+  // The weakest skill from THIS attempt — by gap = weight*(1-score),
+  // not by persistent mastery. Null when everything scored well.
+  weakest: SkillRow | null;
 }
 
-export default function DrillRecommendationCard({ dance }: Props) {
-  const { graph, mastery } = useGraph();
-
-  const recommendation = useMemo<Recommendation | undefined>(() => {
-    if (!graph || !dance) return undefined;
-    return recommendNextDrill({ dance, graph, mastery });
-  }, [graph, dance, mastery]);
-
-  if (!recommendation) {
+export default function DrillRecommendationCard({ dance, weakest }: Props) {
+  if (!weakest) {
     return (
       <section className="flex h-full flex-col">
-        <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-ink/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-ink-muted">
-          drill next
+        <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-accent-green/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-accent-green">
+          everything landed
         </div>
         <div className="mt-5 rounded-3xl bg-cream-card p-6 shadow-soft">
           <h2 className="text-xl font-semibold leading-tight text-ink">
-            Run it back
+            Nothing weak to drill
           </h2>
           <p className="mt-3 text-sm leading-snug text-ink-muted">
-            We don&apos;t have a skill-by-skill map for this dance yet, so the
-            best next step is another full attempt. Aim for the moments you
-            saw on the previous cards.
+            This run cleared the bar on every skill. Push the score higher
+            with another full attempt, or try a harder routine.
           </p>
         </div>
       </section>
     );
   }
 
-  const { skill, mastery: skillMastery } = recommendation;
+  const { skill, score, mastery: skillMastery } = weakest;
   const drillSeconds = skill.drill_duration_seconds || 60;
   const masteryPct = Math.round(skillMastery * 100);
+  const attemptPct = Math.round(score);
 
   return (
     <section className="flex h-full flex-col">
@@ -80,6 +74,8 @@ export default function DrillRecommendationCard({ dance }: Props) {
         </div>
         <div className="border-t border-cream-card/15 px-5 py-3 text-[11px] uppercase tracking-[0.18em] text-cream-card/70">
           <span>{drillSeconds}s drill</span>
+          <span aria-hidden> · </span>
+          <span>this run {attemptPct}</span>
           <span aria-hidden> · </span>
           <span>mastery {masteryPct}%</span>
         </div>

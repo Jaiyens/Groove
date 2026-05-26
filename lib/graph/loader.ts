@@ -29,6 +29,13 @@ const SkillLayerEnum = z.union([
   z.literal(6),
 ]);
 
+const AxisWeightsSchema = z.object({
+  timing: z.number().min(0),
+  shape: z.number().min(0),
+  energy: z.number().min(0),
+  flow: z.number().min(0),
+});
+
 const BaseSkillNodeSchema = z.object({
   id: z.string().min(1, 'id must be non-empty'),
   name: z.string().min(1),
@@ -42,6 +49,7 @@ const BaseSkillNodeSchema = z.object({
   mastery_threshold: z.string(),
   common_mistakes: z.array(z.string()),
   sources: z.array(z.string()),
+  axis_weights: AxisWeightsSchema.optional(),
 });
 
 const RoutineNodeSchema = BaseSkillNodeSchema.extend({

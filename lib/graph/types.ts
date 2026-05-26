@@ -11,6 +11,16 @@ export type SkillCategory =
 
 export type SkillLayer = 1 | 2 | 3 | 4 | 5 | 6;
 
+// Optional per-skill override for the Gemini-axis → per-skill projection
+// matrix. Use when category defaults don't fit a specific skill (e.g.
+// chest isolation needs more `timing` weight than the isolation default).
+export interface AxisWeights {
+  timing: number;
+  shape: number;
+  energy: number;
+  flow: number;
+}
+
 export interface SkillNode {
   id: string;
   name: string;
@@ -24,6 +34,7 @@ export interface SkillNode {
   mastery_threshold: string;
   common_mistakes: string[];
   sources: string[];
+  axis_weights?: AxisWeights;
 }
 
 export interface RoutineNode extends SkillNode {

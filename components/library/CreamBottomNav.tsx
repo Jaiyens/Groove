@@ -11,7 +11,7 @@ type NavItem = {
 
 const ITEMS: readonly NavItem[] = [
   { href: '/', label: 'Library', icon: 'library' },
-  { href: '/progress', label: 'Progress', icon: 'progress' },
+  { href: '/progress', label: 'Skills', icon: 'progress' },
   { href: '/profile', label: 'Profile', icon: 'profile' },
 ] as const;
 

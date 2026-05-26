@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:ai-sdk.dev)",
-      "WebFetch(domain:ai.google.dev)"
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(grep -E \"\\\\.\\(json|ts\\)$\")",
+      "Bash(git ls-tree *)",
+      "Bash(git show *)",
+      "Bash(git diff *)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
+      "Bash(git -C /Users/panda/Groove status)",
+      "Bash(git -C /Users/panda/Groove log --oneline -20)",
+      "Bash(git -C /Users/panda/Groove branch -a)"
     ]
   }
 }

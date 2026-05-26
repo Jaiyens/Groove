@@ -10,11 +10,16 @@
 
 import { useRouter } from 'next/navigation';
 import type { SkillNode } from '@/lib/graph/types';
+import type { TierCrossing } from '@/lib/mastery/useRecordDanceAttempt';
 
 interface Props {
   danceId: string;
   danceName: string;
   weakestSkill?: SkillNode | null;
+  // When non-null, a small ambient line above the CTAs marks the
+  // skill that just crossed a mastery tier. Fires at most once per
+  // attempt (40→60 "getting there", 60→80 "dialed in", 80 wins).
+  tierCrossing?: TierCrossing | null;
   onRetry: () => void;
 }
 
@@ -22,6 +27,7 @@ export default function WhatsNextCard({
   danceId,
   danceName,
   weakestSkill,
+  tierCrossing,
   onRetry,
 }: Props) {
   const router = useRouter();
@@ -37,6 +43,8 @@ export default function WhatsNextCard({
         You can run {danceName} again to chase a higher score, dig into the
         weak skill on its own, or pick something new from the library.
       </p>
+
+      {tierCrossing && <TierCrossingLine crossing={tierCrossing} />}
 
       <div className="mt-6 flex flex-col gap-3">
         <button
@@ -76,5 +84,24 @@ export default function WhatsNextCard({
         </button>
       </div>
     </section>
+  );
+}
+
+function TierCrossingLine({ crossing }: { crossing: TierCrossing }) {
+  const verdict = crossing.tier === 'dialed-in' ? 'dialed in' : 'getting there';
+  const accent =
+    crossing.tier === 'dialed-in'
+      ? 'text-accent-green'
+      : 'text-accent-amber';
+  return (
+    <div className="mt-5 flex items-baseline gap-2 rounded-2xl bg-cream-card px-4 py-3 ring-1 ring-cream-deep">
+      <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-ink-muted">
+        skill tightened
+      </span>
+      <span className="text-sm text-ink">
+        {crossing.skill.name.toLowerCase()}:
+      </span>
+      <span className={`text-sm font-semibold ${accent}`}>{verdict}</span>
+    </div>
   );
 }

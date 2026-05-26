@@ -39,12 +39,20 @@ export default function DrillPage({ params }: PageProps) {
   const search = useSearchParams();
   const { graph, bumpMastery } = useGraph();
   const fromParam = search.get('from');
-  // Two `from` shapes are supported. The results carousel sends
-  // `dance:<id>` so on done we route into the re-attempt flow; the
-  // legacy /results/[sessionId] path still passes a raw attempt id.
+  // Three `from` shapes are supported, in priority order:
+  //   `/something`       — literal return path (Skills tab uses /progress)
+  //   `dance:<id>`       — results-carousel re-attempt flow
+  //   raw attempt id     — legacy /results/[sessionId] path
   const returnTarget = useMemo(() => {
     if (!fromParam) {
       return { kind: 'home' as const, href: '/', label: 'Done' };
+    }
+    if (fromParam.startsWith('/')) {
+      return {
+        kind: 'returnPath' as const,
+        href: fromParam,
+        label: labelForReturnPath(fromParam),
+      };
     }
     if (fromParam.startsWith('dance:')) {
       const danceId = fromParam.slice('dance:'.length);
@@ -491,4 +499,13 @@ export default function DrillPage({ params }: PageProps) {
       </div>
     </main>
   );
+}
+
+function labelForReturnPath(path: string): string {
+  if (path === '/' || path === '') return 'Home';
+  // Use the leaf segment so /progress → "back to progress", etc.
+  const seg = path.replace(/\/+$/, '').split('/').pop() ?? '';
+  if (!seg) return 'Back';
+  const friendly = seg === 'progress' ? 'your moves' : seg.replace(/-/g, ' ');
+  return `Back to ${friendly}`;
 }

@@ -12,19 +12,28 @@
 // aware headline).
 
 import { useEffect, useState } from 'react';
-import { tierLabelFor } from './tier';
+import { applyDisplayBoost } from '@/lib/scoring/displayBoost';
+import type { SkillRow } from '@/lib/graph/teachingRecommender';
+import { tierBarFor, tierLabelFor } from './tier';
 
 interface Props {
   overall: number;
   summary: string;
   // Optional — when present, render +N / -N below the score.
   previousScore?: number | null;
+  // Top-N skill rows (by weight) for a compact "what landed / what
+  // needs work" strip below the overall. Empty/undefined hides the
+  // strip entirely (legacy dances without a skill map).
+  skillRows?: SkillRow[];
 }
 
 const COUNT_DURATION_MS = 1400;
 
-export default function ScoreRevealCard({ overall, summary, previousScore }: Props) {
-  const target = Math.max(0, Math.min(100, Math.round(overall)));
+export default function ScoreRevealCard({ overall, summary, previousScore, skillRows }: Props) {
+  // Display-only boost: raw scores >65 get +10. Mastery and the
+  // per-skill projection see the unboosted number; only this card and
+  // the delta line use the boosted value.
+  const target = Math.max(0, Math.round(applyDisplayBoost(overall)));
   const [displayed, setDisplayed] = useState(0);
 
   useEffect(() => {
@@ -44,7 +53,7 @@ export default function ScoreRevealCard({ overall, summary, previousScore }: Pro
   const tierColor = tierColorFor(target);
   const delta =
     typeof previousScore === 'number' && Number.isFinite(previousScore)
-      ? target - Math.round(previousScore)
+      ? target - Math.round(applyDisplayBoost(previousScore))
       : null;
   const showConfetti = target >= 80;
 
@@ -75,7 +84,41 @@ export default function ScoreRevealCard({ overall, summary, previousScore }: Pro
         </div>
       )}
       <p className="mt-6 max-w-sm text-sm leading-snug text-ink">{summary}</p>
+
+      {skillRows && skillRows.length > 0 && <SkillBreakdownStrip rows={skillRows} />}
     </section>
+  );
+}
+
+// Compact three-row strip showing this attempt's projected per-skill
+// scores for the top-weighted skills. Reads as "what landed / what
+// needs work" — not a separate card, just an at-a-glance signal sitting
+// under the overall.
+function SkillBreakdownStrip({ rows }: { rows: SkillRow[] }) {
+  const top = rows.slice(0, 3);
+  return (
+    <div className="mt-6 w-full max-w-sm space-y-2">
+      {top.map((row) => {
+        const pct = Math.max(0, Math.min(100, Math.round(row.score)));
+        return (
+          <div key={row.skill.id} className="flex items-center gap-3 text-left">
+            <div className="flex-1 truncate text-xs text-ink-muted">
+              {row.skill.name.toLowerCase()}
+            </div>
+            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink/10">
+              <div
+                className={`h-full ${tierBarFor(pct)}`}
+                style={{ width: `${pct}%` }}
+                aria-hidden
+              />
+            </div>
+            <div className="w-8 text-right text-[11px] font-semibold tabular-nums text-ink">
+              {pct}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
