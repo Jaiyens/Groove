@@ -1,46 +1,74 @@
 'use client';
 
 // Just-Dance-style decorative callouts that pop onto the duet screen
-// every couple of beats while the user dances. PURELY decoration —
-// no pose comparison, no grading. The words are randomized from a
-// fixed pool so the user always feels rewarded.
+// every few beats while the user dances. PURELY decoration — no pose
+// comparison, no grading. The words are randomized from a fixed
+// vocabulary and each word has its own color treatment.
 //
-// Cadence is locked to the dance's BPM so the words feel musical:
-// one callout every 2 beats. A small ±100ms jitter on each interval
-// stops it feeling like a metronome.
+// Cadence: between 3 and 7 beats per callout, picked randomly each
+// time, so the words feel earned instead of metronomic.
 //
-// Words are placed in the upper-middle of the camera panel, animated
-// in (pop + fade), held briefly, animated out.
+// Words sit in the upper-middle of the duet area: scale-in with a
+// slight rotation, hold briefly, drift up + fade out.
 
 import { useEffect, useState } from 'react';
 
 interface Props {
-  // The dance's tempo. We fire roughly every 2 beats of this.
+  // The dance's tempo. We fire roughly every 3–7 beats of this.
   bpm: number;
   // When false, no callouts fire (preroll, paused, finished). The
   // page controls this so the words only appear during the actual
   // dance.
   active: boolean;
-  // Hooks for future weighting by difficulty. Ignored for now per
-  // user direction ("just fully randomize for the time being").
+  // Reserved for difficulty-weighted word pools. Ignored for now —
+  // user direction was "randomize fully" with the three-word pool.
   difficulty?: 'easy' | 'medium' | 'hard';
 }
 
-// User-picked vocabulary. Keep it small and unambiguously positive —
-// these never affect the real Gemini score.
-const WORDS = ['Groovy', 'Perfect', 'Great'] as const;
+type CalloutWord = 'Groovy' | 'Perfect' | 'Great';
 
-// How many beats between callouts. 2 means one callout every 2 beats
-// (a half-bar in 4/4) — feels musical without overwhelming.
-const BEATS_PER_CALLOUT = 2;
-const JITTER_MS = 100;
-// How long each callout stays on screen before fading. Should be
-// short enough that two callouts never visibly overlap.
-const VISIBLE_MS = 900;
+// Each word gets its own color identity. Groovy is the user-specified
+// hot pink. Perfect lands on warm gold (achievement), Great gets a
+// cool blue (clean / steady). The shadow color tracks the gradient
+// so the words feel like they're glowing in their own light.
+const WORD_STYLES: Record<CalloutWord, { gradient: string; shadow: string; ring: string }> = {
+  Groovy: {
+    gradient: 'linear-gradient(135deg, #FF2D87 0%, #FF6FB1 45%, #FF8FD0 100%)',
+    shadow: '0 10px 40px rgba(255, 45, 135, 0.55), 0 0 22px rgba(255, 143, 208, 0.45)',
+    ring: 'rgba(255, 255, 255, 0.18)',
+  },
+  Perfect: {
+    gradient: 'linear-gradient(135deg, #FFB300 0%, #FFD24A 50%, #FFE99A 100%)',
+    shadow: '0 10px 40px rgba(255, 179, 0, 0.55), 0 0 22px rgba(255, 224, 130, 0.55)',
+    ring: 'rgba(120, 80, 0, 0.16)',
+  },
+  Great: {
+    gradient: 'linear-gradient(135deg, #2BD4FF 0%, #6EE7FF 45%, #B6F3FF 100%)',
+    shadow: '0 10px 40px rgba(43, 212, 255, 0.55), 0 0 22px rgba(182, 243, 255, 0.5)',
+    ring: 'rgba(255, 255, 255, 0.22)',
+  },
+};
+
+const WORDS = Object.keys(WORD_STYLES) as CalloutWord[];
+
+const MIN_BEATS_BETWEEN = 3;
+const MAX_BEATS_BETWEEN = 7;
+const VISIBLE_MS = 1100;
 
 interface Callout {
   id: number;
-  word: string;
+  word: CalloutWord;
+}
+
+function pickWord(prev: CalloutWord | null): CalloutWord {
+  // Avoid two in a row of the same word — keeps variety high.
+  const pool = prev ? WORDS.filter((w) => w !== prev) : WORDS;
+  return pool[Math.floor(Math.random() * pool.length)]!;
+}
+
+function pickInterval(beatMs: number): number {
+  const beats = MIN_BEATS_BETWEEN + Math.random() * (MAX_BEATS_BETWEEN - MIN_BEATS_BETWEEN);
+  return beatMs * beats;
 }
 
 export default function LiveCallouts({ bpm, active }: Props) {
@@ -51,34 +79,30 @@ export default function LiveCallouts({ bpm, active }: Props) {
       setCallout(null);
       return;
     }
-    // Bail out cleanly if the BPM is bogus — fall back to ~120 so
-    // there's at least some cadence rather than a null timer.
     const safeBpm = Number.isFinite(bpm) && bpm > 30 ? bpm : 120;
     const beatMs = 60_000 / safeBpm;
-    const baseInterval = beatMs * BEATS_PER_CALLOUT;
 
     let calloutSeq = 0;
     let timeoutId: number | null = null;
     let hideTimeoutId: number | null = null;
+    let lastWord: CalloutWord | null = null;
 
     const fire = () => {
       calloutSeq += 1;
-      const word = WORDS[Math.floor(Math.random() * WORDS.length)]!;
-      setCallout({ id: calloutSeq, word });
+      const word = pickWord(lastWord);
+      lastWord = word;
+      const id = calloutSeq;
+      setCallout({ id, word });
       if (hideTimeoutId !== null) window.clearTimeout(hideTimeoutId);
       hideTimeoutId = window.setTimeout(() => {
-        // Only clear if this is still the active callout — a fast
-        // followup might have replaced it.
-        setCallout((current) => (current && current.id === calloutSeq ? null : current));
+        setCallout((current) => (current && current.id === id ? null : current));
       }, VISIBLE_MS);
-
-      const jitter = (Math.random() * 2 - 1) * JITTER_MS;
-      timeoutId = window.setTimeout(fire, baseInterval + jitter);
+      timeoutId = window.setTimeout(fire, pickInterval(beatMs));
     };
 
-    // First callout fires after one full interval — gives the user a
+    // First callout fires after a normal interval — gives the user a
     // beat to look at the reference before words start flying.
-    timeoutId = window.setTimeout(fire, baseInterval);
+    timeoutId = window.setTimeout(fire, pickInterval(beatMs));
 
     return () => {
       if (timeoutId !== null) window.clearTimeout(timeoutId);
@@ -89,16 +113,21 @@ export default function LiveCallouts({ bpm, active }: Props) {
 
   if (!callout) return null;
 
+  const style = WORD_STYLES[callout.word];
+
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute inset-x-0 top-[18%] z-30 flex justify-center"
+      className="pointer-events-none absolute inset-x-0 top-[16%] z-30 flex justify-center px-4"
     >
       <span
         // Re-mount on every callout change so the keyframes restart.
-        // `key={callout.id}` does that for us.
         key={callout.id}
         className="live-callout"
+        style={{
+          backgroundImage: style.gradient,
+          boxShadow: `${style.shadow}, 0 0 0 2px ${style.ring} inset`,
+        }}
       >
         {callout.word}
       </span>
