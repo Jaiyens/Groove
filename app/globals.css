@@ -365,3 +365,54 @@ button {
     display: none;
   }
 }
+
+/* Live callouts ("Groovy", "Perfect", "Great") that pop onto the duet
+   screen every couple of beats. Keyframes scale from a slight
+   overshoot, hold visible briefly, then fade + drift up. The
+   container clips overflow so off-screen drift looks intentional. */
+.live-callout {
+  display: inline-block;
+  padding: 8px 18px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ff8a5b 100%);
+  color: #ffffff;
+  font-weight: 800;
+  font-size: clamp(22px, 6vw, 36px);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 0 2px rgba(255, 255, 255, 0.12) inset;
+  transform-origin: 50% 50%;
+  animation: live-callout-pop 900ms cubic-bezier(0.32, 0.72, 0.4, 1) forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes live-callout-pop {
+  0% {
+    transform: translateY(8px) scale(0.6);
+    opacity: 0;
+  }
+  18% {
+    transform: translateY(0) scale(1.08);
+    opacity: 1;
+  }
+  34% {
+    transform: translateY(-2px) scale(1);
+    opacity: 1;
+  }
+  78% {
+    transform: translateY(-6px) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-28px) scale(0.96);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-callout {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

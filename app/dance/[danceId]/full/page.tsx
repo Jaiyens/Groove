@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation';
 import CameraPermissionBanner, {
   type CamState,
 } from '@/components/CameraPermissionBanner';
+import LiveCallouts from '@/components/LiveCallouts';
 import SpeedToggle from '@/components/SpeedToggle';
 import { useDance } from '@/lib/dances/useDance';
 import { attachStream } from '@/lib/pose/cameraAttach';
@@ -216,6 +217,8 @@ export default function FullCopyAlongPage({ params }: PageProps) {
           The two frames end up the same size, with black space top
           and bottom of each. */}
       <div className="relative flex flex-1 overflow-hidden bg-black">
+        {/* Just-Dance-style callouts overlay the entire duet area. */}
+        <LiveCallouts bpm={dance.bpm} active={started} />
         <div className="flex h-full w-full gap-px bg-black">
           {/* REF panel */}
           <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">

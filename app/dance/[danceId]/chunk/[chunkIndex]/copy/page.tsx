@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import DraggableCornerPiP from '@/components/DraggableCornerPiP';
+import LiveCallouts from '@/components/LiveCallouts';
 import SpeedToggle from '@/components/SpeedToggle';
 import SkeletonOverlay from '@/components/SkeletonOverlay';
 import StartOverlay from '@/components/StartOverlay';
@@ -525,6 +526,10 @@ export default function CopyAlongPage({ params }: PageProps) {
           needsUnmuteTap) swaps INSIDE its container rather than
           reflowing the parent grid, so nothing jumps mid-dance. */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
+        {/* Just-Dance-style callouts — pure decoration, fires every
+            ~2 beats based on the dance's BPM, only while the user is
+            actively dancing (started + not drill mode). */}
+        <LiveCallouts bpm={dance.bpm} active={started} />
         <div className="relative flex h-full w-full items-center justify-center">
           {/* Reference video — single largest element, 9/16 aspect,
               centered. */}
