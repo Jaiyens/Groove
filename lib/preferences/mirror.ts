@@ -26,9 +26,10 @@ const EVENT_NAME = 'groov:mirror-changed';
 // Returns the current persisted preference, or false on first run / SSR.
 // Cheap, synchronous — safe to call from render.
 export function getMirrorEnabled(): boolean {
-  if (typeof localStorage === 'undefined') return false;
+  if (typeof window === 'undefined') return false;
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
+    const storage = window.localStorage ?? globalThis.localStorage;
+    const v = storage.getItem(STORAGE_KEY);
     return v === null ? false : v === 'true';
   } catch {
     // localStorage can throw in private-mode iOS Safari or when storage
