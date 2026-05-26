@@ -25,3 +25,14 @@ export function tierBarFor(score: number): string {
   if (score >= 40) return 'bg-accent-amber';
   return 'bg-coral-deep';
 }
+
+// SVG-fill counterpart of tierBarFor, kept as a separate function so
+// Tailwind's content scanner sees the literal `fill-*` class names — a
+// runtime string replace from `bg-*` would be invisible to the scanner.
+export function tierFillFor(score: number): string {
+  if (score >= 90) return 'fill-accent-green';
+  if (score >= 75) return 'fill-ink';
+  if (score >= 60) return 'fill-ink';
+  if (score >= 40) return 'fill-accent-amber';
+  return 'fill-coral-deep';
+}
