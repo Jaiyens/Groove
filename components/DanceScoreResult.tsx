@@ -39,7 +39,7 @@ export default function DanceScoreResult({
   dance,
 }: Props) {
   const outcome = useRecordDanceAttempt(dance, score);
-  const { recommendation, previousScore, tierCrossing } = outcome;
+  const { recommendation, previousScore, tierCrossing, attribution } = outcome;
   const weakest = recommendation.weakestSkill;
 
   const cards = useMemo<CarouselCard[]>(() => {
@@ -93,7 +93,13 @@ export default function DanceScoreResult({
     if (dance) {
       list.push({
         key: 'drill',
-        content: <DrillRecommendationCard dance={dance} weakest={weakest} />,
+        content: (
+          <DrillRecommendationCard
+            dance={dance}
+            weakest={weakest}
+            attributionFix={attribution?.fix}
+          />
+        ),
       });
     }
 
@@ -157,6 +163,7 @@ export default function DanceScoreResult({
     weakest,
     recommendation,
     tierCrossing,
+    attribution,
     onRetry,
     onExit,
   ]);

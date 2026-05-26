@@ -26,6 +26,7 @@ import {
 } from '@/lib/graph/skillScoreProjection';
 import {
   buildTeachingRecommendation,
+  type SkillRow,
   type TeachingRecommendation,
 } from '@/lib/graph/teachingRecommender';
 import type { KnowledgeGraph, SkillNode } from '@/lib/graph/types';
@@ -39,11 +40,20 @@ export interface TierCrossing {
   tier: TierLabel;
 }
 
+// When Gemini attributes a fix to a specific required skill, the drill
+// recommendation switches to that skill and surfaces the fix text. The
+// gap-based pick is preserved on `gapWeakest` for debugging / fallback.
+export interface AttributionOverride {
+  skill: SkillRow;
+  fix: string;
+}
+
 export interface AttemptOutcome {
   projection: Record<string, number>;
   recommendation: TeachingRecommendation;
   previousScore: number | null;
   tierCrossing: TierCrossing | null;
+  attribution: AttributionOverride | null;
 }
 
 function requiredSkillNodes(
@@ -91,6 +101,7 @@ const EMPTY_OUTCOME: AttemptOutcome = {
   },
   previousScore: null,
   tierCrossing: null,
+  attribution: null,
 };
 
 export function useRecordDanceAttempt(
@@ -123,12 +134,31 @@ export function useRecordDanceAttempt(
       priorMastery[skill.id] = mastery[skill.id] ?? 0;
     }
 
-    const recommendation = buildTeachingRecommendation({
+    const baseRec = buildTeachingRecommendation({
       dance,
       graph,
       perSkillScores: projection,
       mastery: priorMastery,
     });
+
+    const attribution = buildAttributionOverride(
+      score,
+      dance,
+      requiredSkills,
+      projection,
+      priorMastery,
+      baseRec,
+    );
+
+    // When Gemini attribution lands, it wins over the gap-based pick — the
+    // user sees the same skill on the miss card and the drill card.
+    const recommendation: TeachingRecommendation = attribution
+      ? {
+          ...baseRec,
+          weakestSkill: attribution.skill,
+          headline: `${attribution.skill.skill.name} — Gemini flagged this`,
+        }
+      : baseRec;
 
     let previousScore: number | null = null;
     try {
@@ -142,6 +172,7 @@ export function useRecordDanceAttempt(
       ready: true as const,
       projection,
       recommendation,
+      attribution,
       previousScore,
       priorMastery,
       requiredSkills,
@@ -181,6 +212,62 @@ export function useRecordDanceAttempt(
       recommendation: snapshot.recommendation,
       previousScore: snapshot.previousScore,
       tierCrossing,
+      attribution: snapshot.attribution,
     };
   }, [snapshot, tierCrossing]);
+}
+
+// Build the override if Gemini attributed the top fix to a known required
+// skill. Returns null when (a) there is no top fix, (b) the fix has no
+// attribution, or (c) the attributed id isn't in this dance's required
+// skills. In those cases the gap-based recommender stands.
+//
+// Exported for unit testing; not part of the hook surface.
+export function buildAttributionOverride(
+  score: DanceScore,
+  dance: Dance,
+  requiredSkills: SkillNode[],
+  projection: Record<string, number>,
+  mastery: Record<string, number>,
+  baseRec: TeachingRecommendation,
+): AttributionOverride | null {
+  const topFix = score.fixes[0];
+  if (!topFix?.attributed_skill_id) return null;
+  const skill = requiredSkills.find((s) => s.id === topFix.attributed_skill_id);
+  if (!skill) return null;
+
+  // Prefer the row the recommender already computed (so we keep the exact
+  // weight + gap), but fall back to a freshly-built row if Gemini named a
+  // skill that the recommender filtered out (e.g. unknown to skill_weights).
+  const existing = baseRec.skillRows.find((r) => r.skill.id === skill.id);
+  if (existing) return { skill: existing, fix: topFix.fix };
+
+  const weights = dance.skill_weights ?? {};
+  const w = weights[skill.id] ?? 1 / Math.max(1, requiredSkills.length);
+  const s = clamp100(projection[skill.id] ?? 0);
+  const m = clamp01(mastery[skill.id] ?? 0);
+  return {
+    skill: {
+      skill,
+      score: s,
+      weight: w,
+      mastery: m,
+      gap: w * (1 - s / 100),
+    },
+    fix: topFix.fix,
+  };
+}
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+function clamp100(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  if (x < 0) return 0;
+  if (x > 100) return 100;
+  return x;
 }

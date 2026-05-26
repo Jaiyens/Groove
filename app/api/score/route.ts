@@ -6,6 +6,9 @@
 //     serverless body limit)
 //   - attemptContentType?: string (defaults to 'video/webm')
 //   - referenceUrl: string (dance.video_url; absolute URL or /data/ path)
+//   - danceId?: string — when present, the dance's required_skills are
+//     looked up against the knowledge graph and passed to Gemini so each
+//     fix can be attributed to a specific skill (see DanceScoreSchema).
 //
 // Output:
 //   200 { score: DanceScore, latencyMs: number }
@@ -23,7 +26,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { del } from '@vercel/blob';
 
-import { scoreDanceAttempt } from '@/lib/scoring/gemini/score-attempt';
+import { validateGraph } from '@/lib/graph/loader';
+import { isRoutineNode } from '@/lib/graph/types';
+import {
+  scoreDanceAttempt,
+  type AttributableSkill,
+} from '@/lib/scoring/gemini/score-attempt';
 import { transcodeWebmToMp4Path } from '@/lib/video/transcode';
 
 export const runtime = 'nodejs';
@@ -39,6 +47,7 @@ export async function POST(req: NextRequest) {
       attemptBlobUrl?: string;
       attemptContentType?: string;
       referenceUrl?: string;
+      danceId?: string;
     };
 
     if (!body.attemptBlobUrl) {
@@ -58,6 +67,9 @@ export async function POST(req: NextRequest) {
     const attemptBuf = Buffer.from(await attemptRes.arrayBuffer());
 
     const referencePath = await resolveReferencePath(body.referenceUrl, cleanup);
+    const requiredSkills = body.danceId
+      ? await loadRequiredSkills(body.danceId)
+      : [];
 
     let attemptMp4Path: string;
     if (mimeType.startsWith('video/webm') || !mimeType.startsWith('video/mp4')) {
@@ -71,7 +83,11 @@ export async function POST(req: NextRequest) {
       attemptMp4Path = direct;
     }
 
-    const score = await scoreDanceAttempt(referencePath, attemptMp4Path);
+    const score = await scoreDanceAttempt(
+      referencePath,
+      attemptMp4Path,
+      requiredSkills,
+    );
     return NextResponse.json({ score, latencyMs: Date.now() - t0 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -89,6 +105,35 @@ export async function POST(req: NextRequest) {
       }
     }
     await Promise.allSettled(cleanup.map((c) => c()));
+  }
+}
+
+// Load the dance's required_skills from the on-disk knowledge graph.
+// Returns [] when the dance has no graph entry or the graph file is
+// unreadable — scoring still runs, just without fix attribution.
+async function loadRequiredSkills(danceId: string): Promise<AttributableSkill[]> {
+  try {
+    const graphPath = path.join(
+      process.cwd(),
+      'public',
+      'data',
+      'knowledge_graph.json',
+    );
+    const raw = await fs.readFile(graphPath, 'utf8');
+    const graph = validateGraph(JSON.parse(raw));
+    const routine = graph.nodes.find((n) => n.id === danceId);
+    if (!routine || !isRoutineNode(routine)) return [];
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const out: AttributableSkill[] = [];
+    for (const id of routine.required_skills) {
+      const node = byId.get(id);
+      if (!node) continue;
+      out.push({ id: node.id, name: node.name, description: node.description });
+    }
+    return out;
+  } catch (err) {
+    console.warn('[/api/score] loadRequiredSkills failed', err);
+    return [];
   }
 }
 

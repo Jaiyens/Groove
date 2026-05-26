@@ -19,9 +19,18 @@ interface Props {
   // The weakest skill from THIS attempt — by gap = weight*(1-score),
   // not by persistent mastery. Null when everything scored well.
   weakest: SkillRow | null;
+  // When Gemini attributed the top fix to this skill, surface the fix
+  // text + change the headline so the user sees the same miss on the
+  // moment-replay card and the drill card. Optional — falls back to the
+  // gap-based copy when absent.
+  attributionFix?: string;
 }
 
-export default function DrillRecommendationCard({ dance, weakest }: Props) {
+export default function DrillRecommendationCard({
+  dance,
+  weakest,
+  attributionFix,
+}: Props) {
   if (!weakest) {
     return (
       <section className="flex h-full flex-col">
@@ -49,16 +58,27 @@ export default function DrillRecommendationCard({ dance, weakest }: Props) {
   return (
     <section className="flex h-full flex-col">
       <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-coral/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-coral-deep">
-        drill this next
+        {attributionFix ? 'gemini flagged this' : 'drill this next'}
       </div>
       <div className="mt-3 overflow-hidden rounded-3xl bg-ink text-cream-card shadow-lift">
         <div className="px-5 pt-5 pb-4">
           <h2 className="text-2xl font-semibold leading-tight">
             {skill.name}
+            {attributionFix && (
+              <span className="ml-2 text-sm font-normal text-cream-card/70">
+                — flagged
+              </span>
+            )}
           </h2>
-          <p className="mt-3 text-sm leading-snug text-cream-card/85">
-            {firstSentence(skill.description)}
-          </p>
+          {attributionFix ? (
+            <p className="mt-3 text-sm leading-snug text-cream-card/85">
+              {attributionFix}
+            </p>
+          ) : (
+            <p className="mt-3 text-sm leading-snug text-cream-card/85">
+              {firstSentence(skill.description)}
+            </p>
+          )}
           {skill.common_mistakes.length > 0 && (
             <div className="mt-4">
               <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-cream-card/60">

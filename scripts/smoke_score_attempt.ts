@@ -31,7 +31,7 @@ async function main() {
 
   console.log(`Scoring:\n  reference: ${referencePath}\n  attempt:   ${attemptPath}\n`);
   const t0 = Date.now();
-  const result = await scoreDanceAttempt(referencePath, attemptPath);
+  const result = await scoreDanceAttempt(referencePath, attemptPath, []);
   const ms = Date.now() - t0;
 
   console.log(`\n--- Result (${ms}ms) ---`);

@@ -18,7 +18,10 @@ import { readFile } from 'node:fs/promises';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 
-const SCORE_PROMPT = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine. Score how closely Video 2 matches Video 1.
+// Templated prompt — `{{SKILLS_JSON}}` is replaced at call time with the
+// JSON-encoded `[{ id, name, description }]` array of the dance's required
+// skills, so Gemini can attribute each `fix` to a concrete skill id.
+const SCORE_PROMPT_TEMPLATE = `Video 1 is the reference choreography. Video 2 is the student's attempt at the same routine. Score how closely Video 2 matches Video 1.
 
 First, in the \`reasoning\` field, walk through the reference's moves in order. For each move, state whether the student did roughly the same move (right body part, right direction, right beat) or missed it / did something different. Use MM:SS timestamps and name specific body parts. This grounds the score — do it before assigning numbers.
 
@@ -44,7 +47,13 @@ Axes (all 0–100, using the anchors above):
 - flow: smoothness of transitions
 - overall: holistic similarity
 
-Top 3 moments to fix, 1 thing they did well. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.`;
+Top 3 moments to fix, 1 thing they did well. Every observation needs an MM:SS timestamp from Video 2 and must name specific body parts.
+
+For each fix, set \`attributed_skill_id\` to the id of the skill from this list whose execution most directly caused the miss, or null if no single skill clearly owns the miss. The skill's description is the rubric — pick the one whose criterion was broken by what you saw at that timestamp:
+
+{{SKILLS_JSON}}
+
+Be conservative: if a fix is about general timing slippage or whole-routine flow rather than one skill's specific failure mode, leave attributed_skill_id as null. Picking the wrong skill is worse than picking none.`;
 
 export const DanceScoreSchema = z.object({
   reasoning: z.string(),
@@ -61,6 +70,11 @@ export const DanceScoreSchema = z.object({
         timestamp: z.string(),
         what_happened: z.string(),
         fix: z.string(),
+        // The skill (from the dance's required_skills) whose criterion this
+        // fix most directly violates. Null when no single skill clearly owns
+        // the miss — see prompt for the conservativeness rule. Null is also
+        // the fallback when scoring a dance that has no required_skills.
+        attributed_skill_id: z.string().nullable(),
       }),
     )
     .min(1)
@@ -74,9 +88,16 @@ export const DanceScoreSchema = z.object({
 
 export type DanceScore = z.infer<typeof DanceScoreSchema>;
 
+export interface AttributableSkill {
+  id: string;
+  name: string;
+  description: string;
+}
+
 export async function scoreDanceAttempt(
   referenceVideoPath: string,
   attemptVideoPath: string,
+  requiredSkills: AttributableSkill[] = [],
 ): Promise<DanceScore> {
   const [referenceBuffer, attemptBuffer] = await Promise.all([
     readFile(referenceVideoPath),
@@ -89,6 +110,15 @@ export async function scoreDanceAttempt(
   const videoProviderOptions = {
     google: { videoMetadata: { fps: 2 } },
   };
+
+  const skillsJson = JSON.stringify(
+    requiredSkills.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+    })),
+  );
+  const prompt = SCORE_PROMPT_TEMPLATE.replace('{{SKILLS_JSON}}', skillsJson);
 
   const { object } = await generateObject({
     model: 'google/gemini-3.5-flash',
@@ -109,11 +139,22 @@ export async function scoreDanceAttempt(
             mediaType: 'video/mp4',
             providerOptions: videoProviderOptions,
           },
-          { type: 'text', text: SCORE_PROMPT },
+          { type: 'text', text: prompt },
         ],
       },
     ],
   });
+
+  // Defensive: Gemini occasionally returns a skill id that wasn't in the
+  // list (hallucinated, slightly misspelled, or attributing across routines).
+  // Treat any non-listed id as null so the recommender doesn't try to look
+  // it up on the graph.
+  const allowed = new Set(requiredSkills.map((s) => s.id));
+  for (const fix of object.fixes) {
+    if (fix.attributed_skill_id && !allowed.has(fix.attributed_skill_id)) {
+      fix.attributed_skill_id = null;
+    }
+  }
 
   // Raw Gemini scores pass through here. The user-facing +10 boost
   // lives in lib/scoring/displayBoost.ts and is applied at render time

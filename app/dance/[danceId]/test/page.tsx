@@ -136,7 +136,11 @@ export default function FinalTestPage({ params }: PageProps) {
           if (prev) URL.revokeObjectURL(prev);
           return localUrl;
         });
-        const score = await uploadAndScore(blob, dance?.video_url ?? null);
+        const score = await uploadAndScore(
+          blob,
+          dance?.video_url ?? null,
+          dance?.id ?? null,
+        );
         setResult(score);
         setRunState('result');
       } catch (err) {
@@ -145,7 +149,7 @@ export default function FinalTestPage({ params }: PageProps) {
         setRunState('error');
       }
     })();
-  }, [runState, dance?.video_url]);
+  }, [runState, dance?.video_url, dance?.id]);
 
   const reset = useCallback(() => {
     recorderRef.current = null;
@@ -365,7 +369,11 @@ export default function FinalTestPage({ params }: PageProps) {
   );
 }
 
-async function uploadAndScore(blob: Blob, referenceUrl: string | null): Promise<DanceScore> {
+async function uploadAndScore(
+  blob: Blob,
+  referenceUrl: string | null,
+  danceId: string | null,
+): Promise<DanceScore> {
   if (!referenceUrl) throw new Error('no reference video on this dance');
 
   // Direct-to-blob upload from the browser. Bypasses Vercel's 4.5MB body
@@ -393,6 +401,7 @@ async function uploadAndScore(blob: Blob, referenceUrl: string | null): Promise<
       attemptBlobUrl: uploaded.url,
       attemptContentType: contentType,
       referenceUrl,
+      danceId,
     }),
   });
   if (!res.ok) {
