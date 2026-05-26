@@ -30,51 +30,80 @@ export default function ScoringSideBySide({
     a.muted = true;
     r.muted = false;
     r.volume = 1;
+    // Both start paused. Don't autoplay — we want to control the
+    // exact moment each starts so they share a start frame.
+    a.pause();
+    r.pause();
 
     let cancelled = false;
-    let bothReady = false;
+    let started = false;
+    let driftInterval: number | null = null;
 
-    const tryStart = () => {
-      if (cancelled || bothReady) return;
-      if (a.readyState < 2 || r.readyState < 2) return;
-      bothReady = true;
-      try { a.currentTime = 0; } catch { /* metadata still settling */ }
-      try { r.currentTime = 0; } catch { /* metadata still settling */ }
-      // Sequence the plays in the same microtask so they share a
-      // start frame.
-      void a.play().catch(() => {});
-      void r.play().catch((err: unknown) => {
-        const name = (err as { name?: string } | null)?.name;
-        if (name === 'NotAllowedError') {
-          // iOS blocked autoplay-with-sound. Fall back to muted +
-          // surface the "tap for sound" affordance.
-          r.muted = true;
-          setNeedsUnmuteTap(true);
-          void r.play().catch(() => {});
+    const start = async () => {
+      if (cancelled || started) return;
+      // Require `canplaythrough` (readyState >= 4) on BOTH — the
+      // browser is saying "I have enough buffered to play to the end
+      // without stalling." Using `canplay` (readyState 3) used to let
+      // the attempt blob start before the network-fetched reference
+      // had buffered, hence the visible offset the user reported.
+      if (a.readyState < 4 || r.readyState < 4) return;
+      started = true;
+      try { a.currentTime = 0; } catch { /* ignore */ }
+      try { r.currentTime = 0; } catch { /* ignore */ }
+      // 200ms breath after both report ready, so any in-flight decode
+      // pipeline work settles before we kick play.
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+      if (cancelled) return;
+      try {
+        await Promise.all([
+          a.play().catch(() => {}),
+          r.play().catch((err: unknown) => {
+            const name = (err as { name?: string } | null)?.name;
+            if (name === 'NotAllowedError') {
+              r.muted = true;
+              setNeedsUnmuteTap(true);
+              return r.play().catch(() => {});
+            }
+          }),
+        ]);
+      } catch {
+        /* one of the play promises rejected — best-effort */
+      }
+      // Drift correction. Re-check every second; if the two videos
+      // have walked more than 150ms apart, snap the leader back to
+      // the lagger so they re-converge. Cheap, no audio glitch
+      // because we only seek when actually off.
+      driftInterval = window.setInterval(() => {
+        if (cancelled) return;
+        const delta = a.currentTime - r.currentTime;
+        if (Math.abs(delta) > 0.15) {
+          if (delta > 0) {
+            try { a.currentTime = r.currentTime; } catch { /* ignore */ }
+          } else {
+            try { r.currentTime = a.currentTime; } catch { /* ignore */ }
+          }
         }
-      });
+      }, 1000);
     };
 
     const handleRefEnd = () => {
-      // Re-sync: reference is the source of truth for the loop length
-      // (it's the dance's actual duration; the attempt may be a hair
-      // longer if MediaRecorder kept rolling for a beat).
       try { a.currentTime = 0; } catch { /* ignore */ }
       try { r.currentTime = 0; } catch { /* ignore */ }
       void a.play().catch(() => {});
       void r.play().catch(() => {});
     };
 
-    a.addEventListener('canplay', tryStart);
-    r.addEventListener('canplay', tryStart);
+    a.addEventListener('canplaythrough', start);
+    r.addEventListener('canplaythrough', start);
     r.addEventListener('ended', handleRefEnd);
-    // If both are already buffered, kick immediately.
-    tryStart();
+    // Kick immediately in case both are already buffered enough.
+    void start();
 
     return () => {
       cancelled = true;
-      a.removeEventListener('canplay', tryStart);
-      r.removeEventListener('canplay', tryStart);
+      if (driftInterval !== null) window.clearInterval(driftInterval);
+      a.removeEventListener('canplaythrough', start);
+      r.removeEventListener('canplaythrough', start);
       r.removeEventListener('ended', handleRefEnd);
       a.pause();
       r.pause();
