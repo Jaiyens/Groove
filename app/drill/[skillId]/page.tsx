@@ -28,6 +28,12 @@ type RunState = 'preroll' | 'running' | 'finished';
 const PREROLL_SECONDS = 3;
 const DRILL_BPM = 100; // gentle for drills
 
+// Early-pass: if the live score stays at-or-above this for this many
+// milliseconds in a row, the drill auto-completes with a celebration
+// instead of forcing the user to wait out the timer.
+const PASS_SCORE = 85;
+const PASS_HOLD_MS = 3000;
+
 export default function DrillPage({ params }: PageProps) {
   const router = useRouter();
   const search = useSearchParams();
@@ -65,6 +71,11 @@ export default function DrillPage({ params }: PageProps) {
   const rafRef = useRef<number | null>(null);
   const startMsRef = useRef<number | null>(null);
   const accScoreRef = useRef<{ sum: number; n: number }>({ sum: 0, n: 0 });
+  // Last frame's timestamp + how long the score has been at-or-above
+  // PASS_SCORE in a row. Updated every rAF tick.
+  const lastTickMsRef = useRef<number | null>(null);
+  const consecutiveHighMsRef = useRef(0);
+  const passedEarlyRef = useRef(false);
 
   const [camState, setCamState] = useState<CamState>('idle');
   const [runState, setRunState] = useState<RunState>('preroll');
@@ -72,7 +83,9 @@ export default function DrillPage({ params }: PageProps) {
   const [landmarks, setLandmarks] = useState<PoseLandmark[] | null>(null);
   const [liveScore, setLiveScore] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [holdProgress, setHoldProgress] = useState(0); // 0..1, how full the 3s hold is
   const [finalScore, setFinalScore] = useState<number | null>(null);
+  const [passedEarly, setPassedEarly] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
 
   const duration = skill?.drill_duration_seconds ?? 60;
@@ -147,6 +160,9 @@ export default function DrillPage({ params }: PageProps) {
     if (prerollLeft <= 0) {
       setRunState('running');
       startMsRef.current = performance.now();
+      lastTickMsRef.current = performance.now();
+      consecutiveHighMsRef.current = 0;
+      passedEarlyRef.current = false;
       accScoreRef.current = { sum: 0, n: 0 };
       return;
     }
@@ -160,11 +176,17 @@ export default function DrillPage({ params }: PageProps) {
     const loop = () => {
       const v = videoRef.current;
       const ex = extractorRef.current;
-      const t0 = startMsRef.current ?? performance.now();
-      const sessionT = performance.now() - t0;
+      const now = performance.now();
+      const t0 = startMsRef.current ?? now;
+      const sessionT = now - t0;
+      const lastTick = lastTickMsRef.current ?? now;
+      const dt = Math.max(0, now - lastTick);
+      lastTickMsRef.current = now;
       setProgress(Math.min(1, sessionT / durationMs));
       setSecondsLeft(Math.max(0, Math.ceil((durationMs - sessionT) / 1000)));
 
+      let scoredThisFrame = 0;
+      let frameHadScore = false;
       if (v && ex?.ready && v.readyState >= 2) {
         const res = ex.detectFromVideo(v, sessionT);
         if (res) {
@@ -176,12 +198,39 @@ export default function DrillPage({ params }: PageProps) {
             const s = frameScoreFromSimilarity(Math.max(0, sim));
             accScoreRef.current.sum += s;
             accScoreRef.current.n += 1;
+            scoredThisFrame = s;
+            frameHadScore = true;
             setLiveScore((p) => p * 0.75 + s * 0.25);
           }
         } else {
           setLandmarks(null);
         }
       }
+
+      // Track how long the live score has been at-or-above PASS_SCORE
+      // continuously. Drop back to 0 the moment they go below. When
+      // the hold reaches PASS_HOLD_MS, auto-complete the drill early
+      // with a "passed" flag so the done state can celebrate.
+      if (frameHadScore && scoredThisFrame >= PASS_SCORE) {
+        consecutiveHighMsRef.current += dt;
+      } else if (frameHadScore) {
+        consecutiveHighMsRef.current = 0;
+      }
+      setHoldProgress(Math.min(1, consecutiveHighMsRef.current / PASS_HOLD_MS));
+
+      if (
+        !passedEarlyRef.current &&
+        consecutiveHighMsRef.current >= PASS_HOLD_MS
+      ) {
+        passedEarlyRef.current = true;
+        const acc = accScoreRef.current;
+        const final = acc.n > 0 ? acc.sum / acc.n : scoredThisFrame;
+        setFinalScore(final);
+        setPassedEarly(true);
+        setRunState('finished');
+        return;
+      }
+
       if (sessionT >= durationMs) {
         const acc = accScoreRef.current;
         const final = acc.n > 0 ? acc.sum / acc.n : 0;
@@ -285,6 +334,34 @@ export default function DrillPage({ params }: PageProps) {
               </div>
             </div>
           )}
+          {/* Hold-to-pass ring. Fills as the score sits above the
+              PASS_SCORE threshold; resets the moment they dip below.
+              Lets the user SEE when they're about to pass instead of
+              the early-completion feeling random. */}
+          {runState === 'running' && holdProgress > 0 && (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-white backdrop-blur-sm">
+              <div className="flex items-center gap-2">
+                <svg width={16} height={16} viewBox="0 0 36 36" aria-hidden>
+                  <circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="4" />
+                  <circle
+                    cx="18"
+                    cy="18"
+                    r="14"
+                    fill="none"
+                    stroke="#FF6B6B"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    strokeDasharray={`${holdProgress * 87.96} 87.96`}
+                    transform="rotate(-90 18 18)"
+                    style={{ transition: 'stroke-dasharray 120ms linear' }}
+                  />
+                </svg>
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em]">
+                  hold {Math.ceil((1 - holdProgress) * 3)}s
+                </span>
+              </div>
+            </div>
+          )}
           {runState === 'preroll' && camState === 'granted' && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 px-6 text-center backdrop-blur-sm">
               <div className="text-text-muted text-xs uppercase tracking-widest">
@@ -346,19 +423,37 @@ export default function DrillPage({ params }: PageProps) {
         </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-          <div className="text-[10px] uppercase tracking-[0.22em] text-text-muted">
-            drill complete
-          </div>
-          <div className="mt-2 text-2xl font-bold uppercase tracking-[0.16em] text-white">
-            nice work
-          </div>
-          <div className={`mt-5 text-[88px] font-extrabold tabular-nums ${colorClass}`}>
-            {Math.round(finalScore ?? 0)}
-          </div>
-          <p className="mt-4 max-w-xs text-sm leading-snug text-white/80">
-            Mastery for <span className="text-white font-semibold">{skill.name}</span> bumped.
-            Keep stacking reps if it still feels rough.
-          </p>
+          {passedEarly ? (
+            <>
+              <div className="text-[10px] uppercase tracking-[0.22em] text-coral">
+                drill passed
+              </div>
+              <div className="mt-2 text-3xl font-extrabold uppercase tracking-[0.12em] text-white">
+                congratulations 🎉
+              </div>
+              <p className="mt-4 max-w-xs text-sm leading-snug text-white/85">
+                You held above {PASS_SCORE} for 3 seconds straight — that&apos;s mastery for
+                {' '}
+                <span className="font-semibold text-white">{skill.name}</span>.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="text-[10px] uppercase tracking-[0.22em] text-text-muted">
+                drill complete
+              </div>
+              <div className="mt-2 text-2xl font-bold uppercase tracking-[0.16em] text-white">
+                nice work
+              </div>
+              <div className={`mt-5 text-[88px] font-extrabold tabular-nums ${colorClass}`}>
+                {Math.round(finalScore ?? 0)}
+              </div>
+              <p className="mt-4 max-w-xs text-sm leading-snug text-white/80">
+                Mastery for <span className="text-white font-semibold">{skill.name}</span> bumped.
+                Keep stacking reps if it still feels rough.
+              </p>
+            </>
+          )}
         </div>
       )}
 
