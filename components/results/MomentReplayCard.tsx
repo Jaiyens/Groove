@@ -9,8 +9,13 @@
 // timeupdate listener that snaps back to startTime when either video
 // crosses endTime. Both videos are muted (audio would clash + iOS
 // can't autoplay sound without a gesture inside the carousel).
+//
+// Diagnostics: when a video element errors or stalls, we surface the
+// reason in the corner of the panel and console.warn it. Silent black
+// panels in this card hide CORS / CDN / format failures — making
+// regressions invisible until a user reports it.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const LOOP_DURATION_SEC = 3;
 
@@ -42,11 +47,43 @@ export default function MomentReplayCard({
 }: Props) {
   const attemptRef = useRef<HTMLVideoElement | null>(null);
   const referenceRef = useRef<HTMLVideoElement | null>(null);
+  // Per-panel diagnostic. Populated on error/stall; cleared on
+  // first successful play. Surfaced as a small chip so a black panel
+  // never lies about its state.
+  const [attemptErr, setAttemptErr] = useState<string | null>(null);
+  const [referenceErr, setReferenceErr] = useState<string | null>(null);
+  const [attemptReady, setAttemptReady] = useState(false);
+  const [referenceReady, setReferenceReady] = useState(false);
 
   useEffect(() => {
     const a = attemptRef.current;
     const r = referenceRef.current;
     if (!a || !r) return;
+
+    const describeError = (el: HTMLVideoElement, name: string): string => {
+      const err = el.error;
+      if (!err) return `${name}: unknown error`;
+      const codes: Record<number, string> = {
+        1: 'aborted',
+        2: 'network',
+        3: 'decode',
+        4: 'src-not-supported',
+      };
+      const code = codes[err.code] ?? `code ${err.code}`;
+      return `${name} ${code}${err.message ? ` (${err.message})` : ''}`;
+    };
+    const onAttemptError = () => {
+      const msg = describeError(a, 'attempt');
+      console.warn('[MomentReplayCard]', msg, { url: attemptVideoUrl });
+      setAttemptErr(msg);
+    };
+    const onReferenceError = () => {
+      const msg = describeError(r, 'reference');
+      console.warn('[MomentReplayCard]', msg, { url: referenceVideoUrl });
+      setReferenceErr(msg);
+    };
+    const onAttemptPlay = () => setAttemptReady(true);
+    const onReferencePlay = () => setReferenceReady(true);
 
     // If the timestamp is past the video end (rare, but happens when
     // Gemini estimates a timestamp slightly off), clamp to a 3-second
@@ -86,15 +123,33 @@ export default function MomentReplayCard({
     r.addEventListener('timeupdate', rTick);
     a.addEventListener('loadedmetadata', handleMeta);
     r.addEventListener('loadedmetadata', handleMeta);
+    a.addEventListener('error', onAttemptError);
+    r.addEventListener('error', onReferenceError);
+    a.addEventListener('playing', onAttemptPlay);
+    r.addEventListener('playing', onReferencePlay);
 
     // Kick a play if metadata is already loaded by the time we attach.
     if (a.readyState >= 1 && r.readyState >= 1) handleMeta();
 
+    // Fallback: if loadedmetadata never fires (slow CDN / stalled
+    // network / silent decode failure), force a play attempt at 2s.
+    // play() is safe to call before metadata — the browser will queue
+    // the play until data arrives. Without this fallback the panel
+    // stays black indefinitely if the metadata event is lost.
+    const kickTimer = window.setTimeout(() => {
+      playPair();
+    }, 2000);
+
     return () => {
+      window.clearTimeout(kickTimer);
       a.removeEventListener('timeupdate', aTick);
       r.removeEventListener('timeupdate', rTick);
       a.removeEventListener('loadedmetadata', handleMeta);
       r.removeEventListener('loadedmetadata', handleMeta);
+      a.removeEventListener('error', onAttemptError);
+      r.removeEventListener('error', onReferenceError);
+      a.removeEventListener('playing', onAttemptPlay);
+      r.removeEventListener('playing', onReferencePlay);
       a.pause();
       r.pause();
     };
@@ -142,6 +197,7 @@ export default function MomentReplayCard({
                 >
                   you
                 </span>
+                <PanelStatus error={attemptErr} ready={attemptReady} />
               </div>
             </div>
             <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">
@@ -164,6 +220,7 @@ export default function MomentReplayCard({
                 >
                   ref
                 </span>
+                <PanelStatus error={referenceErr} ready={referenceReady} />
               </div>
             </div>
           </div>
@@ -185,4 +242,31 @@ export default function MomentReplayCard({
       </div>
     </section>
   );
+}
+
+// Small chip in the bottom-right of each panel. Renders only when
+// something noteworthy happened — an error, or the slow path where the
+// video hasn't started yet. Avoids a silent black panel masking a real
+// failure (CORS, decode error, src-not-supported, etc).
+function PanelStatus({ error, ready }: { error: string | null; ready: boolean }) {
+  if (error) {
+    return (
+      <span
+        className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-md bg-coral/85 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white"
+        title={error}
+      >
+        {error}
+      </span>
+    );
+  }
+  if (!ready) {
+    return (
+      <span
+        className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/75"
+      >
+        loading…
+      </span>
+    );
+  }
+  return null;
 }

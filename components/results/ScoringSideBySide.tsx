@@ -21,6 +21,10 @@ export default function ScoringSideBySide({
   const attemptRef = useRef<HTMLVideoElement | null>(null);
   const referenceRef = useRef<HTMLVideoElement | null>(null);
   const [needsUnmuteTap, setNeedsUnmuteTap] = useState(false);
+  // Visible loading state. Without this, the canplaythrough wait reads
+  // as a frozen screen — the f05da9d sync fix requires readyState >= 4
+  // on both, and on slow networks that can take a few seconds.
+  const [waitingFor, setWaitingFor] = useState<'both' | 'reference' | 'attempt' | 'none'>('both');
 
   useEffect(() => {
     const a = attemptRef.current;
@@ -39,15 +43,33 @@ export default function ScoringSideBySide({
     let started = false;
     let driftInterval: number | null = null;
 
-    const start = async () => {
+    const updateWaiting = () => {
+      const aReady = a.readyState >= 4;
+      const rReady = r.readyState >= 4;
+      if (aReady && rReady) setWaitingFor('none');
+      else if (!aReady && !rReady) setWaitingFor('both');
+      else if (!aReady) setWaitingFor('attempt');
+      else setWaitingFor('reference');
+    };
+
+    const start = async (opts: { force?: boolean } = {}) => {
       if (cancelled || started) return;
       // Require `canplaythrough` (readyState >= 4) on BOTH — the
       // browser is saying "I have enough buffered to play to the end
       // without stalling." Using `canplay` (readyState 3) used to let
       // the attempt blob start before the network-fetched reference
       // had buffered, hence the visible offset the user reported.
-      if (a.readyState < 4 || r.readyState < 4) return;
+      //
+      // Safety-net fallback: if we've been waiting too long (force
+      // path below), drop to readyState >= 3 so a slow CDN doesn't
+      // mean a perma-frozen overlay.
+      const bar = opts.force ? 3 : 4;
+      if (a.readyState < bar || r.readyState < bar) {
+        updateWaiting();
+        return;
+      }
       started = true;
+      setWaitingFor('none');
       try { a.currentTime = 0; } catch { /* ignore */ }
       try { r.currentTime = 0; } catch { /* ignore */ }
       // 200ms breath after both report ready, so any in-flight decode
@@ -93,17 +115,40 @@ export default function ScoringSideBySide({
       void r.play().catch(() => {});
     };
 
-    a.addEventListener('canplaythrough', start);
-    r.addEventListener('canplaythrough', start);
+    const onStrict = () => {
+      updateWaiting();
+      void start();
+    };
+    a.addEventListener('canplaythrough', onStrict);
+    r.addEventListener('canplaythrough', onStrict);
+    a.addEventListener('canplay', updateWaiting);
+    r.addEventListener('canplay', updateWaiting);
+    a.addEventListener('loadeddata', updateWaiting);
+    r.addEventListener('loadeddata', updateWaiting);
     r.addEventListener('ended', handleRefEnd);
     // Kick immediately in case both are already buffered enough.
+    updateWaiting();
     void start();
+
+    // Safety-net: if we haven't crossed canplaythrough on both within
+    // 5 seconds, fall back to canplay (readyState >= 3) so the user
+    // doesn't see a perma-frozen overlay on a flaky CDN cold-cache.
+    const forceTimer = window.setTimeout(() => {
+      if (!started && !cancelled) {
+        void start({ force: true });
+      }
+    }, 5000);
 
     return () => {
       cancelled = true;
       if (driftInterval !== null) window.clearInterval(driftInterval);
-      a.removeEventListener('canplaythrough', start);
-      r.removeEventListener('canplaythrough', start);
+      window.clearTimeout(forceTimer);
+      a.removeEventListener('canplaythrough', onStrict);
+      r.removeEventListener('canplaythrough', onStrict);
+      a.removeEventListener('canplay', updateWaiting);
+      r.removeEventListener('canplay', updateWaiting);
+      a.removeEventListener('loadeddata', updateWaiting);
+      r.removeEventListener('loadeddata', updateWaiting);
       r.removeEventListener('ended', handleRefEnd);
       a.pause();
       r.pause();
@@ -120,6 +165,15 @@ export default function ScoringSideBySide({
 
   return (
     <div className="relative flex w-full flex-1 items-center justify-center px-2">
+      {waitingFor !== 'none' && (
+        <div className="pointer-events-none absolute top-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/75 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-white/85 ring-1 ring-white/15">
+          {waitingFor === 'both'
+            ? 'buffering both…'
+            : waitingFor === 'reference'
+            ? 'buffering reference…'
+            : 'buffering attempt…'}
+        </div>
+      )}
       <div className="flex h-full w-full max-h-[70vh] gap-px bg-black">
         {/* YOU panel — 9:16 portrait frame, attempt webcam cropped. */}
         <div className="relative flex h-full w-1/2 items-center justify-center overflow-hidden bg-black">

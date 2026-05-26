@@ -17,6 +17,7 @@ import { frameScoreFromSimilarity } from '@/lib/scoring/scorer';
 import { cosineSimilarity } from '@/lib/scoring/similarity';
 import { neutralReferenceFrame } from '@/lib/scoring/syntheticReference';
 import { scoreColor } from '@/lib/scoring/types';
+import type { SkillNode } from '@/lib/graph/types';
 
 interface PageProps {
   params: { skillId: string };
@@ -255,13 +256,35 @@ export default function DrillPage({ params }: PageProps) {
     };
   }, [camState, runState, skill, duration]);
 
-  // Persist mastery on finish.
+  // Persist mastery on finish — snapshot prior + post so the completion
+  // screen can show the delta. Ref-guarded so StrictMode double-effect
+  // doesn't double-record the same drill.
+  const persistedRef = useRef(false);
+  const [masteryStats, setMasteryStats] = useState<{
+    prior: number;
+    post: number;
+  } | null>(null);
   useEffect(() => {
     if (runState !== 'finished' || finalScore === null || !skill) return;
+    if (persistedRef.current) return;
+    persistedRef.current = true;
     const store = getMasteryStore();
+    const prior = store.getMastery(skill.id);
     store.recordAttempt(`drill:${skill.id}`, { [skill.id]: finalScore }, finalScore);
+    const post = store.getMastery(skill.id);
+    setMasteryStats({ prior, post });
     bumpMastery();
   }, [runState, finalScore, skill, bumpMastery]);
+
+  // Reverse-prereq lookup: which skills list this drill's skill as a
+  // prerequisite? Surfacing these makes the graph visible — the user
+  // sees that drilling this directly unblocks downstream moves.
+  const unlocks = useMemo<SkillNode[]>(() => {
+    if (!graph || !skill) return [];
+    return graph.nodes.filter(
+      (n) => n.category !== 'routine' && n.prerequisites.includes(skill.id),
+    );
+  }, [graph, skill]);
 
   useEffect(
     () => () => {
@@ -430,7 +453,7 @@ export default function DrillPage({ params }: PageProps) {
           )}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+        <div className="flex flex-1 flex-col items-center overflow-y-auto px-6 py-6 text-center">
           {passedEarly ? (
             <>
               <div className="text-[10px] uppercase tracking-[0.22em] text-coral">
@@ -439,28 +462,58 @@ export default function DrillPage({ params }: PageProps) {
               <div className="mt-2 text-3xl font-extrabold uppercase tracking-[0.12em] text-white">
                 congratulations 🎉
               </div>
-              <p className="mt-4 max-w-xs text-sm leading-snug text-white/85">
-                You held above {PASS_SCORE} for 3 seconds straight — that&apos;s mastery for
-                {' '}
-                <span className="font-semibold text-white">{skill.name}</span>.
-              </p>
             </>
           ) : (
             <>
               <div className="text-[10px] uppercase tracking-[0.22em] text-text-muted">
                 drill complete
               </div>
-              <div className="mt-2 text-2xl font-bold uppercase tracking-[0.16em] text-white">
-                nice work
-              </div>
-              <div className={`mt-5 text-[88px] font-extrabold tabular-nums ${colorClass}`}>
+              <div className={`mt-3 text-[80px] font-extrabold tabular-nums leading-none ${colorClass}`}>
                 {Math.round(finalScore ?? 0)}
               </div>
-              <p className="mt-4 max-w-xs text-sm leading-snug text-white/80">
-                Mastery for <span className="text-white font-semibold">{skill.name}</span> bumped.
-                Keep stacking reps if it still feels rough.
-              </p>
+              <div className="mt-1 text-xs uppercase tracking-[0.18em] text-text-muted">
+                nice work
+              </div>
             </>
+          )}
+
+          <div className="mt-6 text-sm text-white/90">
+            <span className="text-white font-semibold">{skill.name}</span>
+          </div>
+
+          {masteryStats && (
+            <MasteryDelta prior={masteryStats.prior} post={masteryStats.post} />
+          )}
+
+          {unlocks.length > 0 ? (
+            <div className="mt-6 w-full max-w-xs">
+              <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-text-muted">
+                this unlocks
+              </div>
+              <ul className="mt-2 space-y-1.5">
+                {unlocks.slice(0, 3).map((u) => (
+                  <li
+                    key={u.id}
+                    className="flex items-center justify-between gap-2 rounded-2xl bg-white/5 px-3 py-2 text-left text-sm text-white/90 ring-1 ring-white/10"
+                  >
+                    <span className="truncate">{u.name.toLowerCase()}</span>
+                    <span className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                      {u.category}
+                    </span>
+                  </li>
+                ))}
+                {unlocks.length > 3 && (
+                  <li className="text-[11px] text-white/55">
+                    + {unlocks.length - 3} more
+                  </li>
+                )}
+              </ul>
+            </div>
+          ) : (
+            <p className="mt-6 max-w-xs text-xs leading-snug text-white/55">
+              foundational skill — keep this rock solid; other moves
+              build on it.
+            </p>
           )}
         </div>
       )}
@@ -476,28 +529,105 @@ export default function DrillPage({ params }: PageProps) {
           </div>
         ) : (
           // All exits go through router.push so the click never gets
-          // eaten on iOS (the link version had this problem). Order:
-          // primary action first (re-attempt / return to whatever
-          // brought us here), then a Home shortcut.
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => router.push(returnTarget.href)}
-              className="block w-full rounded-full bg-white py-4 text-center text-base font-bold text-black active:scale-[0.99]"
-            >
-              {returnTarget.label}
-            </button>
-            <button
-              type="button"
-              onClick={() => router.push('/')}
-              className="block w-full rounded-full bg-white/10 py-3 text-center text-sm font-bold uppercase tracking-[0.18em] text-white ring-1 ring-white/15 active:scale-[0.99]"
-            >
-              Home
-            </button>
-          </div>
+          // eaten on iOS (the link version had this problem).
+          //
+          // Three paths depending on how the user arrived:
+          //   from=dance:X    — re-attempt → see your skills → home
+          //   from=/progress  — back to your moves → home (no
+          //                      'see your skills', it's the same view)
+          //   no from         — see your skills → home
+          //
+          // The Skills tab is surfaced everywhere it isn't redundant so
+          // drilling never feels like a dead-end.
+          <DrillExitButtons
+            primaryHref={returnTarget.href}
+            primaryLabel={returnTarget.label}
+            showSkillsTab={returnTarget.href !== '/progress' && returnTarget.kind !== 'returnPath'}
+            onNav={(href) => router.push(href)}
+          />
         )}
       </div>
     </main>
+  );
+}
+
+// Compact progress bar with prior → post percent labels. Animates from
+// prior to post on mount so the bump reads as a delta, not a number.
+function MasteryDelta({ prior, post }: { prior: number; post: number }) {
+  const priorPct = Math.round(Math.max(0, Math.min(1, prior)) * 100);
+  const postPct = Math.round(Math.max(0, Math.min(1, post)) * 100);
+  const delta = postPct - priorPct;
+  const [animated, setAnimated] = useState(priorPct);
+  useEffect(() => {
+    const start = performance.now();
+    const DURATION = 900;
+    let raf = requestAnimationFrame(function tick(now) {
+      const t = Math.min(1, (now - start) / DURATION);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setAnimated(Math.round(priorPct + (postPct - priorPct) * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [priorPct, postPct]);
+  return (
+    <div className="mt-5 w-full max-w-xs">
+      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-[0.18em] text-text-muted">
+        <span>mastery</span>
+        <span className="font-semibold text-white tabular-nums">
+          {animated}%
+          {delta > 0 && (
+            <span className="ml-2 text-accent-green">+{delta}</span>
+          )}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-coral via-coral to-accent-green transition-all duration-700"
+          style={{ width: `${animated}%` }}
+          aria-hidden
+        />
+      </div>
+    </div>
+  );
+}
+
+function DrillExitButtons({
+  primaryHref,
+  primaryLabel,
+  showSkillsTab,
+  onNav,
+}: {
+  primaryHref: string;
+  primaryLabel: string;
+  showSkillsTab: boolean;
+  onNav: (href: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => onNav(primaryHref)}
+        className="block w-full rounded-full bg-white py-4 text-center text-base font-bold text-black active:scale-[0.99]"
+      >
+        {primaryLabel}
+      </button>
+      {showSkillsTab && (
+        <button
+          type="button"
+          onClick={() => onNav('/progress')}
+          className="block w-full rounded-full bg-white/12 py-3 text-center text-sm font-bold uppercase tracking-[0.18em] text-white ring-1 ring-white/20 active:scale-[0.99]"
+        >
+          See your skills
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => onNav('/')}
+        className="block w-full rounded-full bg-white/5 py-3 text-center text-sm font-bold uppercase tracking-[0.18em] text-white/70 ring-1 ring-white/10 active:scale-[0.99]"
+      >
+        Home
+      </button>
+    </div>
   );
 }
 
